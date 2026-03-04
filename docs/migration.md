@@ -11,9 +11,10 @@ This guide covers breaking changes introduced in the v2 refactor and explains ho
 | Post type | `TweetRecord{AgentID, Step, Opinion float64}` | `PostRecord[O]{AgentID, Step, Opinion O}` |
 | Repost type | `TweetEventBody{Record, IsRetweet}` | `PostEventBody[O]{Record, IsRepost}` |
 | View-posts type | `ViewTweetsEventBody` | `ViewPostsEventBody[O]` |
-| Agent params | `model.SMPAgentParams{Tolerance, Decay, RewiringRate, RetweetRate}` | `dynamics.HKParams{Tolerance, Decay, RewiringRate, RepostRate}` |
+| Agent params | `model.SMPAgentParams{Tolerance, Decay, RewiringRate, RetweetRate}` | `dynamics.HKParams{Tolerance, Influence, RewiringRate, RepostRate}` |
 | Dynamics | baked into `SMPAgentStep` | `dynamics.HK` / `dynamics.Deffuant` implementing `model.Dynamics[O,P]` |
 | Field: retain count | `SMPModelPureParams.TweetRetainCount` | `SMPModelPureParams.PostRetainCount` |
+| Field: decay/influence | `SMPAgentParams.Decay` | `HKParams.Influence` |
 | Field: repost rate | `SMPAgentParams.RetweetRate` | `HKParams.RepostRate` |
 | Collect option | `CollectItemOptions.ViewTweetsEvent` | `CollectItemOptions.ViewPostsEvent` |
 | Collect option | `CollectItemOptions.TweetEvent` | `CollectItemOptions.PostEvent` |
@@ -68,6 +69,7 @@ If you have `metadata.json` files that embed `SMPAgentParams`, rename the field 
 
 | Old JSON key | New JSON key |
 |---|---|
+| `Decay` | `Influence` |
 | `RetweetRate` | `RepostRate` |
 | `TweetRetainCount` | `PostRetainCount` |
 | `TweetEvent` | `PostEvent` |
@@ -77,6 +79,7 @@ Quick sed command:
 
 ```bash
 sed -i \
+  -e 's/"Decay"/"Influence"/g' \
   -e 's/"RetweetRate"/"RepostRate"/g' \
   -e 's/"TweetRetainCount"/"PostRetainCount"/g' \
   -e 's/"TweetEvent"/"PostEvent"/g' \
@@ -114,7 +117,7 @@ params := &model.SMPAgentParams{Tolerance: 0.3, Decay: 0.5, RetweetRate: 0.2, Re
 
 // v2
 import "smp/dynamics"
-params := &dynamics.HKParams{Tolerance: 0.3, Decay: 0.5, RepostRate: 0.2, RewiringRate: 0.1}
+params := &dynamics.HKParams{Tolerance: 0.3, Influence: 0.5, RepostRate: 0.2, RewiringRate: 0.1}
 ```
 
 ### 2. Pass a `Dynamics` implementation to `NewSMPModel`

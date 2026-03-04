@@ -19,7 +19,7 @@ func main() {
 
 		HKParams: dynamics.HKParams{
 
-			Decay:        0.01,
+			Influence:    0.01,
 			Tolerance:    0.45,
 			RewiringRate: 0.05,
 			RepostRate:   0.3,

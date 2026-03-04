@@ -8,13 +8,13 @@ import (
 // HKParams are parameters for the Hegselmann-Krause dynamics.
 type HKParams struct {
 	Tolerance    float64
-	Decay        float64
+	Influence    float64
 	RewiringRate float64
 	RepostRate   float64
 }
 
 func DefaultHKParams() *HKParams {
-	return &HKParams{Tolerance: 0.25, Decay: 1.0, RewiringRate: 0.1, RepostRate: 0.3}
+	return &HKParams{Tolerance: 0.25, Influence: 1.0, RewiringRate: 0.1, RepostRate: 0.3}
 }
 
 func (p *HKParams) GetRepostRate() float64   { return p.RepostRate }
@@ -47,7 +47,7 @@ func (h *HK) Step(myOp float64, cN, cR, dN, dR []float64, params *HKParams) (flo
 	}
 	next := myOp
 	if total > 0 {
-		next = myOp + (sumN+sumR)/float64(total)*params.Decay
+		next = myOp + (sumN+sumR)/float64(total)*params.Influence
 	}
 	return next, model.AgentOpinionSumRecord{sumN, sumR, sumND, sumRD}
 }

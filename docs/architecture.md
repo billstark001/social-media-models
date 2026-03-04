@@ -85,11 +85,11 @@ Each `SMPAgent[O, P].Step()`:
 
 ### Hegselmann-Krause (`HK`)
 
-**Params**: `HKParams{Tolerance, Decay, RewiringRate, RepostRate}`
+**Params**: `HKParams{Tolerance, Influence, RewiringRate, RepostRate}`
 
 **Concordant**: `|myOp − otherOp| ≤ Tolerance`
 
-**Update**: `nextOp = myOp + Decay × mean(concordant opinions − myOp)`
+**Update**: `nextOp = myOp + Influence × mean(concordant opinions − myOp)`
 
 All statistics (concordant/discordant neighbour and recommended opinion deltas) are recorded in `AgentOpinionSumRecord`.
 

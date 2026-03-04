@@ -20,7 +20,7 @@ func TestHKConcordant(t *testing.T) {
 		want bool
 	}{
 		{0.0, 0.2, true},
-		{0.0, 0.3, true},  // exactly at boundary
+		{0.0, 0.3, true}, // exactly at boundary
 		{0.0, 0.31, false},
 		{0.5, -0.5, false},
 		{-0.5, -0.4, true},
@@ -35,7 +35,7 @@ func TestHKConcordant(t *testing.T) {
 
 func TestHKStepNoNeighbors(t *testing.T) {
 	hk := &dynamics.HK{}
-	p := &dynamics.HKParams{Tolerance: 0.3, Decay: 1.0}
+	p := &dynamics.HKParams{Tolerance: 0.3, Influence: 1.0}
 
 	next, opSum := hk.Step(0.5, nil, nil, nil, nil, p)
 	if next != 0.5 {
@@ -48,7 +48,7 @@ func TestHKStepNoNeighbors(t *testing.T) {
 
 func TestHKStepConcordantNeighbors(t *testing.T) {
 	hk := &dynamics.HK{}
-	p := &dynamics.HKParams{Tolerance: 0.5, Decay: 1.0}
+	p := &dynamics.HKParams{Tolerance: 0.5, Influence: 1.0}
 
 	// myOp=0, concordantNeighbors=[0.2, 0.4], decay=1
 	// mean delta = ((0.2-0) + (0.4-0)) / 2 = 0.3
@@ -67,9 +67,9 @@ func TestHKStepConcordantNeighbors(t *testing.T) {
 	}
 }
 
-func TestHKStepDecayLessThanOne(t *testing.T) {
+func TestHKStepInfluenceLessThanOne(t *testing.T) {
 	hk := &dynamics.HK{}
-	p := &dynamics.HKParams{Tolerance: 0.5, Decay: 0.5}
+	p := &dynamics.HKParams{Tolerance: 0.5, Influence: 0.5}
 
 	// myOp=0.0, concordant=[0.4], decay=0.5 → next = 0 + 0.4 * 0.5 = 0.2
 	next, _ := hk.Step(0.0, []float64{0.4}, nil, nil, nil, p)
@@ -80,7 +80,7 @@ func TestHKStepDecayLessThanOne(t *testing.T) {
 
 func TestHKStepMixedConcordantRecommended(t *testing.T) {
 	hk := &dynamics.HK{}
-	p := &dynamics.HKParams{Tolerance: 0.5, Decay: 1.0}
+	p := &dynamics.HKParams{Tolerance: 0.5, Influence: 1.0}
 
 	// cN=[0.2], cR=[0.4], dN=[0.8], dR=[-0.9]
 	// mean delta from concordant = ((0.2-0) + (0.4-0)) / 2 = 0.3
@@ -99,7 +99,7 @@ func TestHKStepMixedConcordantRecommended(t *testing.T) {
 
 func TestHKDefaultParams(t *testing.T) {
 	p := dynamics.DefaultHKParams()
-	if p.Tolerance <= 0 || p.Decay <= 0 || p.RepostRate <= 0 {
+	if p.Tolerance <= 0 || p.Influence <= 0 || p.RepostRate <= 0 {
 		t.Errorf("default HKParams should have positive fields: %+v", p)
 	}
 	if p.GetRepostRate() != p.RepostRate {

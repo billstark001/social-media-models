@@ -131,8 +131,8 @@ func TestPartitionPostsMixed(t *testing.T) {
 		{ID: 2},
 	}
 	neighborPosts := []*model.PostRecord[float64]{
-		{AgentID: 1, Opinion: 0.2},  // concordant
-		{AgentID: 2, Opinion: 0.8},  // discordant
+		{AgentID: 1, Opinion: 0.2}, // concordant
+		{AgentID: 2, Opinion: 0.8}, // discordant
 	}
 	recommended := []*model.PostRecord[float64]{
 		{AgentID: 3, Opinion: -0.5}, // discordant
@@ -183,7 +183,7 @@ func TestModelStepOpinionChanges(t *testing.T) {
 
 	params := dynamics.DefaultHKParams()
 	params.Tolerance = 1.0
-	params.Decay = 1.0
+	params.Influence = 1.0
 	params.RepostRate = 0
 	params.RewiringRate = 0
 

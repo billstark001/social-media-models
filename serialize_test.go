@@ -49,7 +49,7 @@ func TestSerializeAndDeserializeScenario(t *testing.T) {
 
 		HKParams: dynamics.HKParams{
 
-			Decay:        0.005,
+			Influence:    0.005,
 			Tolerance:    0.45,
 			RewiringRate: 0.5,
 			RepostRate:   0.25,

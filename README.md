@@ -65,7 +65,7 @@ Each agent per step:
 
 | Dynamics | Update Rule | Params |
 |----------|-------------|--------|
-| **HK** (Hegselmann-Krause) | Move to weighted mean of concordant opinions × `Decay` | `HKParams` |
+| **HK** (Hegselmann-Krause) | Move to weighted mean of concordant opinions × `Influence` | `HKParams` |
 | **Deffuant** | Pick one concordant opinion at random; move by `Tolerance × Δ` | `DeffuantParams` |
 
 ### Recommendation Systems
@@ -84,7 +84,7 @@ Each agent per step:
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `Tolerance` | Concordance threshold | 0.25 |
-| `Decay` | Opinion influence rate (HK only) | 1.0 |
+| `Influence` | Opinion influence rate (HK only) | 1.0 |
 | `RepostRate` | Probability of reposting vs. new post | 0.3 |
 | `RewiringRate` | Probability of rewiring per step | 0.1 |
 | `PostRetainCount` | Post history depth per agent | 3 |
