@@ -143,9 +143,9 @@ func (m *SMPModel[O, P]) Step(doIncrementCurStep bool) (int, float64) {
 
 	cntPostRetain := max(m.ModelParams.PostRetainCount, 1)
 	for _, a := range m.Schedule.Agents {
-		// Convert opinion change to float64 for comparison - use interface trick
-		// Since we can't subtract generic O values here, rely on Dynamics
-		// We store float64 changedOpinion via type assertion if O=float64
+		// changedOpinionMax is a float64 convergence metric. It is only
+		// meaningful when O = float64 (the common case). For other opinion
+		// types, the value stays 0 and callers should not rely on it.
 		if f, ok := any(a.NextOpinion).(float64); ok {
 			if cf, ok2 := any(a.CurOpinion).(float64); ok2 {
 				diff := math.Abs(f - cf)

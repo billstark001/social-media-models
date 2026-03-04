@@ -86,9 +86,9 @@ func (s *StructureRandom[O, P]) Recommend(
 
 	candidates := sampleWithoutReplacement(s.AllIndices, count+4, rateVec)
 
-	ret := make([]*model.PostRecord[O], 0, len(candidates))
+	ret := make([]*model.PostRecord[O], 0, count)
 	for _, idx := range candidates {
-		if len(ret) >= len(candidates) {
+		if len(ret) >= count {
 			break
 		}
 		agentPicked := s.AgentMap[int64(idx)]

@@ -47,7 +47,9 @@ func (d *Deffuant) Step(myOp float64, cN, cR, dN, dR []float64, params *Deffuant
 	}
 
 	next := myOp
-	all := append(append([]float64(nil), cN...), cR...)
+	all := make([]float64, 0, len(cN)+len(cR))
+	all = append(all, cN...)
+	all = append(all, cR...)
 	if len(all) > 0 {
 		picked := all[rand.Intn(len(all))]
 		next = myOp + params.Tolerance*(picked-myOp)

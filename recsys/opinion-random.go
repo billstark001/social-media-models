@@ -132,9 +132,9 @@ func (o *OpinionRandom[P]) Recommend(
 
 	candidates := sampleWithoutReplacement(o.AllIndices, count+4, rateVec)
 
-	ret := make([]*model.PostRecord[float64], 0, len(candidates))
+	ret := make([]*model.PostRecord[float64], 0, count)
 	for _, idx := range candidates {
-		if len(ret) >= len(candidates) {
+		if len(ret) >= count {
 			break
 		}
 		agentPicked := o.Agents[idx]

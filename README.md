@@ -1,64 +1,112 @@
 # Social Media Models
 
+A Go implementation of agent-based social media simulation models with pluggable opinion dynamics. The framework supports multiple opinion-dynamics rules (Hegselmann-Krause, Deffuant) and several recommendation strategies.
+
 ## Repository Structure
 
-```text
-├── root/ 
-│   ├── model/              # Agent-based model components
-│   │   ├── agent.go        # Agent implementation
-│   │   ├── model.go        # Main model logic
-│   │   ├── recsys.go       # Recommendation system interface
-│   │   └── tweet.go        # Tweet and information sharing
-│   ├── recsys/             # Recommendation system implementations
-│   │   ├── opinion.go      # Content-based recommendation
-│   │   ├── structure.go    # Link-based recommendation
-│   │   ├── random.go       # Baseline random recommendation
-│   │   └── mix.go          # Hybrid recommendation systems
-│   ├── simulation/         # Simulation management and serialization
-│   │   ├── scenario.go     # Scenario execution
-│   │   ├── event-db.go     # Event logging database
-│   │   └── acc-mod-state.go # Accumulative state tracking
-│   └── utils/              # Network utilities and graph operations
+```
+├── model/          Core types and interfaces (generic over opinion type O and params type P)
+├── dynamics/       Opinion dynamics: HK (Hegselmann-Krause) and Deffuant
+├── recsys/         Recommendation systems (random, opinion, structure, and hybrids)
+├── simulation/     Scenario runner, serialization (msgpack + LZ4), SQLite event log
+├── utils/          Graph utilities (ER, small-world, serialize/deserialize)
+└── docs/           Architecture overview and migration guide
+```
+
+## Quick Start
+
+```go
+import (
+    "smp/dynamics"
+    "smp/model"
+    "smp/utils"
+)
+
+graph := utils.CreateRandomNetwork(500, 0.03)  // 500 nodes, ~15 follows each
+
+params := dynamics.DefaultHKParams()           // Hegselmann-Krause params
+params.Tolerance = 0.45
+
+mp := model.DefaultSMPModelParams[float64, dynamics.HKParams]()
+mp.PostRetainCount = 3
+
+m := model.NewSMPModelFloat64(
+    graph, nil, mp, params, &dynamics.HK{},
+    &model.CollectItemOptions{AgentNumber: true, OpinionSum: true},
+    nil,
+)
+m.SetAgentCurPosts()
+
+for range 1000 {
+    m.Step(true)
+}
 ```
 
 ## Model Architecture
 
-### Agent-Based Model Components
+### Generic Parameterisation
 
-The model implements a discrete-time agent-based simulation where:
+Every core type is parameterised over:
 
-- **Agents** represent social media users with continuous opinions in [-1, 1]
-- **Network** is a directed graph representing follow relationships
-- **Tweets** carry opinion information and can be original posts or retweets
-- **Recommendation Systems** suggest content to users based on different strategies
+- **`O`** — opinion type (default `float64`; can be extended to `bool`, `[2]float64`, etc.)
+- **`P`** — agent-parameter type (default `dynamics.HKParams`)
 
-### Agent Behavior
+### Agent Behaviour
 
-Each agent follows these rules at each simulation step:
+Each agent per step:
 
-1. **View Content**: Observe tweets from followed neighbors and recommended content
-2. **Opinion Update**: Update opinion based on concordant content (within tolerance threshold ε)
-   - Opinion change: Δo = μ × (average of concordant opinions - current opinion)
-   - μ: decay/influence parameter
-3. **Post/Retweet**: With probability ρ, retweet concordant content; otherwise post new tweet
-4. **Rewire**: With probability γ, unfollow discordant neighbor and follow concordant recommended user
+1. **Views** posts from followed neighbours and from the recommendation system.
+2. **Partitions** posts into concordant (`|Δopinion| ≤ Tolerance`) and discordant.
+3. **Updates opinion** via the chosen dynamics rule.
+4. **Reposts** a concordant post with probability `RepostRate`, otherwise publishes a new post.
+5. **Rewires** — with probability `RewiringRate`, unfollows a discordant neighbour and follows a concordant stranger.
+
+### Opinion Dynamics
+
+| Dynamics | Update Rule | Params |
+|----------|-------------|--------|
+| **HK** (Hegselmann-Krause) | Move to weighted mean of concordant opinions × `Decay` | `HKParams` |
+| **Deffuant** | Pick one concordant opinion at random; move by `Tolerance × Δ` | `DeffuantParams` |
 
 ### Recommendation Systems
 
-Three main recommendation strategies are implemented:
-
-1. **Random Recommendation** (`Random`): Baseline strategy selecting users randomly
-2. **Structure-Based Recommendation** (`StructureM9`): Link-based, recommending based on network proximity
-3. **Opinion-Based Recommendation** (`OpinionM9`): Content-based, recommending based on opinion similarity
-   - Maintains sorted index of tweets by opinion
-   - Recommends content with minimal opinion distance
-   - Supports historical tweet retention (parameter: `TweetRetainCount`)
+| Name | Strategy |
+|------|----------|
+| `Random` | Uniformly random |
+| `Opinion` | Nearest in opinion space |
+| `Structure` | Common-neighbour count |
+| `OpinionRandom` | Opinion-distance weighted random |
+| `StructureRandom` | Structure-similarity weighted random |
+| `Mix` | Blend of two systems |
 
 ### Key Parameters
 
-- **Tolerance (ε)**: Opinion difference threshold for concordance (default: 0.45)
-- **Decay/Influence (μ)**: Opinion update rate (default: 0.05)
-- **Rewiring Rate (γ)**: Probability of network rewiring (default: 0.05)
-- **Retweet Rate (ρ)**: Probability of retweeting vs. posting (default: 0.3)
-- **RecsysCount**: Number of recommendations per agent per step (default: 10)
-- **TweetRetainCount**: Number of historical tweets retained (0-6)
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `Tolerance` | Concordance threshold | 0.25 |
+| `Decay` | Opinion influence rate (HK only) | 1.0 |
+| `RepostRate` | Probability of reposting vs. new post | 0.3 |
+| `RewiringRate` | Probability of rewiring per step | 0.1 |
+| `PostRetainCount` | Post history depth per agent | 3 |
+| `RecsysCount` | Recommendations per agent per step | 10 |
+
+## Serialization
+
+Snapshots are stored as **msgpack** files; accumulative time-series data uses a compact **binary + LZ4** format. Events (posts, rewirings, view-posts) are optionally logged to **SQLite**.
+
+See [`docs/architecture.md`](docs/architecture.md) for the full file layout.
+
+## Testing
+
+```bash
+go test ./...
+```
+
+## Migration from v1
+
+See [`docs/migration.md`](docs/migration.md) for a step-by-step guide covering code, msgpack snapshots, metadata JSON, and SQLite schemas.
+
+## Further Documentation
+
+- [`docs/architecture.md`](docs/architecture.md) — package structure, data-flow diagram, serialization schema
+- [`docs/migration.md`](docs/migration.md) — breaking changes and migration scripts
