@@ -24,12 +24,10 @@ func sampleWithoutReplacement(population []int, n int, probabilities []float64) 
 		return result
 	}
 
-	// Make a weighted sampling using rejection method
 	selected := make(map[int]bool)
 	result := make([]int, 0, n)
 
 	for len(result) < n {
-		// Find a suitable index
 		r := rand.Float64()
 		cumSum := 0.0
 
@@ -48,23 +46,29 @@ func sampleWithoutReplacement(population []int, n int, probabilities []float64) 
 	return result
 }
 
-func selectTweet(
-	historicalTweetCount int,
+// PostIndex is used by the opinion-based recsys to index and sort posts.
+type PostIndex struct {
+	AgentID     int64
+	HistoryID   int // -1: current opinion marker
+	TempOpinion float64
+}
+
+func selectPost[O any, P any](
+	historicalPostCount int,
 	selfAndNeighborIDs map[int64]bool,
 	agentPickedID int64,
-	agentMap map[int64]*model.SMPAgent,
-	visibleTweets map[int64][]*model.TweetRecord,
-) *model.TweetRecord {
-	tweetPickedIndex := -1 // 0: newest
-	if historicalTweetCount > 0 {
-		tweetPickedIndex = rand.Intn(historicalTweetCount)
+	agentMap map[int64]*model.SMPAgent[O, P],
+	visiblePosts map[int64][]*model.PostRecord[O],
+) *model.PostRecord[O] {
+	postPickedIndex := -1
+	if historicalPostCount > 0 {
+		postPickedIndex = rand.Intn(historicalPostCount)
 	}
-	var el *model.TweetRecord
-	if tweetPickedIndex != -1 && tweetPickedIndex < len(visibleTweets[agentPickedID]) {
-		// since visibleTweets is declared as -1: newest, revert it
-		el = visibleTweets[agentPickedID][len(visibleTweets[agentPickedID])-tweetPickedIndex-1]
+	var el *model.PostRecord[O]
+	if postPickedIndex != -1 && postPickedIndex < len(visiblePosts[agentPickedID]) {
+		el = visiblePosts[agentPickedID][len(visiblePosts[agentPickedID])-postPickedIndex-1]
 	} else {
-		el = agentMap[agentPickedID].CurTweet
+		el = agentMap[agentPickedID].CurPost
 	}
 	if el == nil || selfAndNeighborIDs[el.AgentID] {
 		return nil
@@ -81,14 +85,12 @@ func commonNeighborsCount(g graph.Directed, u, v int) int {
 
 	count := 0
 
-	// Count u's predecessors that are also v's predecessors or successors
 	for w := range uPred {
 		if vPred[w] || vSucc[w] {
 			count++
 		}
 	}
 
-	// Count u's successors that are also v's predecessors or successors
 	for w := range uSucc {
 		if vPred[w] || vSucc[w] {
 			count++

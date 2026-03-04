@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"smp/dynamics"
 	model "smp/model"
 	utils "smp/utils"
 
@@ -155,7 +156,7 @@ func (s *SimulationSerializer) _clean(fileType string, all bool, suffixName stri
 
 // #region snapshot
 
-func (s *SimulationSerializer) GetLatestSnapshot() (*model.SMPModelDumpData, error) {
+func (s *SimulationSerializer) GetLatestSnapshot() (*model.SMPModelDumpData[float64, dynamics.HKParams], error) {
 	if !s.Exists() {
 		return nil, nil
 	}
@@ -168,11 +169,11 @@ func (s *SimulationSerializer) GetLatestSnapshot() (*model.SMPModelDumpData, err
 	}
 
 	latestFile := files[len(files)-1]
-	ret, err := s._read(latestFile, &model.SMPModelDumpData{})
-	return ret.(*model.SMPModelDumpData), err
+	ret, err := s._read(latestFile, &model.SMPModelDumpData[float64, dynamics.HKParams]{})
+	return ret.(*model.SMPModelDumpData[float64, dynamics.HKParams]), err
 }
 
-func (s *SimulationSerializer) SaveSnapshot(snapshot *model.SMPModelDumpData) error {
+func (s *SimulationSerializer) SaveSnapshot(snapshot *model.SMPModelDumpData[float64, dynamics.HKParams]) error {
 	return s._write("snapshot", snapshot)
 }
 

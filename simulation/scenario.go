@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"smp/dynamics"
 	"smp/model"
 	"smp/utils"
 	"time"
@@ -16,7 +17,7 @@ import (
 type Scenario struct {
 	BaseDir    string
 	Metadata   *ScenarioMetadata
-	Model      *model.SMPModel
+	Model      *model.SMPModel[float64, dynamics.HKParams]
 	AccState   *AccumulativeModelState
 	Serializer *SimulationSerializer
 	DB         *EventDB
@@ -35,7 +36,7 @@ func NewScenario(dir string, metadata *ScenarioMetadata, outputParsableProgress 
 
 var RECSYS_FACTORY = GetDefaultRecsysFactoryDefs()
 
-const MAX_TWEET_EVENT_INTERVAL = 500
+const MAX_POST_EVENT_INTERVAL = 500
 const DB_CACHE_SIZE = 40000
 
 func (s *Scenario) Init() {
@@ -47,30 +48,28 @@ func (s *Scenario) Init() {
 		float64(edgeCount)/(float64(nodeCount)-1),
 	)
 
-	// initialize model
-
 	factory := RECSYS_FACTORY[s.Metadata.RecsysFactoryType]
-	modelParams := model.SMPModelParams{
+	modelParams := model.SMPModelParams[float64, dynamics.HKParams]{
 		SMPModelPureParams: s.Metadata.SMPModelPureParams,
 		RecsysFactory:      factory,
 	}
 
-	m := model.NewSMPModel(
+	m := model.NewSMPModelFloat64(
 		graph,
-		nil,
+		nil, // NewSMPModelFloat64 generates random opinions in [-1,1] when nil
 		&modelParams,
-		&s.Metadata.SMPAgentParams,
+		&s.Metadata.HKParams,
+		&dynamics.HK{},
 		&s.Metadata.CollectItemOptions,
 		s.logEvent,
 	)
-	m.SetAgentCurTweets()
+	m.SetAgentCurPosts()
 	if m.Recsys != nil {
 		m.Recsys.PostInit(nil)
 	}
 
 	s.Model = m
 
-	// create model record dump
 	err := os.MkdirAll(
 		filepath.Join(s.BaseDir, s.Metadata.UniqueName),
 		0755,
@@ -78,8 +77,6 @@ func (s *Scenario) Init() {
 	if err != nil {
 		log.Fatalf("Failed to create scenario dump folder: %v", err)
 	}
-
-	// initialize accumulative record
 
 	s.AccState = NewAccumulativeModelState()
 
@@ -90,7 +87,6 @@ func (s *Scenario) Init() {
 
 	s.DB = db
 
-	// write initial record
 	s.Serializer.SaveGraph(utils.SerializeGraph(s.Model.Graph), s.Model.CurStep)
 	s.AccState.accumulate(*s.Model)
 	s.Model.CurStep = 1
@@ -100,11 +96,9 @@ func (s *Scenario) Init() {
 
 func (s *Scenario) Load() bool {
 
-	// initialize event db
 	dbPath := filepath.Join(s.BaseDir, s.Metadata.UniqueName, "events.db")
 	_, err := os.Stat(dbPath)
 	if os.IsNotExist(err) {
-		// db inexistent
 		return false
 	}
 	db, err := OpenEventDB(dbPath, DB_CACHE_SIZE)
@@ -114,8 +108,6 @@ func (s *Scenario) Load() bool {
 	}
 
 	s.DB = db
-
-	// initialize model
 
 	modelDump, err := s.Serializer.GetLatestSnapshot()
 	if err != nil {
@@ -128,18 +120,17 @@ func (s *Scenario) Load() bool {
 	}
 
 	factory := RECSYS_FACTORY[s.Metadata.RecsysFactoryType]
-	modelParams := model.SMPModelParams{
+	modelParams := model.SMPModelParams[float64, dynamics.HKParams]{
 		SMPModelPureParams: s.Metadata.SMPModelPureParams,
 		RecsysFactory:      factory,
 	}
 	s.Model = modelDump.Load(
 		&modelParams,
-		&s.Metadata.SMPAgentParams,
+		&s.Metadata.HKParams,
+		&dynamics.HK{},
 		&s.Metadata.CollectItemOptions,
 		s.logEvent,
 	)
-
-	// initialize accumulative record
 
 	acc, err := s.Serializer.GetLatestAccumulativeState()
 	if err != nil {
@@ -161,8 +152,6 @@ func (s *Scenario) Load() bool {
 }
 
 func (s *Scenario) sanitize() {
-	// delete potentially dirty data
-	// 'after': >=
 	s.DB.DeleteEventsAfterStep(s.Model.CurStep)
 	s.Serializer.DeleteGraphsAfterStep(s.Model.CurStep, false)
 }
@@ -176,20 +165,14 @@ func (s *Scenario) Dump() {
 func (s *Scenario) Step() (int, float64) {
 	changedCount, maxOpinionChange := s.Model.Step(false)
 
-	// event is naturally logged
-
-	// log accumulative state
 	s.AccState.accumulate(*s.Model)
-	s.AccState.UnsafeTweetEvent += changedCount
+	s.AccState.UnsafePostEvent += changedCount
 
-	// log graph if necessary
-	if s.AccState.UnsafeTweetEvent > MAX_TWEET_EVENT_INTERVAL {
+	if s.AccState.UnsafePostEvent > MAX_POST_EVENT_INTERVAL {
 		s.Serializer.SaveGraph(utils.SerializeGraph(s.Model.Graph), s.Model.CurStep)
-		s.AccState.UnsafeTweetEvent = 0
+		s.AccState.UnsafePostEvent = 0
 	}
 
-	// increase the counter manually
-	// to ensure the graph records' step numbers stay consistent
 	s.Model.CurStep++
 
 	return changedCount, maxOpinionChange
@@ -212,7 +195,6 @@ func (s *Scenario) StepTillEnd(ctx context.Context) {
 		maxSimCount = 1
 	}
 
-	// if finished, jump this simulation
 	if s.IsFinished() {
 		return
 	}
@@ -233,7 +215,6 @@ func (s *Scenario) StepTillEnd(ctx context.Context) {
 
 		didDump := false
 
-		// step
 		if s.OutputParsableProgress {
 			if time.Since(lastPrintTime).Milliseconds() > 250 {
 				fmt.Printf("TASK:%s;TYPE:PROGRESS;STEP:%d;\n", s.Metadata.UniqueName, s.Model.CurStep)
@@ -245,7 +226,6 @@ func (s *Scenario) StepTillEnd(ctx context.Context) {
 
 		nwChange, opChange := s.Step()
 
-		// if threshold is met, end in prior
 		thresholdMet := nwChange < NETWORK_CHANGE_THRESHOLD &&
 			opChange < OPINION_CHANGE_THRESHOLD
 		if thresholdMet {
@@ -257,7 +237,6 @@ func (s *Scenario) StepTillEnd(ctx context.Context) {
 			return false, didDump
 		}
 
-		// save at fixed interval
 		timeInterval := time.Since(lastSaveTime)
 		if timeInterval.Seconds() >= SAVE_INTERVAL {
 			lastSaveTime = time.Now()
@@ -286,7 +265,6 @@ iterLoop:
 			didDump = _didDump
 
 			if shouldContinue {
-				// do nothing
 			} else {
 				isShouldNotContinue = true
 				break iterLoop
@@ -294,7 +272,6 @@ iterLoop:
 		}
 	}
 
-	// bar.Close()
 	if !s.OutputParsableProgress && s.Model.CurStep <= maxSimCount {
 		fmt.Println("")
 	}
@@ -303,7 +280,6 @@ iterLoop:
 		s.Dump()
 	}
 
-	// st is the last step that has full simulation record
 	st := s.Model.CurStep - 1
 
 	if isCtxDone {
@@ -312,8 +288,6 @@ iterLoop:
 		} else {
 			log.Printf("Simulation ended (`ctx.Done()` received, step: %d)", st)
 		}
-		// the simulation is halted
-		// do nothing
 	} else {
 		if !isShouldNotContinue {
 			if s.OutputParsableProgress {
@@ -328,7 +302,6 @@ iterLoop:
 				log.Printf("Simulation ended (shouldContinue == false, step: %d)", st)
 			}
 		}
-		// the simulation is finished
 		s.Serializer.MarkFinished()
 		s.Serializer.SaveGraph(utils.SerializeGraph(s.Model.Graph), st)
 	}
@@ -337,16 +310,12 @@ iterLoop:
 
 func (s *Scenario) logEvent(event *model.EventRecord) {
 
-	// add to database when necessary
-
 	switch event.Type {
 
-	case "Tweet":
-		body := event.Body.(model.TweetEventBody)
-		if body.IsRetweet && s.Metadata.CollectItemOptions.TweetEvent {
+	case "Post":
+		body := event.Body.(model.PostEventBody[float64])
+		if body.IsRepost && s.Metadata.CollectItemOptions.PostEvent {
 			s.DB.StoreEvent(event)
-		} else {
-			// do nothing
 		}
 
 	case "Rewiring":
@@ -354,8 +323,8 @@ func (s *Scenario) logEvent(event *model.EventRecord) {
 			s.DB.StoreEvent(event)
 		}
 
-	case "ViewTweets":
-		if s.Metadata.CollectItemOptions.ViewTweetsEvent {
+	case "ViewPosts":
+		if s.Metadata.CollectItemOptions.ViewPostsEvent {
 			s.DB.StoreEvent(event)
 		}
 

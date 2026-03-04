@@ -6,60 +6,57 @@ import (
 	"smp/model"
 )
 
-type Random struct {
-	model.BaseRecommendationSystem
-	Model                *model.SMPModel
-	HistoricalTweetCount int
-	AgentCount           int
+type Random[O any, P any] struct {
+	model.BaseRecommendationSystem[O, P]
+	Model               *model.SMPModel[O, P]
+	HistoricalPostCount int
+	AgentCount          int
 }
 
-func NewRandom(
-	model *model.SMPModel,
-	historicalTweetCount *int,
-) *Random {
-	h := model.ModelParams.TweetRetainCount
-	if historicalTweetCount != nil {
-		h = *historicalTweetCount
+func NewRandom[O any, P any](
+	m *model.SMPModel[O, P],
+	historicalPostCount *int,
+) *Random[O, P] {
+	h := m.ModelParams.PostRetainCount
+	if historicalPostCount != nil {
+		h = *historicalPostCount
 	}
-	return &Random{
-		Model:                model,
-		AgentCount:           model.Graph.Nodes().Len(),
-		HistoricalTweetCount: h,
+	return &Random[O, P]{
+		Model:               m,
+		AgentCount:          m.Graph.Nodes().Len(),
+		HistoricalPostCount: h,
 	}
 }
 
-func (r *Random) Recommend(
-	agent *model.SMPAgent,
+func (r *Random[O, P]) Recommend(
+	agent *model.SMPAgent[O, P],
 	neighborIDs map[int64]bool,
 	count int,
-) []*model.TweetRecord {
+) []*model.PostRecord[O] {
 
 	generated := make(map[int64]bool)
 	maps.Copy(generated, neighborIDs)
 
-	visibleTweets := r.Model.Grid.TweetMap
+	visiblePosts := r.Model.Grid.PostMap
 
-	// collect results that are not in neighbors
-	result := make([]*model.TweetRecord, 0, count)
+	result := make([]*model.PostRecord[O], 0, count)
 	i := 0
 	for len(result) < count {
-		// avoid dead loop
 		if i > count*10 {
 			break
 		}
 		agentPickedID := int64(rand.Intn(r.AgentCount))
 		if !generated[agentPickedID] {
-			// do not replace
 			generated[agentPickedID] = true
-			tweet := selectTweet(
-				r.HistoricalTweetCount,
+			post := selectPost(
+				r.HistoricalPostCount,
 				neighborIDs,
 				agentPickedID,
 				r.Model.Grid.AgentMap,
-				visibleTweets,
+				visiblePosts,
 			)
-			if tweet != nil {
-				result = append(result, tweet)
+			if post != nil {
+				result = append(result, post)
 			}
 		}
 		i++
