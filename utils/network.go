@@ -1,7 +1,7 @@
 package utils
 
 import (
-	"math/rand"
+	"math/rand/v2"
 
 	"gonum.org/v1/gonum/graph/simple"
 )
@@ -54,7 +54,7 @@ func CreateSmallWorldNetwork(nodeCount int, k int, rewireProbability float64) *s
 				// find new target
 				var newTarget int
 				for {
-					newTarget = rand.Intn(nodeCount)
+					newTarget = rand.IntN(nodeCount)
 					if newTarget != i && !g.HasEdgeBetween(int64(i), int64(newTarget)) {
 						break
 					}

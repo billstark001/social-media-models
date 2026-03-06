@@ -1,6 +1,6 @@
 package model
 
-import "math/rand"
+import "math/rand/v2"
 
 // RandomActivation manages agent activation and scheduling.
 type RandomActivation[O any, P any] struct {
@@ -31,7 +31,7 @@ func (ra *RandomActivation[O, P]) Step() {
 		indices[i] = i
 	}
 	for i := len(indices) - 1; i > 0; i-- {
-		j := rand.Intn(i + 1)
+		j := rand.IntN(i + 1)
 		indices[i], indices[j] = indices[j], indices[i]
 	}
 	for _, i := range indices {

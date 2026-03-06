@@ -3,7 +3,7 @@ package recsys
 import (
 	"fmt"
 	"log"
-	"math/rand"
+	"math/rand/v2"
 	"sort"
 	"time"
 
@@ -31,6 +31,7 @@ type Structure[O any, P any] struct {
 	AgentMap   map[int64]*model.SMPAgent[O, P]
 
 	topKFinder *utils.TopKFinder
+	rng        *rand.Rand
 }
 
 // NewStructure creates a structure-based recommendation system.
@@ -54,6 +55,7 @@ func NewStructure[O any, P any](
 		LogFunc:             logFunc,
 	}
 	ret.topKFinder = utils.NewTopKFinder(50)
+	ret.rng = rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64()))
 	return ret
 }
 
@@ -142,7 +144,7 @@ func (s *Structure[O, P]) PreStep() {
 		for j := range s.NumNodes {
 			rawRateMat[i][j] = float64(s.ConnMat[i][j] + s.ConnMat[j][i])
 			if s.NoiseStd > 0 {
-				noise := rand.NormFloat64() * s.NoiseStd
+				noise := s.rng.NormFloat64() * s.NoiseStd
 				rawRateMat[i][j] = max(rawRateMat[i][j]*(1-2*noise)+noise, 0)
 			}
 		}

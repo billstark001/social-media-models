@@ -1,6 +1,6 @@
 package model
 
-import "math/rand"
+import "math/rand/v2"
 
 // events & records
 
@@ -222,8 +222,8 @@ func (a *SMPAgent[O, P]) Step() {
 	if rewiringRate > 0 &&
 		len(dNP) > 0 && len(cR) > 0 &&
 		rndRewiring < rewiringRate {
-		idx1 := rand.Intn(len(cR))
-		idx2 := rand.Intn(len(dNP))
+		idx1 := rand.IntN(len(cR))
+		idx2 := rand.IntN(len(dNP))
 		follow := cR[idx1].AgentID
 		unfollow := dNA[idx2].ID
 		a.NextFollow = &RewiringEventBody{Unfollow: unfollow, Follow: follow}

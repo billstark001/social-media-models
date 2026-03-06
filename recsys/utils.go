@@ -1,8 +1,10 @@
 package recsys
 
 import (
-	"math/rand"
+	"math"
+	"math/rand/v2"
 	"smp/model"
+	"sort"
 
 	"gonum.org/v1/gonum/graph"
 )
@@ -16,7 +18,8 @@ func makeRawMat[T any](h int, w int) [][]T {
 }
 
 // sampleWithoutReplacement samples n items from population without replacement
-// using the given probabilities
+// using the given probabilities via the Efraimidis-Spirakis A-ES algorithm.
+// Each item i gets key = log(U) / p[i]; the n items with the largest keys are returned.
 func sampleWithoutReplacement(population []int, n int, probabilities []float64) []int {
 	if n >= len(population) {
 		result := make([]int, len(population))
@@ -24,25 +27,21 @@ func sampleWithoutReplacement(population []int, n int, probabilities []float64) 
 		return result
 	}
 
-	selected := make(map[int]bool)
-	result := make([]int, 0, n)
-
-	for len(result) < n {
-		r := rand.Float64()
-		cumSum := 0.0
-
-		for i, p := range probabilities {
-			cumSum += p
-			if r < cumSum {
-				if !selected[i] {
-					selected[i] = true
-					result = append(result, population[i])
-				}
-				break
-			}
-		}
+	type keyed struct {
+		key float64
+		i   int
 	}
-
+	items := make([]keyed, len(population))
+	for i, p := range probabilities {
+		items[i] = keyed{math.Log(rand.Float64()) / p, i}
+	}
+	sort.Slice(items, func(a, b int) bool {
+		return items[a].key > items[b].key
+	})
+	result := make([]int, n)
+	for i := range n {
+		result[i] = population[items[i].i]
+	}
 	return result
 }
 
@@ -62,7 +61,7 @@ func selectPost[O any, P any](
 ) *model.PostRecord[O] {
 	postPickedIndex := -1
 	if historicalPostCount > 0 {
-		postPickedIndex = rand.Intn(historicalPostCount)
+		postPickedIndex = rand.IntN(historicalPostCount)
 	}
 	var el *model.PostRecord[O]
 	if postPickedIndex != -1 && postPickedIndex < len(visiblePosts[agentPickedID]) {

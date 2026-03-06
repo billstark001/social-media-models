@@ -2,7 +2,7 @@ package dynamics_test
 
 import (
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"testing"
 
 	"smp/dynamics"
@@ -158,7 +158,7 @@ func TestDeffuantStepRandomChoice(t *testing.T) {
 	d := &dynamics.Deffuant{}
 	p := &dynamics.DeffuantParams{Tolerance: 0.3, Influence: 0.5}
 
-	rng := rand.New(rand.NewSource(42))
+	rng := rand.New(rand.NewPCG(42, 0))
 	_ = rng // not injected, but we can verify outcome is within expected range
 
 	cN := []float64{0.1, 0.2, 0.3}

@@ -1,8 +1,7 @@
 package recsys
 
 import (
-	"maps"
-	"math/rand"
+	"math/rand/v2"
 	"smp/model"
 )
 
@@ -33,34 +32,34 @@ func (r *Random[O, P]) Recommend(
 	neighborIDs map[int64]bool,
 	count int,
 ) []*model.PostRecord[O] {
-
-	generated := make(map[int64]bool)
-	maps.Copy(generated, neighborIDs)
+	candidates := make([]int, r.AgentCount)
+	for i := range candidates {
+		candidates[i] = i
+	}
+	rand.Shuffle(len(candidates), func(i, j int) {
+		candidates[i], candidates[j] = candidates[j], candidates[i]
+	})
 
 	visiblePosts := r.Model.Grid.PostMap
-
 	result := make([]*model.PostRecord[O], 0, count)
-	i := 0
-	for len(result) < count {
-		if i > count*10 {
+	for _, idx := range candidates {
+		if len(result) >= count {
 			break
 		}
-		agentPickedID := int64(rand.Intn(r.AgentCount))
-		if !generated[agentPickedID] {
-			generated[agentPickedID] = true
-			post := selectPost(
-				r.HistoricalPostCount,
-				neighborIDs,
-				agentPickedID,
-				r.Model.Grid.AgentMap,
-				visiblePosts,
-			)
-			if post != nil {
-				result = append(result, post)
-			}
+		agentPickedID := int64(idx)
+		if neighborIDs[agentPickedID] {
+			continue
 		}
-		i++
+		post := selectPost(
+			r.HistoricalPostCount,
+			neighborIDs,
+			agentPickedID,
+			r.Model.Grid.AgentMap,
+			visiblePosts,
+		)
+		if post != nil {
+			result = append(result, post)
+		}
 	}
-
 	return result
 }

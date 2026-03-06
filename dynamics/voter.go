@@ -1,7 +1,7 @@
 package dynamics
 
 import (
-	"math/rand"
+	"math/rand/v2"
 	"smp/model"
 )
 

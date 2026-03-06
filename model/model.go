@@ -2,7 +2,7 @@ package model
 
 import (
 	"math"
-	"math/rand"
+	"math/rand/v2"
 
 	"gonum.org/v1/gonum/graph/simple"
 )

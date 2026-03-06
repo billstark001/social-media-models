@@ -2,7 +2,7 @@ package recsys
 
 import (
 	"math"
-	"math/rand"
+	"math/rand/v2"
 
 	"smp/model"
 )
