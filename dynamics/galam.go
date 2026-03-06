@@ -1,17 +1,19 @@
 package dynamics
 
 import (
+	"math/rand/v2"
 	"smp/model"
 )
 
 // GalamParams are parameters for the Galam dynamics.
 type GalamParams struct {
+	Influence    float64
 	RewiringRate float64
 	RepostRate   float64
 }
 
 func DefaultGalamParams() *GalamParams {
-	return &GalamParams{RewiringRate: 0.1, RepostRate: 0.3}
+	return &GalamParams{Influence: 1.0, RewiringRate: 0.1, RepostRate: 0.3}
 }
 
 func (p *GalamParams) GetRepostRate() float64   { return p.RepostRate }
@@ -41,7 +43,9 @@ func (d *Galam) Step(myOp bool, cN, cR, dN, dR []bool, params *GalamParams) (boo
 
 	next := myOp
 	if sumND+sumRD > sumN+sumR {
-		next = !myOp
+		if rand.Float64() < params.Influence {
+			next = !myOp
+		}
 	}
 	return next, model.AgentOpinionSumRecord{sumN, sumR, sumND, sumRD}
 }
