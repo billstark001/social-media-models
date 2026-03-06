@@ -106,6 +106,98 @@ go test ./...
 
 See [`docs/migration.md`](docs/migration.md) for a step-by-step guide covering code, msgpack snapshots, metadata JSON, and SQLite schemas.
 
+---
+
+## Python Bindings (`smp_bindings`)
+
+`smp_bindings` is a Python package for reading and analysing simulation output produced by the Go runtime.
+
+### Installation
+
+```bash
+pip install -e .          # editable install from repo root
+# or
+pip install .             # regular install
+```
+
+Dependencies: `msgpack`, `numpy`, `networkx`, `lz4`.
+
+### Loading simulation output
+
+```python
+from smp_bindings import (
+    load_accumulative_model_state,
+    load_gonum_graph_dump,
+    load_snapshot,
+    load_events_db,
+    load_event_body,
+    batch_load_event_bodies,
+    get_events_by_step_range,
+)
+
+# --- Accumulative time-series state (LZ4 binary) ---
+acc = load_accumulative_model_state("run/my-sim/acc-state-1000.lz4")
+print(acc["opinions"].shape)       # (steps+1, agents)
+print(acc["agent_numbers"].shape)  # (steps+1, agents, 4)
+
+# --- Graph dump (msgpack) ---
+import networkx as nx
+g: nx.DiGraph = load_gonum_graph_dump("run/my-sim/graph-0.msgpack")
+
+# --- Model snapshot (v2 msgpack envelope) ---
+snap = load_snapshot("run/my-sim/snapshot-1000.msgpack")
+print(snap["dynamics_type"])   # e.g. "HK"
+print(snap["data"].keys())
+
+# --- SQLite event database ---
+db = load_events_db("run/my-sim/events.db")
+
+# all Post events between step 10 and 20
+events = get_events_by_step_range(db, 10, 20, type_="Post")
+events = batch_load_event_bodies(db, events, event_type="Post")
+for e in events:
+    print(e.body.record.opinion, e.body.is_repost)
+
+db.close()
+```
+
+### `RawSimulationRecord` — high-level helper
+
+```python
+from smp_bindings import RawSimulationRecord
+
+metadata = {"UniqueName": "run-001", ...}   # dict matching ScenarioMetadata fields
+with RawSimulationRecord("./run", metadata) as rec:
+    # rec.opinions        shape (steps+1, agents)
+    # rec.agent_numbers   shape (steps+1, agents, 4)
+    # rec.agents          int
+    # rec.max_step        int
+    g = rec.get_graph(500)   # reconstructed DiGraph at step 500
+```
+
+### Migration CLI
+
+Migrate old v1/v2 simulation output to the current format:
+
+```bash
+# Migrate msgpack snapshots (wraps them in RawSnapshotData envelope)
+smp-migrate snapshot ./run/my-sim/snapshot-*.msgpack
+# or with explicit dynamics type:
+smp-migrate snapshot --dynamics Deffuant ./run/my-sim/snapshot-*.msgpack
+
+# Migrate SQLite event databases (renames tables/columns, updates type strings)
+smp-migrate events ./run/my-sim/events.db
+```
+
+Equivalently, run as a module:
+
+```bash
+python -m smp_bindings.migrate snapshot ./run/my-sim/snapshot-*.msgpack
+python -m smp_bindings.migrate events   ./run/my-sim/events.db
+```
+
+---
+
 ## Further Documentation
 
 - [`docs/architecture.md`](docs/architecture.md) — package structure, data-flow diagram, serialization schema
