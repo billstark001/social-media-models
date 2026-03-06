@@ -207,11 +207,121 @@ func TestDeffuantDefaultParams(t *testing.T) {
 	}
 }
 
+// ---- Voter tests ----
+
+func TestVoterDefaultParams(t *testing.T) {
+	p := dynamics.DefaultVoterParams()
+	if p.Influence != 1.0 {
+		t.Errorf("default Influence should be 1.0, got %v", p.Influence)
+	}
+	if p.RepostRate <= 0 || p.RewiringRate <= 0 {
+		t.Errorf("default VoterParams should have positive rates: %+v", p)
+	}
+}
+
+func TestVoterInfluenceOne_FlipsWithDiscordantNeighbors(t *testing.T) {
+	// With Influence=1 and discordant neighbors, the voter always flips
+	// (rnd is set to 0.0 via PrepareStep with a fixed slice trick).
+	v := &dynamics.Voter{}
+	p := &dynamics.VoterParams{Influence: 1.0}
+	v.PrepareStep(1)
+
+	// myOp=false, dN=[true] → should flip to true
+	next, _ := v.Step(false, nil, nil, []bool{true}, nil, p)
+	if !next {
+		t.Error("expected opinion to flip from false to true with Influence=1 and discordant neighbor")
+	}
+}
+
+func TestVoterInfluenceZero_NeverFlips(t *testing.T) {
+	// With Influence=0, the voter never flips even with discordant neighbors.
+	v := &dynamics.Voter{}
+	p := &dynamics.VoterParams{Influence: 0.0}
+	v.PrepareStep(1)
+
+	next, _ := v.Step(false, nil, nil, []bool{true}, nil, p)
+	if next {
+		t.Error("expected opinion to remain false with Influence=0")
+	}
+}
+
+func TestVoterInfluence_NoDiscordantNeighbors_NoFlip(t *testing.T) {
+	// Without discordant neighbors, opinion never changes regardless of Influence.
+	v := &dynamics.Voter{}
+	p := &dynamics.VoterParams{Influence: 1.0}
+	v.PrepareStep(1)
+
+	next, _ := v.Step(true, []bool{true}, nil, nil, nil, p)
+	if !next {
+		t.Error("expected opinion to remain true with no discordant neighbors")
+	}
+}
+
+// ---- Galam tests ----
+
+func TestGalamDefaultParams(t *testing.T) {
+	p := dynamics.DefaultGalamParams()
+	if p.Influence != 1.0 {
+		t.Errorf("default Influence should be 1.0, got %v", p.Influence)
+	}
+	if p.RepostRate <= 0 || p.RewiringRate <= 0 {
+		t.Errorf("default GalamParams should have positive rates: %+v", p)
+	}
+}
+
+func TestGalamInfluenceOne_FlipsWithDiscordantNeighbors(t *testing.T) {
+	// With Influence=1, Galam always flips when the deterministic condition is met.
+	// Run many times to confirm it always flips (rand.Float64() < 1.0 is always true).
+	g := &dynamics.Galam{}
+	p := &dynamics.GalamParams{Influence: 1.0}
+
+	allFlipped := true
+	for i := 0; i < 100; i++ {
+		next, _ := g.Step(false, nil, nil, []bool{true}, nil, p)
+		if !next {
+			allFlipped = false
+			break
+		}
+	}
+	if !allFlipped {
+		t.Error("expected Galam to always flip with Influence=1 and discordant neighbor")
+	}
+}
+
+func TestGalamInfluenceZero_NeverFlips(t *testing.T) {
+	// With Influence=0, Galam never flips even when the deterministic condition is met.
+	g := &dynamics.Galam{}
+	p := &dynamics.GalamParams{Influence: 0.0}
+
+	for i := 0; i < 100; i++ {
+		next, _ := g.Step(false, nil, nil, []bool{true}, nil, p)
+		if next {
+			t.Error("expected Galam to never flip with Influence=0")
+			break
+		}
+	}
+}
+
+func TestGalamInfluence_NoDiscordantNeighbors_NoFlip(t *testing.T) {
+	// Without discordant neighbors, opinion never changes regardless of Influence.
+	g := &dynamics.Galam{}
+	p := &dynamics.GalamParams{Influence: 1.0}
+
+	next, _ := g.Step(true, []bool{true}, nil, nil, nil, p)
+	if !next {
+		t.Error("expected opinion to remain true with no discordant neighbors")
+	}
+}
+
 // ---- Interface compile-time checks ----
 
 func TestInterfaceCompliance(t *testing.T) {
 	var _ model.Dynamics[float64, dynamics.HKParams] = (*dynamics.HK)(nil)
 	var _ model.Dynamics[float64, dynamics.DeffuantParams] = (*dynamics.Deffuant)(nil)
+	var _ model.Dynamics[bool, dynamics.VoterParams] = (*dynamics.Voter)(nil)
+	var _ model.Dynamics[bool, dynamics.GalamParams] = (*dynamics.Galam)(nil)
 	var _ model.AgentBehaviorParams = (*dynamics.HKParams)(nil)
 	var _ model.AgentBehaviorParams = (*dynamics.DeffuantParams)(nil)
+	var _ model.AgentBehaviorParams = (*dynamics.VoterParams)(nil)
+	var _ model.AgentBehaviorParams = (*dynamics.GalamParams)(nil)
 }

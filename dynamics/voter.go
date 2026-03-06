@@ -7,12 +7,13 @@ import (
 
 // VoterParams are parameters for the Voter dynamics.
 type VoterParams struct {
+	Influence    float64
 	RewiringRate float64
 	RepostRate   float64
 }
 
 func DefaultVoterParams() *VoterParams {
-	return &VoterParams{RewiringRate: 0.1, RepostRate: 0.3}
+	return &VoterParams{Influence: 1.0, RewiringRate: 0.1, RepostRate: 0.3}
 }
 
 func (p *VoterParams) GetRepostRate() float64   { return p.RepostRate }
@@ -65,7 +66,7 @@ func (d *Voter) Step(myOp bool, cN, cR, dN, dR []bool, params *VoterParams) (boo
 	}
 
 	next := myOp
-	if rnd < (sumND+sumRD)/(sumN+sumR+sumND+sumRD) {
+	if rnd < ((sumND+sumRD)/(sumN+sumR+sumND+sumRD))*params.Influence {
 		next = !myOp
 	}
 	return next, model.AgentOpinionSumRecord{sumN, sumR, sumND, sumRD}
