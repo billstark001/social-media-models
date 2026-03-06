@@ -47,6 +47,8 @@ func CompareMaps[T1 comparable, T2 comparable](map1, map2 map[T1][]T2) bool {
 func TestSerializeAndDeserializeScenario(t *testing.T) {
 	metadata := &simulation.ScenarioMetadata{
 
+		DynamicsType: simulation.DynamicsTypeHK,
+
 		HKParams: dynamics.HKParams{
 
 			Influence:    0.005,
@@ -113,9 +115,14 @@ func TestSerializeAndDeserializeScenario(t *testing.T) {
 		t.Errorf("Failed to load scenario")
 	}
 
-	// compare everything
-	model1 := scenario1.Model
-	model2 := scenario2.Model
+	// type-assert to the concrete HK wrapper to access the underlying model fields
+	w1, ok1 := scenario1.Model.(*simulation.Float64ModelWrapper[dynamics.HKParams])
+	w2, ok2 := scenario2.Model.(*simulation.Float64ModelWrapper[dynamics.HKParams])
+	if !ok1 || !ok2 {
+		t.Fatalf("Unexpected model wrapper type")
+	}
+	model1 := w1.M
+	model2 := w2.M
 
 	if !utils.CompareGraphs(model1.Graph, model2.Graph) {
 		t.Errorf("Original and loaded graphs are not equal")

@@ -9,7 +9,7 @@ This document describes the internal structure of the simulation framework.
 ```
 smp/
 ├── model/          Core simulation types and interfaces (generic)
-├── dynamics/       Opinion dynamics implementations (HK, Deffuant)
+├── dynamics/       Opinion dynamics implementations (HK, Deffuant, Galam, Voter)
 ├── recsys/         Recommendation system implementations
 ├── simulation/     Scenario execution, serialization, event logging
 └── utils/          Graph utilities (ER, small-world, serialize)
@@ -66,7 +66,7 @@ type AgentBehaviorParams interface {
 }
 ```
 
-Both `dynamics.HKParams` and `dynamics.DeffuantParams` satisfy this interface.
+All four params types — `dynamics.HKParams`, `dynamics.DeffuantParams`, `dynamics.GalamParams`, and `dynamics.VoterParams` — satisfy this interface.
 
 ### Agent Step Logic
 
@@ -83,6 +83,15 @@ Each `SMPAgent[O, P].Step()`:
 
 ## `dynamics` Package
 
+Four dynamics are provided. HK and Deffuant use `O = float64`; Galam and Voter use `O = bool`.
+
+| Dynamics | Params type | Opinion type | Update rule |
+|---|---|---|---|
+| `HK` | `HKParams` | `float64` | Mean-field bounded confidence |
+| `Deffuant` | `DeffuantParams` | `float64` | Pairwise bounded confidence |
+| `Galam` | `GalamParams` | `bool` | Majority rule |
+| `Voter` | `VoterParams` | `bool` | Copy a random neighbour |
+
 ### Hegselmann-Krause (`HK`)
 
 **Params**: `HKParams{Tolerance, Influence, RewiringRate, RepostRate}`
@@ -95,13 +104,33 @@ All statistics (concordant/discordant neighbour and recommended opinion deltas) 
 
 ### Deffuant (`Deffuant`)
 
-**Params**: `DeffuantParams{Tolerance, RewiringRate, RepostRate}`
+**Params**: `DeffuantParams{Tolerance, Influence, RewiringRate, RepostRate}`
 
 **Concordant**: same as HK.
 
-**Update**: pick one concordant opinion `o*` at random; `nextOp = myOp + Tolerance × (o* − myOp)`.
+**Update**: pick one concordant opinion `o*` at random; `nextOp = myOp + Influence × (o* − myOp)`.
 
 Statistics are computed over _all_ concordant/discordant opinions regardless of which one was chosen.
+
+### Galam (`Galam`)
+
+**Params**: `GalamParams{RewiringRate, RepostRate}`
+
+**Opinion type**: `bool`
+
+**Concordant**: `myOp == otherOp`
+
+**Update**: if discordant neighbours + recommended outnumber concordant ones, flip opinion.
+
+### Voter (`Voter`)
+
+**Params**: `VoterParams{RewiringRate, RepostRate}`
+
+**Opinion type**: `bool`
+
+**Concordant**: `myOp == otherOp`
+
+**Update**: copy the opinion of one randomly selected post from the concordant or discordant pool.
 
 ---
 
@@ -118,7 +147,7 @@ All recommendation systems implement `model.SMPModelRecommendationSystem[O, P]`.
 | `StructureRandom` | Structure-similarity weighted random sampling |
 | `Mix` | Blend two systems with a fixed ratio |
 
-All are generic `[O, P]`; `Opinion` is specialized to `O = float64` because it performs arithmetic on opinions.
+All are generic `[O, P]`; `Opinion` and `OpinionRandom` are specialized to `O = float64` because they perform arithmetic on opinions. For `bool`-opinion dynamics (Galam, Voter) only `Random` is available.
 
 ---
 
@@ -126,19 +155,54 @@ All are generic `[O, P]`; `Opinion` is specialized to `O = float64` because it p
 
 ### Scenario
 
-`Scenario` wraps `SMPModel[float64, dynamics.HKParams]`, the serializer, accumulative-state tracker, and optional SQLite event DB.
+`Scenario` holds an `IModel` (see below), the serializer, accumulative-state tracker, and optional SQLite event DB. The concrete model type is selected at runtime by `ScenarioMetadata.DynamicsType`.
 
 ```
-Init()          build graph, create model, open DB
-Load()          restore from latest snapshot + acc-state
+Init()          build graph, create model (dispatched by DynamicsType), open DB
+Load()          restore from latest raw snapshot + acc-state
 StepTillEnd()   run until MaxSimulationStep or context cancel
 ```
+
+### `IModel` Interface and Wrappers
+
+`IModel` abstracts over `SMPModel[O, P]` so that `Scenario` can operate without knowing the concrete type parameters:
+
+```go
+type IModel interface {
+    GetCurStep() int
+    SetCurStep(int)
+    GetGraph() *simple.DirectedGraph
+    StepModel() (int, float64)
+    InitPosts()
+    Accumulate(*AccumulativeModelState)
+    ValidateAcc(*AccumulativeModelState) bool
+    RawDump() ([]byte, error)
+}
+```
+
+Two generic wrapper types implement this interface:
+
+| Wrapper | Wraps | Used by |
+|---|---|---|
+| `Float64ModelWrapper[P]` | `SMPModel[float64, P]` | HK, Deffuant |
+| `BoolModelWrapper[P]` | `SMPModel[bool, P]` | Galam, Voter |
+
+### `ScenarioMetadata.DynamicsType`
+
+The string field `DynamicsType` selects which dynamics (and matching params) to use:
+
+| Value | Dynamics | Params field used | Opinion type |
+|---|---|---|---|
+| `"HK"` (default) | `dynamics.HK` | `HKParams` | `float64` |
+| `"Deffuant"` | `dynamics.Deffuant` | `DeffuantParams` | `float64` |
+| `"Galam"` | `dynamics.Galam` | `GalamParams` | `bool` |
+| `"Voter"` | `dynamics.Voter` | `VoterParams` | `bool` |
 
 ### Serialization Files (per simulation ID)
 
 | File pattern | Format | Content |
 |---|---|---|
-| `snapshot-*.msgpack` | msgpack | Full `SMPModelDumpData` (graph + opinions + posts) |
+| `snapshot-*.msgpack` | msgpack | `RawSnapshotData{DynamicsType, Data}` wrapping a msgpack-encoded `SMPModelDumpData[O,P]` |
 | `acc-state-*.lz4` | binary + LZ4 | `AccumulativeModelState` (opinions, counts, sums over all steps) |
 | `graph-<step>.msgpack` | msgpack | Graph at specific step |
 | `finished-*.msgpack` | msgpack | Completion marker |
@@ -166,7 +230,7 @@ NewSMPModel[O,P] ─────────────────────
       │                                                        │
       ├── NetworkGrid[O,P]  (AgentMap, PostMap)               │
       ├── RandomActivation[O,P]                               │
-      ├── Dynamics[O,P]  ←  dynamics.HK / dynamics.Deffuant  │
+      ├── Dynamics[O,P]  ←  HK / Deffuant / Galam / Voter      │
       └── SMPModelRecommendationSystem[O,P]                   │
                                                               │
       Model.Step()                                            │
@@ -179,8 +243,8 @@ NewSMPModel[O,P] ─────────────────────
         ├── Recsys.PostStep(changed)                          │
         └── commit opinions, posts, rewirings                 │
                                                               │
-Simulation.Scenario                                           │
-        ├── Accumulate state → AccumulativeModelState         │
-        ├── Snapshot (msgpack) every N steps                  │
+Simulation.Scenario  (Model field: IModel)                    │
+        ├── IModel.Accumulate → AccumulativeModelState        │
+        ├── IModel.RawDump  → RawSnapshotData (msgpack)       │
         └── EventDB (SQLite) if enabled                       │
 ```

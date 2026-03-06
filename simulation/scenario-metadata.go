@@ -7,10 +7,28 @@ import (
 	"smp/recsys"
 )
 
+// DynamicsType constants for the four supported opinion dynamics.
+const (
+	DynamicsTypeHK       = "HK"
+	DynamicsTypeDeffuant = "Deffuant"
+	DynamicsTypeGalam    = "Galam"
+	DynamicsTypeVoter    = "Voter"
+)
+
+// ScenarioMetadata holds all parameters needed to create or reproduce a simulation.
+// DynamicsType selects which dynamics to use; the corresponding *Params field is read.
 type ScenarioMetadata struct {
 	UniqueName string
 
-	dynamics.HKParams
+	// DynamicsType selects the opinion dynamics.
+	// Accepted values: "HK" (default), "Deffuant", "Galam", "Voter".
+	DynamicsType string
+
+	HKParams       dynamics.HKParams
+	DeffuantParams dynamics.DeffuantParams
+	GalamParams    dynamics.GalamParams
+	VoterParams    dynamics.VoterParams
+
 	model.SMPModelPureParams
 	model.CollectItemOptions
 
@@ -21,36 +39,33 @@ type ScenarioMetadata struct {
 	NodeFollowCount   int
 }
 
-func GetDefaultRecsysFactoryDefs() map[string]model.RecsysFactory[float64, dynamics.HKParams] {
-	ret := map[string]model.RecsysFactory[float64, dynamics.HKParams]{
-
-		"Random": func(h *model.SMPModel[float64, dynamics.HKParams]) model.SMPModelRecommendationSystem[float64, dynamics.HKParams] {
+// GetFloat64RecsysFactories returns the full set of recsys factories for
+// float64-opinion models with params type P (used by HK and Deffuant).
+func GetFloat64RecsysFactories[P any]() map[string]model.RecsysFactory[float64, P] {
+	ret := map[string]model.RecsysFactory[float64, P]{
+		"Random": func(h *model.SMPModel[float64, P]) model.SMPModelRecommendationSystem[float64, P] {
 			return recsys.NewRandom(h, nil)
 		},
-
-		"Opinion": func(h *model.SMPModel[float64, dynamics.HKParams]) model.SMPModelRecommendationSystem[float64, dynamics.HKParams] {
+		"Opinion": func(h *model.SMPModel[float64, P]) model.SMPModelRecommendationSystem[float64, P] {
 			return recsys.NewOpinion(h, 0.1, nil)
 		},
-
-		"Structure": func(h *model.SMPModel[float64, dynamics.HKParams]) model.SMPModelRecommendationSystem[float64, dynamics.HKParams] {
+		"Structure": func(h *model.SMPModel[float64, P]) model.SMPModelRecommendationSystem[float64, P] {
 			return recsys.NewStructure(h, 0.1, nil, true, func(s string) {
 				fmt.Println(s)
 			})
 		},
-
-		"OpinionRandom": func(h *model.SMPModel[float64, dynamics.HKParams]) model.SMPModelRecommendationSystem[float64, dynamics.HKParams] {
+		"OpinionRandom": func(h *model.SMPModel[float64, P]) model.SMPModelRecommendationSystem[float64, P] {
 			return recsys.NewOpinionRandom(h, nil, 0.4, 1, 2, 0)
 		},
-
-		"StructureRandom": func(h *model.SMPModel[float64, dynamics.HKParams]) model.SMPModelRecommendationSystem[float64, dynamics.HKParams] {
+		"StructureRandom": func(h *model.SMPModel[float64, P]) model.SMPModelRecommendationSystem[float64, P] {
 			return recsys.NewStructureRandom(h, nil, 1, 0.1, 0, true, func(s string) {
 				fmt.Println(s)
 			})
 		},
 	}
 
-	ret["OpinionM9"] = func(h *model.SMPModel[float64, dynamics.HKParams]) model.SMPModelRecommendationSystem[float64, dynamics.HKParams] {
-		return &recsys.Mix[float64, dynamics.HKParams]{
+	ret["OpinionM9"] = func(h *model.SMPModel[float64, P]) model.SMPModelRecommendationSystem[float64, P] {
+		return &recsys.Mix[float64, P]{
 			Model:       h,
 			RecSys1:     ret["Random"](h),
 			RecSys2:     ret["Opinion"](h),
@@ -58,8 +73,8 @@ func GetDefaultRecsysFactoryDefs() map[string]model.RecsysFactory[float64, dynam
 		}
 	}
 
-	ret["StructureM9"] = func(h *model.SMPModel[float64, dynamics.HKParams]) model.SMPModelRecommendationSystem[float64, dynamics.HKParams] {
-		return &recsys.Mix[float64, dynamics.HKParams]{
+	ret["StructureM9"] = func(h *model.SMPModel[float64, P]) model.SMPModelRecommendationSystem[float64, P] {
+		return &recsys.Mix[float64, P]{
 			Model:       h,
 			RecSys1:     ret["Random"](h),
 			RecSys2:     ret["Structure"](h),
@@ -68,4 +83,20 @@ func GetDefaultRecsysFactoryDefs() map[string]model.RecsysFactory[float64, dynam
 	}
 
 	return ret
+}
+
+// GetBoolRecsysFactories returns the available recsys factories for bool-opinion
+// models with params type P (used by Galam and Voter).
+// Only "Random" is available for bool-opinion models.
+func GetBoolRecsysFactories[P any]() map[string]model.RecsysFactory[bool, P] {
+	return map[string]model.RecsysFactory[bool, P]{
+		"Random": func(h *model.SMPModel[bool, P]) model.SMPModelRecommendationSystem[bool, P] {
+			return recsys.NewRandom(h, nil)
+		},
+	}
+}
+
+// GetDefaultRecsysFactoryDefs returns the HK recsys factories for backward compatibility.
+func GetDefaultRecsysFactoryDefs() map[string]model.RecsysFactory[float64, dynamics.HKParams] {
+	return GetFloat64RecsysFactories[dynamics.HKParams]()
 }

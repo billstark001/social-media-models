@@ -17,6 +17,8 @@ const MAX_SIM_COUNT = 15000
 func main() {
 	metadata := &simulation.ScenarioMetadata{
 
+		DynamicsType: simulation.DynamicsTypeHK,
+
 		HKParams: dynamics.HKParams{
 
 			Influence:    0.01,

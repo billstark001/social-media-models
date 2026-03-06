@@ -1,7 +1,6 @@
 package simulation
 
 import (
-	"smp/dynamics"
 	model "smp/model"
 )
 
@@ -52,26 +51,4 @@ func float64sToFloat32s4(src []model.AgentOpinionSumRecord) [][4]float32 {
 		dst[i][3] = float32(v[3])
 	}
 	return dst
-}
-
-func (s *AccumulativeModelState) accumulate(m model.SMPModel[float64, dynamics.HKParams]) {
-	s.Opinions = append(
-		s.Opinions,
-		float64sToFloat32s(m.CollectOpinions()),
-	)
-	s.AgentNumbers = append(
-		s.AgentNumbers,
-		int32sToInt16s4(m.CollectAgentNumbers()),
-	)
-	s.AgentOpinionSums = append(
-		s.AgentOpinionSums,
-		float64sToFloat32s4(m.CollectAgentOpinions()),
-	)
-}
-
-func (s *AccumulativeModelState) validate(m model.SMPModel[float64, dynamics.HKParams]) bool {
-	st := m.CurStep
-	return len(s.Opinions) == st &&
-		len(s.AgentNumbers) == st &&
-		len(s.AgentOpinionSums) == st
 }

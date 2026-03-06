@@ -16,10 +16,10 @@ type EventDB struct {
 	mu        sync.Mutex
 	cache     []*model.EventRecord
 
-	eventStmt      *sql.Stmt
-	rewiringStmt   *sql.Stmt
-	postStmt       *sql.Stmt
-	viewPostsStmt  *sql.Stmt
+	eventStmt     *sql.Stmt
+	rewiringStmt  *sql.Stmt
+	postStmt      *sql.Stmt
+	viewPostsStmt *sql.Stmt
 }
 
 // OpenEventDB opens a database from a file and specifies the batch write size.
@@ -194,19 +194,38 @@ func (edb *EventDB) flushLocked() error {
 				return fmt.Errorf("invalid RewiringEventBody type")
 			}
 		case "Post":
+			var agentID int64
+			var step int
+			var opinion float64
+			var isRepost bool
 			if body, ok := event.Body.(model.PostEventBody[float64]); ok {
 				if body.Record == nil {
 					tx.Rollback()
 					return fmt.Errorf("post record is nil")
 				}
-				_, err := tx.Stmt(edb.postStmt).Exec(eventIDs[i], body.Record.AgentID, body.Record.Step, body.Record.Opinion, body.IsRepost)
-				if err != nil {
+				agentID = body.Record.AgentID
+				step = body.Record.Step
+				opinion = body.Record.Opinion
+				isRepost = body.IsRepost
+			} else if body, ok := event.Body.(model.PostEventBody[bool]); ok {
+				if body.Record == nil {
 					tx.Rollback()
-					return fmt.Errorf("failed to insert post event: %w", err)
+					return fmt.Errorf("post record is nil")
 				}
+				agentID = body.Record.AgentID
+				step = body.Record.Step
+				if body.Record.Opinion {
+					opinion = 1.0
+				}
+				isRepost = body.IsRepost
 			} else {
 				tx.Rollback()
 				return fmt.Errorf("invalid PostEventBody type")
+			}
+			_, err := tx.Stmt(edb.postStmt).Exec(eventIDs[i], agentID, step, opinion, isRepost)
+			if err != nil {
+				tx.Rollback()
+				return fmt.Errorf("failed to insert post event: %w", err)
 			}
 		case "ViewPosts":
 			if body, ok := event.Body.(model.ViewPostsEventBody[float64]); ok {

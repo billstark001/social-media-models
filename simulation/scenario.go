@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"smp/dynamics"
@@ -12,12 +13,13 @@ import (
 	"time"
 
 	"github.com/schollz/progressbar/v3"
+	"github.com/vmihailenco/msgpack/v5"
 )
 
 type Scenario struct {
 	BaseDir    string
 	Metadata   *ScenarioMetadata
-	Model      *model.SMPModel[float64, dynamics.HKParams]
+	Model      IModel
 	AccState   *AccumulativeModelState
 	Serializer *SimulationSerializer
 	DB         *EventDB
@@ -34,8 +36,6 @@ func NewScenario(dir string, metadata *ScenarioMetadata, outputParsableProgress 
 	}
 }
 
-var RECSYS_FACTORY = GetDefaultRecsysFactoryDefs()
-
 const MAX_POST_EVENT_INTERVAL = 500
 const DB_CACHE_SIZE = 40000
 
@@ -48,27 +48,54 @@ func (s *Scenario) Init() {
 		float64(edgeCount)/(float64(nodeCount)-1),
 	)
 
-	factory := RECSYS_FACTORY[s.Metadata.RecsysFactoryType]
-	modelParams := model.SMPModelParams[float64, dynamics.HKParams]{
-		SMPModelPureParams: s.Metadata.SMPModelPureParams,
-		RecsysFactory:      factory,
+	switch s.Metadata.DynamicsType {
+	case "", DynamicsTypeHK:
+		factories := GetFloat64RecsysFactories[dynamics.HKParams]()
+		params := model.SMPModelParams[float64, dynamics.HKParams]{
+			SMPModelPureParams: s.Metadata.SMPModelPureParams,
+			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
+		}
+		m := model.NewSMPModelFloat64(graph, nil, &params, &s.Metadata.HKParams, &dynamics.HK{}, &s.Metadata.CollectItemOptions, s.logEvent)
+		s.Model = &Float64ModelWrapper[dynamics.HKParams]{M: m}
+	case DynamicsTypeDeffuant:
+		factories := GetFloat64RecsysFactories[dynamics.DeffuantParams]()
+		params := model.SMPModelParams[float64, dynamics.DeffuantParams]{
+			SMPModelPureParams: s.Metadata.SMPModelPureParams,
+			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
+		}
+		m := model.NewSMPModelFloat64(graph, nil, &params, &s.Metadata.DeffuantParams, &dynamics.Deffuant{}, &s.Metadata.CollectItemOptions, s.logEvent)
+		s.Model = &Float64ModelWrapper[dynamics.DeffuantParams]{M: m}
+	case DynamicsTypeGalam:
+		factories := GetBoolRecsysFactories[dynamics.GalamParams]()
+		params := model.SMPModelParams[bool, dynamics.GalamParams]{
+			SMPModelPureParams: s.Metadata.SMPModelPureParams,
+			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
+		}
+		n := graph.Nodes().Len()
+		ops := make([]bool, n)
+		for i := range ops {
+			ops[i] = rand.IntN(2) == 1
+		}
+		m := model.NewSMPModel(graph, &ops, &params, &s.Metadata.GalamParams, &dynamics.Galam{}, &s.Metadata.CollectItemOptions, s.logEvent)
+		s.Model = &BoolModelWrapper[dynamics.GalamParams]{M: m}
+	case DynamicsTypeVoter:
+		factories := GetBoolRecsysFactories[dynamics.VoterParams]()
+		params := model.SMPModelParams[bool, dynamics.VoterParams]{
+			SMPModelPureParams: s.Metadata.SMPModelPureParams,
+			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
+		}
+		n := graph.Nodes().Len()
+		ops := make([]bool, n)
+		for i := range ops {
+			ops[i] = rand.IntN(2) == 1
+		}
+		m := model.NewSMPModel(graph, &ops, &params, &s.Metadata.VoterParams, &dynamics.Voter{}, &s.Metadata.CollectItemOptions, s.logEvent)
+		s.Model = &BoolModelWrapper[dynamics.VoterParams]{M: m}
+	default:
+		log.Fatalf("Unknown DynamicsType: %q", s.Metadata.DynamicsType)
 	}
 
-	m := model.NewSMPModelFloat64(
-		graph,
-		nil, // NewSMPModelFloat64 generates random opinions in [-1,1] when nil
-		&modelParams,
-		&s.Metadata.HKParams,
-		&dynamics.HK{},
-		&s.Metadata.CollectItemOptions,
-		s.logEvent,
-	)
-	m.SetAgentCurPosts()
-	if m.Recsys != nil {
-		m.Recsys.PostInit(nil)
-	}
-
-	s.Model = m
+	s.Model.InitPosts()
 
 	err := os.MkdirAll(
 		filepath.Join(s.BaseDir, s.Metadata.UniqueName),
@@ -87,9 +114,9 @@ func (s *Scenario) Init() {
 
 	s.DB = db
 
-	s.Serializer.SaveGraph(utils.SerializeGraph(s.Model.Graph), s.Model.CurStep)
-	s.AccState.accumulate(*s.Model)
-	s.Model.CurStep = 1
+	s.Serializer.SaveGraph(utils.SerializeGraph(s.Model.GetGraph()), s.Model.GetCurStep())
+	s.Model.Accumulate(s.AccState)
+	s.Model.SetCurStep(1)
 
 	s.sanitize()
 }
@@ -109,35 +136,92 @@ func (s *Scenario) Load() bool {
 
 	s.DB = db
 
-	modelDump, err := s.Serializer.GetLatestSnapshot()
+	rawSnapshot, err := s.Serializer.GetLatestRawSnapshot()
 	if err != nil {
 		log.Printf("Failed to load model dump: %v", err)
 		return false
 	}
 
-	if modelDump == nil {
+	if rawSnapshot == nil {
 		return false
 	}
 
-	factory := RECSYS_FACTORY[s.Metadata.RecsysFactoryType]
-	modelParams := model.SMPModelParams[float64, dynamics.HKParams]{
-		SMPModelPureParams: s.Metadata.SMPModelPureParams,
-		RecsysFactory:      factory,
+	// Decode the raw snapshot into the concrete type matching DynamicsType.
+	// The DynamicsType stored in the snapshot is authoritative; the metadata field
+	// is used as a fallback when the snapshot was saved before this field existed.
+	dynamicsType := rawSnapshot.DynamicsType
+	if dynamicsType == "" {
+		dynamicsType = s.Metadata.DynamicsType
 	}
-	s.Model = modelDump.Load(
-		&modelParams,
-		&s.Metadata.HKParams,
-		&dynamics.HK{},
-		&s.Metadata.CollectItemOptions,
-		s.logEvent,
-	)
+
+	switch dynamicsType {
+	case "", DynamicsTypeHK:
+		var dump model.SMPModelDumpData[float64, dynamics.HKParams]
+		if err := msgpack.Unmarshal(rawSnapshot.Data, &dump); err != nil {
+			log.Printf("Failed to unmarshal HK snapshot: %v", err)
+			return false
+		}
+		factories := GetFloat64RecsysFactories[dynamics.HKParams]()
+		params := model.SMPModelParams[float64, dynamics.HKParams]{
+			SMPModelPureParams: s.Metadata.SMPModelPureParams,
+			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
+		}
+		s.Model = &Float64ModelWrapper[dynamics.HKParams]{
+			M: dump.Load(&params, &s.Metadata.HKParams, &dynamics.HK{}, &s.Metadata.CollectItemOptions, s.logEvent),
+		}
+	case DynamicsTypeDeffuant:
+		var dump model.SMPModelDumpData[float64, dynamics.DeffuantParams]
+		if err := msgpack.Unmarshal(rawSnapshot.Data, &dump); err != nil {
+			log.Printf("Failed to unmarshal Deffuant snapshot: %v", err)
+			return false
+		}
+		factories := GetFloat64RecsysFactories[dynamics.DeffuantParams]()
+		params := model.SMPModelParams[float64, dynamics.DeffuantParams]{
+			SMPModelPureParams: s.Metadata.SMPModelPureParams,
+			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
+		}
+		s.Model = &Float64ModelWrapper[dynamics.DeffuantParams]{
+			M: dump.Load(&params, &s.Metadata.DeffuantParams, &dynamics.Deffuant{}, &s.Metadata.CollectItemOptions, s.logEvent),
+		}
+	case DynamicsTypeGalam:
+		var dump model.SMPModelDumpData[bool, dynamics.GalamParams]
+		if err := msgpack.Unmarshal(rawSnapshot.Data, &dump); err != nil {
+			log.Printf("Failed to unmarshal Galam snapshot: %v", err)
+			return false
+		}
+		factories := GetBoolRecsysFactories[dynamics.GalamParams]()
+		params := model.SMPModelParams[bool, dynamics.GalamParams]{
+			SMPModelPureParams: s.Metadata.SMPModelPureParams,
+			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
+		}
+		s.Model = &BoolModelWrapper[dynamics.GalamParams]{
+			M: dump.Load(&params, &s.Metadata.GalamParams, &dynamics.Galam{}, &s.Metadata.CollectItemOptions, s.logEvent),
+		}
+	case DynamicsTypeVoter:
+		var dump model.SMPModelDumpData[bool, dynamics.VoterParams]
+		if err := msgpack.Unmarshal(rawSnapshot.Data, &dump); err != nil {
+			log.Printf("Failed to unmarshal Voter snapshot: %v", err)
+			return false
+		}
+		factories := GetBoolRecsysFactories[dynamics.VoterParams]()
+		params := model.SMPModelParams[bool, dynamics.VoterParams]{
+			SMPModelPureParams: s.Metadata.SMPModelPureParams,
+			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
+		}
+		s.Model = &BoolModelWrapper[dynamics.VoterParams]{
+			M: dump.Load(&params, &s.Metadata.VoterParams, &dynamics.Voter{}, &s.Metadata.CollectItemOptions, s.logEvent),
+		}
+	default:
+		log.Printf("Unknown DynamicsType in snapshot: %q", dynamicsType)
+		return false
+	}
 
 	acc, err := s.Serializer.GetLatestAccumulativeState()
 	if err != nil {
 		log.Printf("Failed to load accumulative state: %v", err)
 		return false
 	} else {
-		validated := acc.validate((*s.Model))
+		validated := s.Model.ValidateAcc(acc)
 		if !validated {
 			log.Printf("Accumulative state validation failed")
 			return false
@@ -152,28 +236,33 @@ func (s *Scenario) Load() bool {
 }
 
 func (s *Scenario) sanitize() {
-	s.DB.DeleteEventsAfterStep(s.Model.CurStep)
-	s.Serializer.DeleteGraphsAfterStep(s.Model.CurStep, false)
+	s.DB.DeleteEventsAfterStep(s.Model.GetCurStep())
+	s.Serializer.DeleteGraphsAfterStep(s.Model.GetCurStep(), false)
 }
 
 func (s *Scenario) Dump() {
 	s.DB.Flush()
-	s.Serializer.SaveSnapshot(s.Model.Dump())
+	data, err := s.Model.RawDump()
+	if err != nil {
+		log.Printf("Failed to serialise model snapshot: %v", err)
+	} else {
+		s.Serializer.SaveRawSnapshot(s.Metadata.DynamicsType, data)
+	}
 	s.Serializer.SaveAccumulativeState(s.AccState)
 }
 
 func (s *Scenario) Step() (int, float64) {
-	changedCount, maxOpinionChange := s.Model.Step(false)
+	changedCount, maxOpinionChange := s.Model.StepModel()
 
-	s.AccState.accumulate(*s.Model)
+	s.Model.Accumulate(s.AccState)
 	s.AccState.UnsafePostEvent += changedCount
 
 	if s.AccState.UnsafePostEvent > MAX_POST_EVENT_INTERVAL {
-		s.Serializer.SaveGraph(utils.SerializeGraph(s.Model.Graph), s.Model.CurStep)
+		s.Serializer.SaveGraph(utils.SerializeGraph(s.Model.GetGraph()), s.Model.GetCurStep())
 		s.AccState.UnsafePostEvent = 0
 	}
 
-	s.Model.CurStep++
+	s.Model.SetCurStep(s.Model.GetCurStep() + 1)
 
 	return changedCount, maxOpinionChange
 }
@@ -202,10 +291,10 @@ func (s *Scenario) StepTillEnd(ctx context.Context) {
 	var bar *progressbar.ProgressBar
 	lastPrintTime := time.Now()
 	if s.OutputParsableProgress {
-		fmt.Printf("TASK:%s;TYPE:INIT;STEP:%d;\n", s.Metadata.UniqueName, s.Model.CurStep)
+		fmt.Printf("TASK:%s;TYPE:INIT;STEP:%d;\n", s.Metadata.UniqueName, s.Model.GetCurStep())
 	} else {
 		bar = progressbar.Default(int64(maxSimCount))
-		bar.Set(s.Model.CurStep)
+		bar.Set(s.Model.GetCurStep())
 	}
 
 	lastSaveTime := time.Now()
@@ -217,11 +306,11 @@ func (s *Scenario) StepTillEnd(ctx context.Context) {
 
 		if s.OutputParsableProgress {
 			if time.Since(lastPrintTime).Milliseconds() > 250 {
-				fmt.Printf("TASK:%s;TYPE:PROGRESS;STEP:%d;\n", s.Metadata.UniqueName, s.Model.CurStep)
+				fmt.Printf("TASK:%s;TYPE:PROGRESS;STEP:%d;\n", s.Metadata.UniqueName, s.Model.GetCurStep())
 				lastPrintTime = time.Now()
 			}
 		} else {
-			bar.Set(s.Model.CurStep)
+			bar.Set(s.Model.GetCurStep())
 		}
 
 		nwChange, opChange := s.Step()
@@ -253,7 +342,7 @@ func (s *Scenario) StepTillEnd(ctx context.Context) {
 	didDump := false
 
 iterLoop:
-	for s.Model.CurStep <= maxSimCount {
+	for s.Model.GetCurStep() <= maxSimCount {
 		select {
 		case <-ctx.Done():
 			isCtxDone = true
@@ -272,7 +361,7 @@ iterLoop:
 		}
 	}
 
-	if !s.OutputParsableProgress && s.Model.CurStep <= maxSimCount {
+	if !s.OutputParsableProgress && s.Model.GetCurStep() <= maxSimCount {
 		fmt.Println("")
 	}
 
@@ -280,30 +369,30 @@ iterLoop:
 		s.Dump()
 	}
 
-	st := s.Model.CurStep - 1
+	st := s.Model.GetCurStep() - 1
 
 	if isCtxDone {
 		if s.OutputParsableProgress {
-			fmt.Printf("TASK:%s;TYPE:DONE;DONE_TYPE:SIG;STEP:%d;\n", s.Metadata.UniqueName, s.Model.CurStep)
+			fmt.Printf("TASK:%s;TYPE:DONE;DONE_TYPE:SIG;STEP:%d;\n", s.Metadata.UniqueName, s.Model.GetCurStep())
 		} else {
 			log.Printf("Simulation ended (`ctx.Done()` received, step: %d)", st)
 		}
 	} else {
 		if !isShouldNotContinue {
 			if s.OutputParsableProgress {
-				fmt.Printf("TASK:%s;TYPE:DONE;DONE_TYPE:ITER;STEP:%d;\n", s.Metadata.UniqueName, s.Model.CurStep)
+				fmt.Printf("TASK:%s;TYPE:DONE;DONE_TYPE:ITER;STEP:%d;\n", s.Metadata.UniqueName, s.Model.GetCurStep())
 			} else {
 				log.Printf("Simulation ended (max iteration reached, step: %d)", st)
 			}
 		} else {
 			if s.OutputParsableProgress {
-				fmt.Printf("TASK:%s;TYPE:DONE;DONE_TYPE:HALT;STEP:%d;\n", s.Metadata.UniqueName, s.Model.CurStep)
+				fmt.Printf("TASK:%s;TYPE:DONE;DONE_TYPE:HALT;STEP:%d;\n", s.Metadata.UniqueName, s.Model.GetCurStep())
 			} else {
 				log.Printf("Simulation ended (shouldContinue == false, step: %d)", st)
 			}
 		}
 		s.Serializer.MarkFinished()
-		s.Serializer.SaveGraph(utils.SerializeGraph(s.Model.Graph), st)
+		s.Serializer.SaveGraph(utils.SerializeGraph(s.Model.GetGraph()), st)
 	}
 
 }
@@ -313,8 +402,14 @@ func (s *Scenario) logEvent(event *model.EventRecord) {
 	switch event.Type {
 
 	case "Post":
-		body := event.Body.(model.PostEventBody[float64])
-		if body.IsRepost && s.Metadata.CollectItemOptions.PostEvent {
+		var isRepost bool
+		switch body := event.Body.(type) {
+		case model.PostEventBody[float64]:
+			isRepost = body.IsRepost
+		case model.PostEventBody[bool]:
+			isRepost = body.IsRepost
+		}
+		if isRepost && s.Metadata.CollectItemOptions.PostEvent {
 			s.DB.StoreEvent(event)
 		}
 
