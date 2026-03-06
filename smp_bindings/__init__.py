@@ -1,6 +1,11 @@
 
 
 from smp_bindings.record import RawSimulationRecord
+from smp_bindings.simulation import (
+    is_simulation_finished,
+    run_simulation,
+    run_simulations,
+)
 from smp_bindings.model_state import (
     load_accumulative_model_state,
     load_gonum_graph_dump,

@@ -175,6 +175,47 @@ with RawSimulationRecord("./run", metadata) as rec:
     g = rec.get_graph(500)   # reconstructed DiGraph at step 500
 ```
 
+### Running simulations from Python
+
+`smp_bindings` can launch the compiled Go binary as a subprocess, parse its
+per-step progress output, and run multiple simulations concurrently.
+
+```python
+from smp_bindings import run_simulations, is_simulation_finished
+
+scenarios = [
+    {
+        "UniqueName": "run-hk-001",
+        "DynamicsType": "HK",
+        "HKParams": {"Influence": 0.01, "Tolerance": 0.45,
+                     "RewiringRate": 0.05, "RepostRate": 0.3},
+        "PostRetainCount": 3, "RecsysCount": 5,
+        "RecsysFactoryType": "Random", "NetworkType": "Random",
+        "NodeCount": 500, "NodeFollowCount": 15,
+        "MaxSimulationStep": 5000,
+    },
+    # ... more scenarios
+]
+
+completed = run_simulations(
+    binary_path="./smp",          # path to compiled Go binary
+    base_path="./run",            # output root directory
+    scenarios=scenarios,
+    max_concurrent=4,             # max parallel simulations (default 4)
+    show_progress=True,           # print per-step progress (None = auto-detect tty)
+    skip_finished=True,           # skip simulations that already have a finished mark
+)
+print("Completed:", completed)
+
+# Check a single simulation manually
+print(is_simulation_finished("./run", scenarios[0]))
+```
+
+`show_progress=None` (default) auto-detects whether stdout is a terminal:
+in interactive sessions each simulation prints live step counts; in batch /
+CI runs it falls back to a `tqdm` overall bar if available, or plain print
+counts otherwise.
+
 ### Migration CLI
 
 Migrate old v1/v2 simulation output to the current format:
