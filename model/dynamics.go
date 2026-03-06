@@ -10,3 +10,10 @@ type Dynamics[O any, P any] interface {
 	// dN = discordant neighbor opinions, dR = discordant recommended opinions.
 	Step(myOpinion O, cN, cR, dN, dR []O, params *P) (nextOpinion O, opinionSum AgentOpinionSumRecord)
 }
+
+// PreStepDynamics is an optional interface for Dynamics implementations that
+// can batch pre-generate random numbers before a full round of agent steps.
+// RandomActivation calls PrepareStep(agentCount) once before iterating agents.
+type PreStepDynamics interface {
+	PrepareStep(agentCount int)
+}

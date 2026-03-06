@@ -140,13 +140,13 @@ func TestDeffuantStepNoNeighbors(t *testing.T) {
 func TestDeffuantStepMoveToward(t *testing.T) {
 	// With a single concordant neighbor, opinion must move toward it.
 	d := &dynamics.Deffuant{}
-	p := &dynamics.DeffuantParams{Tolerance: 0.5}
+	p := &dynamics.DeffuantParams{Tolerance: 0.5, Influence: 0.2}
 
 	myOp := 0.0
 	neighborOp := 0.4
-	// next = 0 + 0.5 * (0.4 - 0) = 0.2
+	// next = 0 + 0.2 * (0.4 - 0) = 0.08
 	next, _ := d.Step(myOp, []float64{neighborOp}, nil, nil, nil, p)
-	want := myOp + p.Tolerance*(neighborOp-myOp)
+	want := myOp + p.Influence*(neighborOp-myOp)
 	if math.Abs(next-want) > 1e-9 {
 		t.Errorf("got %v, want %v", next, want)
 	}
@@ -154,9 +154,9 @@ func TestDeffuantStepMoveToward(t *testing.T) {
 
 func TestDeffuantStepRandomChoice(t *testing.T) {
 	// With multiple concordant neighbors, the step should pick exactly one
-	// and move toward it by Tolerance * delta.
+	// and move toward it by Influence * delta.
 	d := &dynamics.Deffuant{}
-	p := &dynamics.DeffuantParams{Tolerance: 0.3}
+	p := &dynamics.DeffuantParams{Tolerance: 0.3, Influence: 0.5}
 
 	rng := rand.New(rand.NewSource(42))
 	_ = rng // not injected, but we can verify outcome is within expected range
@@ -168,7 +168,7 @@ func TestDeffuantStepRandomChoice(t *testing.T) {
 	// next must equal myOp + 0.3*(picked - myOp) for some picked in cN
 	valid := false
 	for _, o := range cN {
-		expected := myOp + p.Tolerance*(o-myOp)
+		expected := myOp + p.Influence*(o-myOp)
 		if math.Abs(next-expected) < 1e-9 {
 			valid = true
 			break

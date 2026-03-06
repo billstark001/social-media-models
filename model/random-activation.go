@@ -23,6 +23,9 @@ func (ra *RandomActivation[O, P]) AddAgent(agent *SMPAgent[O, P]) {
 
 // Step activates all agents in random order.
 func (ra *RandomActivation[O, P]) Step() {
+	if ps, ok := any(ra.Model.Dynamics).(PreStepDynamics); ok {
+		ps.PrepareStep(len(ra.Agents))
+	}
 	indices := make([]int, len(ra.Agents))
 	for i := range indices {
 		indices[i] = i
