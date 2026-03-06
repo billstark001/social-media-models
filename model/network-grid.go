@@ -6,72 +6,62 @@ import (
 	"gonum.org/v1/gonum/graph/simple"
 )
 
-// NetworkGrid represents a network structure for placing agents
-type NetworkGrid struct {
+// NetworkGrid represents a network structure for placing agents.
+type NetworkGrid[O any, P any] struct {
 	Graph    *simple.DirectedGraph
-	AgentMap map[int64]*SMPAgent
-	TweetMap map[int64][]*TweetRecord // { [agent id]: latest tweets (left -> right: newer) }
+	AgentMap map[int64]*SMPAgent[O, P]
+	PostMap  map[int64][]*PostRecord[O] // { [agent id]: latest posts (left -> right: newer) }
 	mu       sync.RWMutex
 }
 
-// NewNetworkGrid creates a new network grid
-func NewNetworkGrid(g *simple.DirectedGraph) *NetworkGrid {
-	return &NetworkGrid{
+// NewNetworkGrid creates a new network grid.
+func NewNetworkGrid[O any, P any](g *simple.DirectedGraph) *NetworkGrid[O, P] {
+	return &NetworkGrid[O, P]{
 		Graph:    g,
-		AgentMap: make(map[int64]*SMPAgent),
-		TweetMap: make(map[int64][]*TweetRecord),
+		AgentMap: make(map[int64]*SMPAgent[O, P]),
+		PostMap:  make(map[int64][]*PostRecord[O]),
 	}
 }
 
-// PlaceAgent places an agent on the grid
-func (ng *NetworkGrid) PlaceAgent(agent *SMPAgent, nodeID int64) {
+// PlaceAgent places an agent on the grid.
+func (ng *NetworkGrid[O, P]) PlaceAgent(agent *SMPAgent[O, P], nodeID int64) {
 	ng.mu.Lock()
 	defer ng.mu.Unlock()
 	ng.AgentMap[nodeID] = agent
 }
 
-// GetAgent returns the agent at the specified node
-func (ng *NetworkGrid) GetAgent(nodeID int64) *SMPAgent {
+// GetAgent returns the agent at the specified node.
+func (ng *NetworkGrid[O, P]) GetAgent(nodeID int64) *SMPAgent[O, P] {
 	ng.mu.RLock()
 	defer ng.mu.RUnlock()
 	return ng.AgentMap[nodeID]
 }
 
-// AddTweet adds a tweet to the specified node
-func (ng *NetworkGrid) AddTweet(nodeID int64, tweet *TweetRecord, maxTweets int) {
+// AddPost adds a post to the specified node.
+func (ng *NetworkGrid[O, P]) AddPost(nodeID int64, post *PostRecord[O], maxPosts int) {
 	ng.mu.Lock()
 	defer ng.mu.Unlock()
-	tweets := ng.TweetMap[nodeID]
-
-	// Add the new tweet
-	tweets = append(tweets, tweet)
-
-	// Limit the number of tweets per node
-	if len(tweets) > maxTweets {
-		tweets = tweets[len(tweets)-maxTweets:]
+	posts := ng.PostMap[nodeID]
+	posts = append(posts, post)
+	if len(posts) > maxPosts {
+		posts = posts[len(posts)-maxPosts:]
 	}
-
-	ng.TweetMap[nodeID] = tweets
+	ng.PostMap[nodeID] = posts
 }
 
-// GetNeighbors returns the agents from the neighbors of a node
-func (ng *NetworkGrid) GetNeighbors(nodeID int64, includeCenter bool) []*SMPAgent {
+// GetNeighbors returns the agents from the neighbors of a node.
+func (ng *NetworkGrid[O, P]) GetNeighbors(nodeID int64, includeCenter bool) []*SMPAgent[O, P] {
 	ng.mu.RLock()
 	defer ng.mu.RUnlock()
 
-	var result []*SMPAgent
-
-	// Get neighbor nodes
+	var result []*SMPAgent[O, P]
 	neighbors := ng.Graph.From(nodeID)
 	for neighbors.Next() {
 		neighborID := neighbors.Node().ID()
 		result = append(result, ng.AgentMap[neighborID])
 	}
-
-	// Include center node's tweets if requested
 	if includeCenter {
 		result = append(result, ng.AgentMap[nodeID])
 	}
-
 	return result
 }

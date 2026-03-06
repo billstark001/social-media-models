@@ -16,21 +16,19 @@ type EventDB struct {
 	mu        sync.Mutex
 	cache     []*model.EventRecord
 
-	// 预编译语句
-	eventStmt      *sql.Stmt
-	rewiringStmt   *sql.Stmt
-	tweetStmt      *sql.Stmt
-	viewTweetsStmt *sql.Stmt
+	eventStmt     *sql.Stmt
+	rewiringStmt  *sql.Stmt
+	postStmt      *sql.Stmt
+	viewPostsStmt *sql.Stmt
 }
 
-// OpenEventDB 从文件打开数据库，指定批量写入大小
+// OpenEventDB opens a database from a file and specifies the batch write size.
 func OpenEventDB(filename string, batchSize int) (*EventDB, error) {
 	db, err := sql.Open("sqlite3", filename)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// 创建事件表
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS events (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,7 +42,6 @@ func OpenEventDB(filename string, batchSize int) (*EventDB, error) {
 		return nil, fmt.Errorf("failed to create events table: %w", err)
 	}
 
-	// 创建rewiring事件表
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS rewiring_events (
 			event_id INTEGER PRIMARY KEY,
@@ -58,25 +55,23 @@ func OpenEventDB(filename string, batchSize int) (*EventDB, error) {
 		return nil, fmt.Errorf("failed to create rewiring_events table: %w", err)
 	}
 
-	// 创建tweet事件表
 	_, err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS tweet_events (
+		CREATE TABLE IF NOT EXISTS post_events (
 			event_id INTEGER PRIMARY KEY,
 			agent_id INTEGER NOT NULL,
 			step INTEGER NOT NULL,
 			opinion REAL NOT NULL,
-			is_retweet BOOLEAN NOT NULL,
+			is_repost BOOLEAN NOT NULL,
 			FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
 		)
 	`)
 	if err != nil {
 		db.Close()
-		return nil, fmt.Errorf("failed to create tweet_events table: %w", err)
+		return nil, fmt.Errorf("failed to create post_events table: %w", err)
 	}
 
-	// 创建view_tweets事件表 (使用msgpack存储)
 	_, err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS view_tweets_events (
+		CREATE TABLE IF NOT EXISTS view_posts_events (
 			event_id INTEGER PRIMARY KEY,
 			data BLOB NOT NULL,
 			FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
@@ -84,17 +79,15 @@ func OpenEventDB(filename string, batchSize int) (*EventDB, error) {
 	`)
 	if err != nil {
 		db.Close()
-		return nil, fmt.Errorf("failed to create view_tweets_events table: %w", err)
+		return nil, fmt.Errorf("failed to create view_posts_events table: %w", err)
 	}
 
-	// 启用外键约束
 	_, err = db.Exec("PRAGMA foreign_keys = ON")
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
 	}
 
-	// 预编译语句
 	eventStmt, err := db.Prepare("INSERT INTO events (type, agent_id, step) VALUES (?, ?, ?)")
 	if err != nil {
 		db.Close()
@@ -108,51 +101,48 @@ func OpenEventDB(filename string, batchSize int) (*EventDB, error) {
 		return nil, fmt.Errorf("failed to prepare rewiring insert: %w", err)
 	}
 
-	tweetStmt, err := db.Prepare("INSERT INTO tweet_events (event_id, agent_id, step, opinion, is_retweet) VALUES (?, ?, ?, ?, ?)")
+	postStmt, err := db.Prepare("INSERT INTO post_events (event_id, agent_id, step, opinion, is_repost) VALUES (?, ?, ?, ?, ?)")
 	if err != nil {
 		eventStmt.Close()
 		rewiringStmt.Close()
 		db.Close()
-		return nil, fmt.Errorf("failed to prepare tweet insert: %w", err)
+		return nil, fmt.Errorf("failed to prepare post insert: %w", err)
 	}
 
-	viewTweetsStmt, err := db.Prepare("INSERT INTO view_tweets_events (event_id, data) VALUES (?, ?)")
+	viewPostsStmt, err := db.Prepare("INSERT INTO view_posts_events (event_id, data) VALUES (?, ?)")
 	if err != nil {
 		eventStmt.Close()
 		rewiringStmt.Close()
-		tweetStmt.Close()
+		postStmt.Close()
 		db.Close()
-		return nil, fmt.Errorf("failed to prepare view_tweets insert: %w", err)
+		return nil, fmt.Errorf("failed to prepare view_posts insert: %w", err)
 	}
 
 	return &EventDB{
-		db:             db,
-		batchSize:      batchSize,
-		cache:          make([]*model.EventRecord, 0, batchSize),
-		eventStmt:      eventStmt,
-		rewiringStmt:   rewiringStmt,
-		tweetStmt:      tweetStmt,
-		viewTweetsStmt: viewTweetsStmt,
+		db:            db,
+		batchSize:     batchSize,
+		cache:         make([]*model.EventRecord, 0, batchSize),
+		eventStmt:     eventStmt,
+		rewiringStmt:  rewiringStmt,
+		postStmt:      postStmt,
+		viewPostsStmt: viewPostsStmt,
 	}, nil
 }
 
-// Close 关闭数据库连接及释放资源
 func (edb *EventDB) Close() error {
-	edb.Flush() // 确保所有缓存写入
+	edb.Flush()
 	edb.mu.Lock()
 	defer edb.mu.Unlock()
 	edb.eventStmt.Close()
 	edb.rewiringStmt.Close()
-	edb.tweetStmt.Close()
-	edb.viewTweetsStmt.Close()
+	edb.postStmt.Close()
+	edb.viewPostsStmt.Close()
 	return edb.db.Close()
 }
 
-// StoreEvent 缓存事件，批量写入
 func (edb *EventDB) StoreEvent(event *model.EventRecord) error {
 	edb.mu.Lock()
 	defer edb.mu.Unlock()
-
 	edb.cache = append(edb.cache, event)
 	if len(edb.cache) >= edb.batchSize {
 		return edb.flushLocked()
@@ -160,14 +150,12 @@ func (edb *EventDB) StoreEvent(event *model.EventRecord) error {
 	return nil
 }
 
-// Flush 强制写入所有缓存事件
 func (edb *EventDB) Flush() error {
 	edb.mu.Lock()
 	defer edb.mu.Unlock()
 	return edb.flushLocked()
 }
 
-// flushLocked 需在持有锁情况下调用
 func (edb *EventDB) flushLocked() error {
 	if len(edb.cache) == 0 {
 		return nil
@@ -177,7 +165,6 @@ func (edb *EventDB) flushLocked() error {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
-	// 记录每个事件的ID
 	eventIDs := make([]int64, len(edb.cache))
 	for i, event := range edb.cache {
 		res, err := tx.Stmt(edb.eventStmt).Exec(event.Type, event.AgentID, event.Step)
@@ -193,7 +180,6 @@ func (edb *EventDB) flushLocked() error {
 		eventIDs[i] = eventID
 	}
 
-	// 插入各类型子表
 	for i, event := range edb.cache {
 		switch event.Type {
 		case "Rewiring":
@@ -207,36 +193,55 @@ func (edb *EventDB) flushLocked() error {
 				tx.Rollback()
 				return fmt.Errorf("invalid RewiringEventBody type")
 			}
-		case "Tweet":
-			if body, ok := event.Body.(model.TweetEventBody); ok {
+		case "Post":
+			var agentID int64
+			var step int
+			var opinion float64
+			var isRepost bool
+			if body, ok := event.Body.(model.PostEventBody[float64]); ok {
 				if body.Record == nil {
 					tx.Rollback()
-					return fmt.Errorf("tweet record is nil")
+					return fmt.Errorf("post record is nil")
 				}
-				_, err := tx.Stmt(edb.tweetStmt).Exec(eventIDs[i], body.Record.AgentID, body.Record.Step, body.Record.Opinion, body.IsRetweet)
-				if err != nil {
+				agentID = body.Record.AgentID
+				step = body.Record.Step
+				opinion = body.Record.Opinion
+				isRepost = body.IsRepost
+			} else if body, ok := event.Body.(model.PostEventBody[bool]); ok {
+				if body.Record == nil {
 					tx.Rollback()
-					return fmt.Errorf("failed to insert tweet event: %w", err)
+					return fmt.Errorf("post record is nil")
 				}
+				agentID = body.Record.AgentID
+				step = body.Record.Step
+				if body.Record.Opinion {
+					opinion = 1.0
+				}
+				isRepost = body.IsRepost
 			} else {
 				tx.Rollback()
-				return fmt.Errorf("invalid TweetEventBody type")
+				return fmt.Errorf("invalid PostEventBody type")
 			}
-		case "ViewTweets":
-			if body, ok := event.Body.(model.ViewTweetsEventBody); ok {
+			_, err := tx.Stmt(edb.postStmt).Exec(eventIDs[i], agentID, step, opinion, isRepost)
+			if err != nil {
+				tx.Rollback()
+				return fmt.Errorf("failed to insert post event: %w", err)
+			}
+		case "ViewPosts":
+			if body, ok := event.Body.(model.ViewPostsEventBody[float64]); ok {
 				data, err := msgpack.Marshal(body)
 				if err != nil {
 					tx.Rollback()
-					return fmt.Errorf("failed to marshal ViewTweetsEventBody: %w", err)
+					return fmt.Errorf("failed to marshal ViewPostsEventBody: %w", err)
 				}
-				_, err = tx.Stmt(edb.viewTweetsStmt).Exec(eventIDs[i], data)
+				_, err = tx.Stmt(edb.viewPostsStmt).Exec(eventIDs[i], data)
 				if err != nil {
 					tx.Rollback()
-					return fmt.Errorf("failed to insert view tweets event: %w", err)
+					return fmt.Errorf("failed to insert view posts event: %w", err)
 				}
 			} else {
 				tx.Rollback()
-				return fmt.Errorf("invalid ViewTweetsEventBody type")
+				return fmt.Errorf("invalid ViewPostsEventBody type")
 			}
 		default:
 			tx.Rollback()
@@ -248,14 +253,12 @@ func (edb *EventDB) flushLocked() error {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	// 清空缓存
 	edb.cache = edb.cache[:0]
 	return nil
 }
 
-// DeleteEventsAfterStep 删除步骤大于等于指定值的所有事件
 func (edb *EventDB) DeleteEventsAfterStep(step int) error {
-	edb.Flush() // 保证缓存已写入再删
+	edb.Flush()
 	edb.mu.Lock()
 	defer edb.mu.Unlock()
 	_, err := edb.db.Exec("DELETE FROM events WHERE step >= ?", step)
@@ -265,7 +268,6 @@ func (edb *EventDB) DeleteEventsAfterStep(step int) error {
 	return nil
 }
 
-// GetEvents 获取所有事件（示例如何从数据库加载事件）
 func (edb *EventDB) GetEvents() ([]*model.EventRecord, error) {
 	rows, err := edb.db.Query(`
 		SELECT e.id, e.type, e.agent_id, e.step FROM events e
@@ -285,7 +287,6 @@ func (edb *EventDB) GetEvents() ([]*model.EventRecord, error) {
 			return nil, fmt.Errorf("failed to scan event: %w", err)
 		}
 
-		// 根据事件类型获取具体内容
 		switch event.Type {
 		case "Rewiring":
 			var body model.RewiringEventBody
@@ -297,40 +298,40 @@ func (edb *EventDB) GetEvents() ([]*model.EventRecord, error) {
 			}
 			event.Body = body
 
-		case "Tweet":
-			var body model.TweetEventBody
+		case "Post":
+			var body model.PostEventBody[float64]
 			var agentID, step int64
 			var opinion float64
-			var isRetweet bool
+			var isRepost bool
 
 			err = edb.db.QueryRow(
-				"SELECT agent_id, step, opinion, is_retweet FROM tweet_events WHERE event_id = ?", id,
-			).Scan(&agentID, &step, &opinion, &isRetweet)
+				"SELECT agent_id, step, opinion, is_repost FROM post_events WHERE event_id = ?", id,
+			).Scan(&agentID, &step, &opinion, &isRepost)
 			if err != nil {
-				return nil, fmt.Errorf("failed to scan tweet event: %w", err)
+				return nil, fmt.Errorf("failed to scan post event: %w", err)
 			}
 
-			body.Record = &model.TweetRecord{
+			body.Record = &model.PostRecord[float64]{
 				AgentID: agentID,
 				Step:    int(step),
 				Opinion: opinion,
 			}
-			body.IsRetweet = isRetweet
+			body.IsRepost = isRepost
 			event.Body = body
 
-		case "ViewTweets":
+		case "ViewPosts":
 			var data []byte
 			err = edb.db.QueryRow(
-				"SELECT data FROM view_tweets_events WHERE event_id = ?", id,
+				"SELECT data FROM view_posts_events WHERE event_id = ?", id,
 			).Scan(&data)
 			if err != nil {
-				return nil, fmt.Errorf("failed to scan view tweets event: %w", err)
+				return nil, fmt.Errorf("failed to scan view posts event: %w", err)
 			}
 
-			var body model.ViewTweetsEventBody
+			var body model.ViewPostsEventBody[float64]
 			err = msgpack.Unmarshal(data, &body)
 			if err != nil {
-				return nil, fmt.Errorf("failed to unmarshal view tweets event: %w", err)
+				return nil, fmt.Errorf("failed to unmarshal view posts event: %w", err)
 			}
 			event.Body = body
 		}

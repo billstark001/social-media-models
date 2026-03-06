@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"smp/dynamics"
 	"smp/model"
 	"smp/simulation"
 	"syscall"
@@ -16,18 +17,20 @@ const MAX_SIM_COUNT = 15000
 func main() {
 	metadata := &simulation.ScenarioMetadata{
 
-		SMPAgentParams: model.SMPAgentParams{
+		DynamicsType: simulation.DynamicsTypeHK,
 
-			Decay:        0.01,
+		HKParams: dynamics.HKParams{
+
+			Influence:    0.01,
 			Tolerance:    0.45,
 			RewiringRate: 0.05,
-			RetweetRate:  0.3,
+			RepostRate:   0.3,
 		},
 
 		SMPModelPureParams: model.SMPModelPureParams{
 
-			TweetRetainCount: 3,
-			RecsysCount:      10,
+			PostRetainCount: 3,
+			RecsysCount:     10,
 		},
 
 		CollectItemOptions: model.CollectItemOptions{
@@ -35,7 +38,7 @@ func main() {
 			AgentNumber:   true,
 			OpinionSum:    true,
 			RewiringEvent: true,
-			TweetEvent:    true,
+			PostEvent:     true,
 		},
 
 		RecsysFactoryType: "Random",
@@ -51,20 +54,12 @@ func main() {
 	args := os.Args
 	basePath := args[1]
 	metadataJson := []byte(args[2])
-	// metadataJson, err := os.ReadFile(metadataPath)
-	// if err != nil {
-	// 	log.Fatalf("Failed to load metadata file: %v", err)
-	// }
-
-	// basePath := "./run"
-	// metadataJson := []byte(`{}`)
 
 	err := json.Unmarshal(metadataJson, metadata)
 	if err != nil {
 		log.Fatalf("Failed to unmarshal metadata file: %v", err)
 	}
 
-	// TODO install output parsable progress in python script
 	scenario := simulation.NewScenario(basePath, metadata, false)
 
 	if !scenario.Load() {

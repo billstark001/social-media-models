@@ -2,24 +2,24 @@ package model
 
 import utils "smp/utils"
 
-type SMPModelDumpData struct {
+type SMPModelDumpData[O any, P any] struct {
 	CurStep          int
 	Graph            utils.NetworkXGraph
-	Opinions         []float64
+	Opinions         []O
 	AgentNumbers     []AgentNumberRecord
 	AgentOpinionSums []AgentOpinionSumRecord
-	Tweets           map[int64][]TweetRecord
-	RecsysDumpData   []byte // no pointer
+	Posts            map[int64][]PostRecord[O]
+	RecsysDumpData   []byte
 }
 
-func (m *SMPModel) Dump() *SMPModelDumpData {
-	ret := &SMPModelDumpData{
+func (m *SMPModel[O, P]) Dump() *SMPModelDumpData[O, P] {
+	ret := &SMPModelDumpData[O, P]{
 		CurStep:          m.CurStep,
 		Graph:            *utils.SerializeGraph(m.Graph),
 		Opinions:         m.CollectOpinions(),
 		AgentNumbers:     m.CollectAgentNumbers(),
 		AgentOpinionSums: m.CollectAgentOpinions(),
-		Tweets:           m.CollectTweets(),
+		Posts:            m.CollectPosts(),
 	}
 	if m.Recsys != nil {
 		ret.RecsysDumpData = m.Recsys.Dump()
@@ -27,47 +27,44 @@ func (m *SMPModel) Dump() *SMPModelDumpData {
 	return ret
 }
 
-func (d *SMPModelDumpData) Load(
-	modelParams *SMPModelParams,
-	agentParams *SMPAgentParams,
+func (d *SMPModelDumpData[O, P]) Load(
+	modelParams *SMPModelParams[O, P],
+	agentParams *P,
+	dynamics Dynamics[O, P],
 	collectItems *CollectItemOptions,
 	eventLogger func(*EventRecord),
-) *SMPModel {
-	model := NewSMPModel(
+) *SMPModel[O, P] {
+	m := NewSMPModel(
 		utils.DeserializeGraph(&d.Graph),
 		&d.Opinions,
 		modelParams,
 		agentParams,
+		dynamics,
 		collectItems,
 		eventLogger,
 	)
 
-	// recover agent numbers and opinion sums
-	for _, agent := range model.Schedule.Agents {
+	for _, agent := range m.Schedule.Agents {
 		agent.AgentNumber = d.AgentNumbers[int(agent.ID)]
 		agent.OpinionSum = d.AgentOpinionSums[int(agent.ID)]
 	}
 
-	// recover step
-	model.CurStep = d.CurStep
+	m.CurStep = d.CurStep
 
-	// recover tweets
-	g := model.Grid
-	for agent, value := range d.Tweets {
-		g.TweetMap[agent] = []*TweetRecord{}
+	g := m.Grid
+	for agentID, value := range d.Posts {
+		g.PostMap[agentID] = []*PostRecord[O]{}
 		for _, ptr := range value {
-			g.TweetMap[agent] = append(g.TweetMap[agent], &ptr)
+			p := ptr
+			g.PostMap[agentID] = append(g.PostMap[agentID], &p)
 		}
 	}
 
-	// recover tweets
-	model.SetAgentCurTweets()
+	m.SetAgentCurPosts()
 
-	// recover dump data
-	if model.Recsys != nil {
-		// pointer is passed
-		model.Recsys.PostInit(d.RecsysDumpData)
+	if m.Recsys != nil {
+		m.Recsys.PostInit(d.RecsysDumpData)
 	}
 
-	return model
+	return m
 }

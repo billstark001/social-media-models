@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	model "smp/model"
 	utils "smp/utils"
 
 	"github.com/vmihailenco/msgpack/v5"
@@ -155,7 +154,13 @@ func (s *SimulationSerializer) _clean(fileType string, all bool, suffixName stri
 
 // #region snapshot
 
-func (s *SimulationSerializer) GetLatestSnapshot() (*model.SMPModelDumpData, error) {
+// RawSnapshotData wraps a dynamics-type tag and the msgpack-encoded model dump.
+type RawSnapshotData struct {
+	DynamicsType string
+	Data         []byte
+}
+
+func (s *SimulationSerializer) GetLatestRawSnapshot() (*RawSnapshotData, error) {
 	if !s.Exists() {
 		return nil, nil
 	}
@@ -168,12 +173,12 @@ func (s *SimulationSerializer) GetLatestSnapshot() (*model.SMPModelDumpData, err
 	}
 
 	latestFile := files[len(files)-1]
-	ret, err := s._read(latestFile, &model.SMPModelDumpData{})
-	return ret.(*model.SMPModelDumpData), err
+	ret, err := s._read(latestFile, &RawSnapshotData{})
+	return ret.(*RawSnapshotData), err
 }
 
-func (s *SimulationSerializer) SaveSnapshot(snapshot *model.SMPModelDumpData) error {
-	return s._write("snapshot", snapshot)
+func (s *SimulationSerializer) SaveRawSnapshot(dynamicsType string, data []byte) error {
+	return s._write("snapshot", &RawSnapshotData{DynamicsType: dynamicsType, Data: data})
 }
 
 // #endregion

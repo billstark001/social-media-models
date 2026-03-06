@@ -1,69 +1,65 @@
 package recsys
 
 import (
-	"maps"
-	"math/rand"
+	"math/rand/v2"
 	"smp/model"
 )
 
-type Random struct {
-	model.BaseRecommendationSystem
-	Model                *model.SMPModel
-	HistoricalTweetCount int
-	AgentCount           int
+type Random[O any, P any] struct {
+	model.BaseRecommendationSystem[O, P]
+	Model               *model.SMPModel[O, P]
+	HistoricalPostCount int
+	AgentCount          int
 }
 
-func NewRandom(
-	model *model.SMPModel,
-	historicalTweetCount *int,
-) *Random {
-	h := model.ModelParams.TweetRetainCount
-	if historicalTweetCount != nil {
-		h = *historicalTweetCount
+func NewRandom[O any, P any](
+	m *model.SMPModel[O, P],
+	historicalPostCount *int,
+) *Random[O, P] {
+	h := m.ModelParams.PostRetainCount
+	if historicalPostCount != nil {
+		h = *historicalPostCount
 	}
-	return &Random{
-		Model:                model,
-		AgentCount:           model.Graph.Nodes().Len(),
-		HistoricalTweetCount: h,
+	return &Random[O, P]{
+		Model:               m,
+		AgentCount:          m.Graph.Nodes().Len(),
+		HistoricalPostCount: h,
 	}
 }
 
-func (r *Random) Recommend(
-	agent *model.SMPAgent,
+func (r *Random[O, P]) Recommend(
+	agent *model.SMPAgent[O, P],
 	neighborIDs map[int64]bool,
 	count int,
-) []*model.TweetRecord {
+) []*model.PostRecord[O] {
+	candidates := make([]int, r.AgentCount)
+	for i := range candidates {
+		candidates[i] = i
+	}
+	rand.Shuffle(len(candidates), func(i, j int) {
+		candidates[i], candidates[j] = candidates[j], candidates[i]
+	})
 
-	generated := make(map[int64]bool)
-	maps.Copy(generated, neighborIDs)
-
-	visibleTweets := r.Model.Grid.TweetMap
-
-	// collect results that are not in neighbors
-	result := make([]*model.TweetRecord, 0, count)
-	i := 0
-	for len(result) < count {
-		// avoid dead loop
-		if i > count*10 {
+	visiblePosts := r.Model.Grid.PostMap
+	result := make([]*model.PostRecord[O], 0, count)
+	for _, idx := range candidates {
+		if len(result) >= count {
 			break
 		}
-		agentPickedID := int64(rand.Intn(r.AgentCount))
-		if !generated[agentPickedID] {
-			// do not replace
-			generated[agentPickedID] = true
-			tweet := selectTweet(
-				r.HistoricalTweetCount,
-				neighborIDs,
-				agentPickedID,
-				r.Model.Grid.AgentMap,
-				visibleTweets,
-			)
-			if tweet != nil {
-				result = append(result, tweet)
-			}
+		agentPickedID := int64(idx)
+		if neighborIDs[agentPickedID] {
+			continue
 		}
-		i++
+		post := selectPost(
+			r.HistoricalPostCount,
+			neighborIDs,
+			agentPickedID,
+			r.Model.Grid.AgentMap,
+			visiblePosts,
+		)
+		if post != nil {
+			result = append(result, post)
+		}
 	}
-
 	return result
 }

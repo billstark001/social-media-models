@@ -12,19 +12,15 @@ type MixDump struct {
 	RecSys2Dump []byte
 }
 
-type Mix struct {
-	model.SMPModelRecommendationSystem
-	Model       *model.SMPModel
-	RecSys1     model.SMPModelRecommendationSystem
-	RecSys2     model.SMPModelRecommendationSystem
+type Mix[O any, P any] struct {
+	model.BaseRecommendationSystem[O, P]
+	Model       *model.SMPModel[O, P]
+	RecSys1     model.SMPModelRecommendationSystem[O, P]
+	RecSys2     model.SMPModelRecommendationSystem[O, P]
 	RecSys1Rate float64
 }
 
-func _() model.SMPModelRecommendationSystem {
-	return &Mix{}
-}
-
-func (rs *Mix) PostInit(dumpData []byte) {
+func (rs *Mix[O, P]) PostInit(dumpData []byte) {
 	dumpStruct := &MixDump{}
 	if dumpData != nil {
 		err := msgpack.Unmarshal(dumpData, dumpStruct)
@@ -40,29 +36,29 @@ func (rs *Mix) PostInit(dumpData []byte) {
 	rs.RecSys2.PostInit(nil)
 }
 
-func (rs *Mix) PreStep() {
+func (rs *Mix[O, P]) PreStep() {
 	rs.RecSys1.PreStep()
 	rs.RecSys2.PreStep()
 }
 
-func (rs *Mix) PreCommit() {
+func (rs *Mix[O, P]) PreCommit() {
 	rs.RecSys1.PreCommit()
 	rs.RecSys2.PreCommit()
 }
 
-func (rs *Mix) PostStep(changed []*model.RewiringEventBody) {
+func (rs *Mix[O, P]) PostStep(changed []*model.RewiringEventBody) {
 	rs.RecSys1.PostStep(changed)
 	rs.RecSys2.PostStep(changed)
 }
 
-func (rs *Mix) Recommend(
-	agent *model.SMPAgent,
+func (rs *Mix[O, P]) Recommend(
+	agent *model.SMPAgent[O, P],
 	neighborIDs map[int64]bool,
 	count int,
-) []*model.TweetRecord {
+) []*model.PostRecord[O] {
 	r1Count := int(float64(count)*rs.RecSys1Rate + 0.5)
 	r2Count := count - r1Count
-	ret := make([]*model.TweetRecord, 0)
+	ret := make([]*model.PostRecord[O], 0)
 	if r1Count > 0 {
 		ret = append(ret, rs.RecSys1.Recommend(agent, neighborIDs, r1Count)...)
 	}
@@ -72,7 +68,7 @@ func (rs *Mix) Recommend(
 	return ret
 }
 
-func (rs *Mix) Dump() []byte {
+func (rs *Mix[O, P]) Dump() []byte {
 	ret := MixDump{
 		RecSys1Dump: rs.RecSys1.Dump(),
 		RecSys2Dump: rs.RecSys2.Dump(),

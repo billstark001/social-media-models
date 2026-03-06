@@ -37,3 +37,6 @@ main
 main.exe
 
 .DS_Store
+__pycache__
+*.log
+smp_bindings.egg-info

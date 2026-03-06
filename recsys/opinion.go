@@ -2,168 +2,147 @@ package recsys
 
 import (
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"sort"
 
 	"smp/model"
 )
 
-// Opinion implements a recommendation system based on opinion similarity
-type Opinion struct {
-	model.BaseRecommendationSystem
-	Model                *model.SMPModel
-	NoiseStd             float64
-	HistoricalTweetCount int
+// Opinion implements a recommendation system based on opinion similarity.
+// O is fixed to float64; P is the params type.
+type Opinion[P any] struct {
+	model.BaseRecommendationSystem[float64, P]
+	Model               *model.SMPModel[float64, P]
+	NoiseStd            float64
+	HistoricalPostCount int
 
 	NumNodes     int
 	Epsilon      []float64
-	TweetIndices []*TweetIndex
-	AgentMap     map[int64]*model.SMPAgent
+	PostIndices  []*PostIndex
+	AgentMap     map[int64]*model.SMPAgent[float64, P]
 	AgentIndices map[int64]int
 }
 
-type TweetIndex struct {
-	AgentID     int64
-	HistoryID   int // -1: current opinion
-	TempOpinion float64
-}
-
-// NewOpinion creates a new opinion-based recommendation system
-func NewOpinion(model *model.SMPModel, noiseStd float64, historicalTweetCount *int) *Opinion {
-	h := model.ModelParams.TweetRetainCount
-	if historicalTweetCount != nil {
-		h = *historicalTweetCount
+// NewOpinion creates a new opinion-based recommendation system.
+func NewOpinion[P any](m *model.SMPModel[float64, P], noiseStd float64, historicalPostCount *int) *Opinion[P] {
+	h := m.ModelParams.PostRetainCount
+	if historicalPostCount != nil {
+		h = *historicalPostCount
 	}
-	return &Opinion{
-		Model:                model,
-		NoiseStd:             noiseStd,
-		HistoricalTweetCount: h,
+	return &Opinion[P]{
+		Model:               m,
+		NoiseStd:            noiseStd,
+		HistoricalPostCount: h,
 	}
 }
 
 // PostInit implements model.SMPModelRecommendationSystem
-func (o *Opinion) PostInit(dumpData []byte) {
+func (o *Opinion[P]) PostInit(dumpData []byte) {
 	o.NumNodes = o.Model.Graph.Nodes().Len()
-	normHistCount := max(o.HistoricalTweetCount, 0)
-	o.TweetIndices = make([]*TweetIndex, 0)
-	o.AgentMap = make(map[int64]*model.SMPAgent, o.NumNodes)
+	normHistCount := max(o.HistoricalPostCount, 0)
+	o.PostIndices = make([]*PostIndex, 0)
+	o.AgentMap = make(map[int64]*model.SMPAgent[float64, P], o.NumNodes)
 	o.AgentIndices = make(map[int64]int, o.NumNodes)
 	o.Epsilon = make([]float64, o.NumNodes)
 
-	// initiate tweet index sorter
 	for _, a := range o.Model.Schedule.Agents {
 		o.AgentMap[a.ID] = a
-		o.TweetIndices = append(o.TweetIndices, &TweetIndex{
+		o.PostIndices = append(o.PostIndices, &PostIndex{
 			AgentID:   a.ID,
 			HistoryID: -1,
 		})
 		for i := range normHistCount {
-			tIdx := &TweetIndex{
+			tIdx := &PostIndex{
 				AgentID:   a.ID,
 				HistoryID: i,
 			}
-			o.TweetIndices = append(o.TweetIndices, tIdx)
+			o.PostIndices = append(o.PostIndices, tIdx)
 		}
 	}
 }
 
 // PreStep implements model.SMPModelRecommendationSystem
-func (o *Opinion) PreStep() {
-	// Sort agents by current opinion
-
-	visibleTweets := o.Model.Grid.TweetMap
-	fetchOpinion := func(ti *TweetIndex) float64 {
-		tsi := visibleTweets[ti.AgentID]
-		if ti.HistoryID == -1 {
-			return o.AgentMap[ti.AgentID].CurOpinion // only used for marker
+func (o *Opinion[P]) PreStep() {
+	visiblePosts := o.Model.Grid.PostMap
+	fetchOpinion := func(pi *PostIndex) float64 {
+		tsi := visiblePosts[pi.AgentID]
+		if pi.HistoryID == -1 {
+			return o.AgentMap[pi.AgentID].CurOpinion
 		}
-		if len(tsi) <= ti.HistoryID {
-			return -2 // not applicable
+		if len(tsi) <= pi.HistoryID {
+			return -2
 		}
-		tweet := tsi[ti.HistoryID]
-		if tweet == nil || tweet.AgentID != ti.AgentID {
-			return -2 // retweeted tweet, discard
+		post := tsi[pi.HistoryID]
+		if post == nil || post.AgentID != pi.AgentID {
+			return -2
 		}
-		return tsi[ti.HistoryID].Opinion // sent tweet
+		return tsi[pi.HistoryID].Opinion
 	}
 
-	// get opinion
-	for _, ti := range o.TweetIndices {
-		ti.TempOpinion = fetchOpinion(ti)
+	for _, pi := range o.PostIndices {
+		pi.TempOpinion = fetchOpinion(pi)
 	}
-	// sort
-	sort.Slice(o.TweetIndices, func(i, j int) bool {
-		return o.TweetIndices[i].TempOpinion < o.TweetIndices[j].TempOpinion
+	sort.Slice(o.PostIndices, func(i, j int) bool {
+		return o.PostIndices[i].TempOpinion < o.PostIndices[j].TempOpinion
 	})
-	// Update agent indices map (for initial search pos)
-	for i, a := range o.TweetIndices {
+	for i, a := range o.PostIndices {
 		if a.HistoryID == -1 {
 			o.AgentIndices[a.AgentID] = i
 		}
 	}
 
-	// Generate random noise
 	for i := range o.Epsilon {
 		o.Epsilon[i] = rand.NormFloat64() * o.NoiseStd
 	}
 }
 
 // Recommend implements model.SMPModelRecommendationSystem
-func (o *Opinion) Recommend(agent *model.SMPAgent, neighborIDs map[int64]bool, count int) []*model.TweetRecord {
-	// Get adjusted opinion with noise
+func (o *Opinion[P]) Recommend(agent *model.SMPAgent[float64, P], neighborIDs map[int64]bool, count int) []*model.PostRecord[float64] {
 	opinionWithNoise := agent.CurOpinion + o.Epsilon[agent.ID]
 
-	// Start indices for searching closest agents by opinion
 	iPre := o.AgentIndices[agent.ID] - 1
 	iPost := o.AgentIndices[agent.ID] + 1
 
-	ret := make([]*model.TweetRecord, 0, count)
+	ret := make([]*model.PostRecord[float64], 0, count)
 
-	// Find closest agents by opinion difference
-	visibleTweets := o.Model.Grid.TweetMap
+	visiblePosts := o.Model.Grid.PostMap
 	for len(ret) < count {
-		noPre := iPre < 0 || o.TweetIndices[iPre].TempOpinion == -2
-		noPost := iPost >= len(o.TweetIndices) || o.TweetIndices[iPost].TempOpinion == -2
+		noPre := iPre < 0 || o.PostIndices[iPre].TempOpinion == -2
+		noPost := iPost >= len(o.PostIndices) || o.PostIndices[iPost].TempOpinion == -2
 		if noPre && noPost {
 			break
 		}
 
-		// Determine whether to use predecessor or successor
 		usePre := noPost || (!noPre &&
-			math.Abs(opinionWithNoise-o.TweetIndices[iPre].TempOpinion) <
-				math.Abs(o.TweetIndices[iPost].TempOpinion-opinionWithNoise))
+			math.Abs(opinionWithNoise-o.PostIndices[iPre].TempOpinion) <
+				math.Abs(o.PostIndices[iPost].TempOpinion-opinionWithNoise))
 
-		var a *TweetIndex
+		var a *PostIndex
 		if usePre {
-			a = o.TweetIndices[iPre]
+			a = o.PostIndices[iPre]
 			iPre--
 		} else {
-			a = o.TweetIndices[iPost]
+			a = o.PostIndices[iPost]
 			iPost++
 		}
 
-		// use the current agent's tweet at HistoricalTweetCount == 0
-		if o.HistoricalTweetCount < 1 {
-			tweetToRecommend := o.AgentMap[a.AgentID].CurTweet
-			// skip:
-			cond := tweetToRecommend != nil && // nil
-				tweetToRecommend.AgentID != agent.ID && // itself's tweet
-				!neighborIDs[tweetToRecommend.AgentID] // its neighbor's tweet
+		if o.HistoricalPostCount < 1 {
+			postToRecommend := o.AgentMap[a.AgentID].CurPost
+			cond := postToRecommend != nil &&
+				postToRecommend.AgentID != agent.ID &&
+				!neighborIDs[postToRecommend.AgentID]
 			if cond {
-				ret = append(ret, tweetToRecommend)
+				ret = append(ret, postToRecommend)
 				continue
 			}
 		}
-		// else, use tweets inside
-		// skip:
-		cond := a.AgentID != agent.ID && // itself
-			a.HistoryID != -1 && // marker indices
-			!neighborIDs[a.AgentID] // its neighbor
+		cond := a.AgentID != agent.ID &&
+			a.HistoryID != -1 &&
+			!neighborIDs[a.AgentID]
 		if cond {
-			// Get the tweet from the historical record
-			tweetToRecommend := visibleTweets[a.AgentID][a.HistoryID]
-			if tweetToRecommend != nil { // nil check
-				ret = append(ret, tweetToRecommend)
+			postToRecommend := visiblePosts[a.AgentID][a.HistoryID]
+			if postToRecommend != nil {
+				ret = append(ret, postToRecommend)
 			}
 		}
 	}

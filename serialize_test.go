@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path"
+	"smp/dynamics"
 	"smp/model"
 	"smp/simulation"
 	"smp/utils"
@@ -24,47 +25,42 @@ func CompareSlices[T comparable](a, b []T) bool {
 }
 
 // CompareMaps compares two maps of type map[T1][]T2 for equality.
-// T1 is the key type and T2 is the element type of the slice.
-// Both T1 and T2 must be comparable.
 func CompareMaps[T1 comparable, T2 comparable](map1, map2 map[T1][]T2) bool {
-	// If the maps have different lengths, they are not equal
 	if len(map1) != len(map2) {
 		return false
 	}
 
-	// Iterate over the first map
 	for key, slice1 := range map1 {
 		slice2, exists := map2[key]
-		// If the key doesn't exist in the second map, they are not equal
 		if !exists {
 			return false
 		}
 
-		// If the slices are of different lengths, they are not equal
 		if !CompareSlices(slice1, slice2) {
 			return false
 		}
 	}
 
-	// If all keys and values match, the maps are equal
 	return true
 }
 
 func TestSerializeAndDeserializeScenario(t *testing.T) {
 	metadata := &simulation.ScenarioMetadata{
 
-		SMPAgentParams: model.SMPAgentParams{
+		DynamicsType: simulation.DynamicsTypeHK,
 
-			Decay:        0.005,
+		HKParams: dynamics.HKParams{
+
+			Influence:    0.005,
 			Tolerance:    0.45,
 			RewiringRate: 0.5,
-			RetweetRate:  0.25,
+			RepostRate:   0.25,
 		},
 
 		SMPModelPureParams: model.SMPModelPureParams{
 
-			TweetRetainCount: 3,
-			RecsysCount:      10,
+			PostRetainCount: 3,
+			RecsysCount:     10,
 		},
 
 		CollectItemOptions: model.CollectItemOptions{
@@ -72,7 +68,7 @@ func TestSerializeAndDeserializeScenario(t *testing.T) {
 			AgentNumber:   true,
 			OpinionSum:    true,
 			RewiringEvent: true,
-			TweetEvent:    true,
+			PostEvent:     true,
 		},
 
 		RecsysFactoryType: "OpinionM9",
@@ -119,9 +115,14 @@ func TestSerializeAndDeserializeScenario(t *testing.T) {
 		t.Errorf("Failed to load scenario")
 	}
 
-	// compare everything
-	model1 := scenario1.Model
-	model2 := scenario2.Model
+	// type-assert to the concrete HK wrapper to access the underlying model fields
+	w1, ok1 := scenario1.Model.(*simulation.Float64ModelWrapper[dynamics.HKParams])
+	w2, ok2 := scenario2.Model.(*simulation.Float64ModelWrapper[dynamics.HKParams])
+	if !ok1 || !ok2 {
+		t.Fatalf("Unexpected model wrapper type")
+	}
+	model1 := w1.M
+	model2 := w2.M
 
 	if !utils.CompareGraphs(model1.Graph, model2.Graph) {
 		t.Errorf("Original and loaded graphs are not equal")
@@ -139,8 +140,8 @@ func TestSerializeAndDeserializeScenario(t *testing.T) {
 	if !CompareSlices(model1.CollectAgentOpinions(), model2.CollectAgentOpinions()) {
 		t.Errorf("Original and loaded are not equal: model.CollectAgentOpinions()")
 	}
-	if !CompareMaps(model1.CollectTweets(), model2.CollectTweets()) {
-		t.Errorf("Original and loaded are not equal: model.CollectTweets()")
+	if !CompareMaps(model1.CollectPosts(), model2.CollectPosts()) {
+		t.Errorf("Original and loaded are not equal: model.CollectPosts()")
 	}
 
 	if model1.CurStep != model2.CurStep {
