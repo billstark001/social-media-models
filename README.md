@@ -96,6 +96,32 @@ Snapshots are stored as **msgpack** files; accumulative time-series data uses a 
 
 See [`docs/architecture.md`](docs/architecture.md) for the full file layout.
 
+## CLI Usage
+
+The compiled binary (`smp`) accepts the following positional arguments:
+
+```
+smp <base_path> <metadata_json> [parsable_progress]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `base_path` | Yes | Root output directory for simulation runs |
+| `metadata_json` | Yes | JSON string of `ScenarioMetadata` fields |
+| `parsable_progress` | No | Enable machine-readable progress output on stdout (`1`, `true`, `yes`, `ok`). Default: `false` |
+
+Example:
+
+```bash
+./smp ./run '{"UniqueName":"run-001","DynamicsType":"HK",...}' 1
+```
+
+When parsable progress is enabled, each step emits a line of the form:
+
+```
+TASK:<name>;TYPE:PROGRESS;STEP:<n>;
+```
+
 ## Testing
 
 ```bash

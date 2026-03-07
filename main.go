@@ -9,6 +9,7 @@ import (
 	"smp/dynamics"
 	"smp/model"
 	"smp/simulation"
+	"strings"
 	"syscall"
 )
 
@@ -60,7 +61,13 @@ func main() {
 		log.Fatalf("Failed to unmarshal metadata file: %v", err)
 	}
 
-	scenario := simulation.NewScenario(basePath, metadata, false)
+	outputParsableProgress := false
+	if len(args) > 3 {
+		v := strings.ToLower(strings.TrimSpace(args[3]))
+		outputParsableProgress = v == "1" || v == "yes" || v == "true" || v == "ok"
+	}
+
+	scenario := simulation.NewScenario(basePath, metadata, outputParsableProgress)
 
 	if !scenario.Load() {
 		scenario.Init()

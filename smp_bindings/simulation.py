@@ -88,7 +88,7 @@ def run_simulation(
   max_step = metadata.get("MaxSimulationStep", 0)
 
   proc = subprocess.Popen(
-      [binary_path, base_path, metadata_json],
+      [binary_path, base_path, metadata_json, "1"],
       stdout=subprocess.PIPE,
       stderr=subprocess.PIPE,
       text=True,
