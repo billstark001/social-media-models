@@ -50,7 +50,7 @@ func (s *Scenario) Init() {
 
 	switch s.Metadata.DynamicsType {
 	case "", DynamicsTypeHK:
-		factories := GetFloat64RecsysFactories[dynamics.HKParams]()
+		factories := GetFloat64RecsysFactoriesWithParams[dynamics.HKParams](s.Metadata.RecSysParams)
 		params := model.SMPModelParams[float64, dynamics.HKParams]{
 			SMPModelPureParams: s.Metadata.SMPModelPureParams,
 			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
@@ -58,7 +58,7 @@ func (s *Scenario) Init() {
 		m := model.NewSMPModelFloat64(graph, nil, &params, &s.Metadata.HKParams, &dynamics.HK{}, &s.Metadata.CollectItemOptions, s.logEvent)
 		s.Model = &Float64ModelWrapper[dynamics.HKParams]{M: m}
 	case DynamicsTypeDeffuant:
-		factories := GetFloat64RecsysFactories[dynamics.DeffuantParams]()
+		factories := GetFloat64RecsysFactoriesWithParams[dynamics.DeffuantParams](s.Metadata.RecSysParams)
 		params := model.SMPModelParams[float64, dynamics.DeffuantParams]{
 			SMPModelPureParams: s.Metadata.SMPModelPureParams,
 			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
@@ -66,7 +66,7 @@ func (s *Scenario) Init() {
 		m := model.NewSMPModelFloat64(graph, nil, &params, &s.Metadata.DeffuantParams, &dynamics.Deffuant{}, &s.Metadata.CollectItemOptions, s.logEvent)
 		s.Model = &Float64ModelWrapper[dynamics.DeffuantParams]{M: m}
 	case DynamicsTypeGalam:
-		factories := GetBoolRecsysFactories[dynamics.GalamParams]()
+		factories := GetBoolRecsysFactoriesWithParams[dynamics.GalamParams](s.Metadata.RecSysParams)
 		params := model.SMPModelParams[bool, dynamics.GalamParams]{
 			SMPModelPureParams: s.Metadata.SMPModelPureParams,
 			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
@@ -79,7 +79,7 @@ func (s *Scenario) Init() {
 		m := model.NewSMPModel(graph, &ops, &params, &s.Metadata.GalamParams, &dynamics.Galam{}, &s.Metadata.CollectItemOptions, s.logEvent)
 		s.Model = &BoolModelWrapper[dynamics.GalamParams]{M: m}
 	case DynamicsTypeVoter:
-		factories := GetBoolRecsysFactories[dynamics.VoterParams]()
+		factories := GetBoolRecsysFactoriesWithParams[dynamics.VoterParams](s.Metadata.RecSysParams)
 		params := model.SMPModelParams[bool, dynamics.VoterParams]{
 			SMPModelPureParams: s.Metadata.SMPModelPureParams,
 			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
@@ -161,7 +161,7 @@ func (s *Scenario) Load() bool {
 			log.Printf("Failed to unmarshal HK snapshot: %v", err)
 			return false
 		}
-		factories := GetFloat64RecsysFactories[dynamics.HKParams]()
+		factories := GetFloat64RecsysFactoriesWithParams[dynamics.HKParams](s.Metadata.RecSysParams)
 		params := model.SMPModelParams[float64, dynamics.HKParams]{
 			SMPModelPureParams: s.Metadata.SMPModelPureParams,
 			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
@@ -175,7 +175,7 @@ func (s *Scenario) Load() bool {
 			log.Printf("Failed to unmarshal Deffuant snapshot: %v", err)
 			return false
 		}
-		factories := GetFloat64RecsysFactories[dynamics.DeffuantParams]()
+		factories := GetFloat64RecsysFactoriesWithParams[dynamics.DeffuantParams](s.Metadata.RecSysParams)
 		params := model.SMPModelParams[float64, dynamics.DeffuantParams]{
 			SMPModelPureParams: s.Metadata.SMPModelPureParams,
 			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
@@ -189,7 +189,7 @@ func (s *Scenario) Load() bool {
 			log.Printf("Failed to unmarshal Galam snapshot: %v", err)
 			return false
 		}
-		factories := GetBoolRecsysFactories[dynamics.GalamParams]()
+		factories := GetBoolRecsysFactoriesWithParams[dynamics.GalamParams](s.Metadata.RecSysParams)
 		params := model.SMPModelParams[bool, dynamics.GalamParams]{
 			SMPModelPureParams: s.Metadata.SMPModelPureParams,
 			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
@@ -203,7 +203,7 @@ func (s *Scenario) Load() bool {
 			log.Printf("Failed to unmarshal Voter snapshot: %v", err)
 			return false
 		}
-		factories := GetBoolRecsysFactories[dynamics.VoterParams]()
+		factories := GetBoolRecsysFactoriesWithParams[dynamics.VoterParams](s.Metadata.RecSysParams)
 		params := model.SMPModelParams[bool, dynamics.VoterParams]{
 			SMPModelPureParams: s.Metadata.SMPModelPureParams,
 			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
@@ -244,7 +244,7 @@ func (s *Scenario) Dump() {
 	s.DB.Flush()
 	data, err := s.Model.RawDump()
 	if err != nil {
-		log.Printf("Failed to serialise model snapshot: %v", err)
+		log.Printf("Failed to serialize model snapshot: %v", err)
 	} else {
 		s.Serializer.SaveRawSnapshot(s.Metadata.DynamicsType, data)
 	}
