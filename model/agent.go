@@ -12,6 +12,7 @@ type EventRecord struct {
 }
 
 type RewiringEventBody struct {
+	AgentID  int64
 	Unfollow int64
 	Follow   int64
 }
@@ -226,7 +227,7 @@ func (a *SMPAgent[O, P]) Step() {
 		idx2 := rand.IntN(len(dNP))
 		follow := cR[idx1].AgentID
 		unfollow := dNA[idx2].ID
-		a.NextFollow = &RewiringEventBody{Unfollow: unfollow, Follow: follow}
+		a.NextFollow = &RewiringEventBody{AgentID: a.ID, Unfollow: unfollow, Follow: follow}
 		if a.CollectOptions.RewiringEvent {
 			eRewiring = a.NextFollow
 		}

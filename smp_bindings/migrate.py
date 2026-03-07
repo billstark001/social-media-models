@@ -70,6 +70,9 @@ def migrate_events_db(path: str) -> None:
 
   - 将 ``tweet_events`` 表重命名为 ``post_events``。
   - 将 ``is_retweet`` 列重命名为 ``is_repost``。
+  - 为 ``rewiring_events`` 添加 ``agent_id INTEGER NOT NULL DEFAULT 0`` 列。
+    ``agent_id = 0`` 是哨兵值，表示该行在迁移前写入，实际施动智能体已无法还原；
+    分析时可将其视为"未知"。
   - 将 ``view_tweets_events`` 表重命名为 ``view_posts_events``。
   - 将 ``events.type`` 中的 ``'Tweet'`` 更新为 ``'Post'``。
   - 将 ``events.type`` 中的 ``'ViewTweets'`` 更新为 ``'ViewPosts'``。
@@ -98,6 +101,15 @@ def migrate_events_db(path: str) -> None:
             "ALTER TABLE post_events RENAME COLUMN is_retweet TO is_repost"
         )
         print(f"[migrated] renamed is_retweet → is_repost in {path}")
+
+      # rewiring_events.agent_id（DEFAULT 0 为哨兵，表示迁移前写入的行）
+      cur.execute("PRAGMA table_info(rewiring_events)")
+      rewiring_columns = {row[1] for row in cur.fetchall()}
+      if "agent_id" not in rewiring_columns:
+        db.execute(
+            "ALTER TABLE rewiring_events ADD COLUMN agent_id INTEGER NOT NULL DEFAULT 0"
+        )
+        print(f"[migrated] added agent_id to rewiring_events in {path}")
 
       # 重命名 view_tweets_events → view_posts_events
       if "view_tweets_events" in tables and "view_posts_events" not in tables:

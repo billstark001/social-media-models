@@ -90,7 +90,7 @@ Four dynamics are provided. HK and Deffuant use `O = float64`; Galam and Voter u
 | `HK` | `HKParams` | `float64` | Mean-field bounded confidence |
 | `Deffuant` | `DeffuantParams` | `float64` | Pairwise bounded confidence |
 | `Galam` | `GalamParams` | `bool` | Majority rule |
-| `Voter` | `VoterParams` | `bool` | Copy a random neighbour |
+| `Voter` | `VoterParams` | `bool` | Copy a random neighbor |
 
 ### Hegselmann-Krause (`HK`)
 
@@ -100,7 +100,7 @@ Four dynamics are provided. HK and Deffuant use `O = float64`; Galam and Voter u
 
 **Update**: `nextOp = myOp + Influence × mean(concordant opinions − myOp)`
 
-All statistics (concordant/discordant neighbour and recommended opinion deltas) are recorded in `AgentOpinionSumRecord`.
+All statistics (concordant/discordant neighbor and recommended opinion deltas) are recorded in `AgentOpinionSumRecord`.
 
 ### Deffuant (`Deffuant`)
 
@@ -120,7 +120,7 @@ Statistics are computed over _all_ concordant/discordant opinions regardless of 
 
 **Concordant**: `myOp == otherOp`
 
-**Update**: if discordant neighbours + recommended outnumber concordant ones, flip opinion.
+**Update**: if discordant neighbors + recommended outnumber concordant ones, flip opinion.
 
 ### Voter (`Voter`)
 
@@ -141,8 +141,8 @@ All recommendation systems implement `model.SMPModelRecommendationSystem[O, P]`.
 | Name | Strategy |
 |------|----------|
 | `Random` | Sample random agents |
-| `Opinion` | Nearest neighbours in opinion space (sorted index) |
-| `Structure` | Common-neighbour count in the social graph |
+| `Opinion` | Nearest neighbors in opinion space (sorted index) |
+| `Structure` | Common-neighbor count in the social graph |
 | `OpinionRandom` | Opinion-similarity weighted random sampling |
 | `StructureRandom` | Structure-similarity weighted random sampling |
 | `Mix` | Blend two systems with a fixed ratio |

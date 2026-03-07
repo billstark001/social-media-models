@@ -25,6 +25,7 @@ This guide covers breaking changes introduced in the v2 refactor and explains ho
 | Grid field | `NetworkGrid.TweetMap` | `NetworkGrid.PostMap` |
 | Grid method | `AddTweet` | `AddPost` |
 | Model init func | `NewSMPModel` (opinions `[]float64`) | `NewSMPModelFloat64` or generic `NewSMPModel[O,P]` |
+| `RewiringEventBody` | no `AgentID` field | `AgentID int64` (the acting agent); `agent_id = 0` marks pre-migration rows |
 | SQLite table | `tweet_events`, `is_retweet` | `post_events`, `is_repost` |
 | Event type string | `"Tweet"` | `"Post"` |
 | Package | _none_ | new `smp/dynamics` package |
@@ -113,6 +114,11 @@ The table and column names changed. To migrate:
 ALTER TABLE tweet_events RENAME TO post_events;
 ALTER TABLE post_events RENAME COLUMN is_retweet TO is_repost;
 
+-- add agent_id to rewiring_events (DEFAULT 0 = sentinel for pre-migration rows)
+-- rows with agent_id = 0 were recorded before this field existed;
+-- the exact acting agent cannot be recovered; treat as "unknown" in analyzes.
+ALTER TABLE rewiring_events ADD COLUMN agent_id INTEGER NOT NULL DEFAULT 0;
+
 -- update the type strings in the events table
 UPDATE events SET type = 'Post' WHERE type = 'Tweet';
 UPDATE events SET type = 'ViewPosts' WHERE type = 'ViewTweets';
@@ -145,7 +151,7 @@ m := model.NewSMPModelFloat64(graph, nil, modelParams, dParams, &dynamics.Deffua
 
 // Galam (bool opinions)
 gParams := dynamics.DefaultGalamParams()
-ops := make([]bool, nodeCount)  // initialise with random booleans as needed
+ops := make([]bool, nodeCount)  // initialize with random booleans as needed
 m := model.NewSMPModel(graph, &ops, modelParams, gParams, &dynamics.Galam{}, collectOpts, nil)
 
 // Voter (bool opinions)

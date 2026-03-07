@@ -22,7 +22,7 @@ type IModel interface {
 	Accumulate(acc *AccumulativeModelState)
 	// ValidateAcc checks that acc has the expected number of steps.
 	ValidateAcc(acc *AccumulativeModelState) bool
-	// RawDump serialises the model state to msgpack bytes for snapshotting.
+	// RawDump serializes the model state to msgpack bytes for snapshotting.
 	RawDump() ([]byte, error)
 }
 

@@ -44,9 +44,9 @@ for range 1000 {
 
 ## Model Architecture
 
-### Generic Parameterisation
+### Generic Parameterization
 
-Every core type is parameterised over:
+Every core type is parameterized over:
 
 - **`O`** — opinion type (default `float64`; can be extended to `bool`, `[2]float64`, etc.)
 - **`P`** — agent-parameter type (default `dynamics.HKParams`)
@@ -55,11 +55,11 @@ Every core type is parameterised over:
 
 Each agent per step:
 
-1. **Views** posts from followed neighbours and from the recommendation system.
+1. **Views** posts from followed neighbors and from the recommendation system.
 2. **Partitions** posts into concordant (`|Δopinion| ≤ Tolerance`) and discordant.
 3. **Updates opinion** via the chosen dynamics rule.
 4. **Reposts** a concordant post with probability `RepostRate`, otherwise publishes a new post.
-5. **Rewires** — with probability `RewiringRate`, unfollows a discordant neighbour and follows a concordant stranger.
+5. **Rewires** — with probability `RewiringRate`, unfollows a discordant neighbor and follows a concordant stranger.
 
 ### Opinion Dynamics
 
@@ -74,7 +74,7 @@ Each agent per step:
 |------|----------|
 | `Random` | Uniformly random |
 | `Opinion` | Nearest in opinion space |
-| `Structure` | Common-neighbour count |
+| `Structure` | Common-neighbor count |
 | `OpinionRandom` | Opinion-distance weighted random |
 | `StructureRandom` | Structure-similarity weighted random |
 | `Mix` | Blend of two systems |
@@ -136,7 +136,7 @@ See [`docs/migration.md`](docs/migration.md) for a step-by-step guide covering c
 
 ## Python Bindings (`smp_bindings`)
 
-`smp_bindings` is a Python package for reading and analysing simulation output produced by the Go runtime.
+`smp_bindings` is a Python package for reading and analyzing simulation output produced by the Go runtime.
 
 ### Installation
 

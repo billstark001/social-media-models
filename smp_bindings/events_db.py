@@ -16,6 +16,7 @@ class PostRecord:
 
 @dataclass
 class RewiringEventBody:
+  agent_id: int
   unfollow: int
   follow: int
 
@@ -144,10 +145,10 @@ def get_rewiring_event_body(
 ) -> Optional[RewiringEventBody]:
   cur = db.cursor()
   cur.execute(
-      "SELECT unfollow, follow FROM rewiring_events WHERE event_id = ?", (event_id,))
+      "SELECT agent_id, unfollow, follow FROM rewiring_events WHERE event_id = ?", (event_id,))
   row = cur.fetchone()
   if row:
-    return RewiringEventBody(unfollow=row[0], follow=row[1])
+    return RewiringEventBody(agent_id=row[0], unfollow=row[1], follow=row[2])
   return None
 
 
@@ -213,10 +214,10 @@ def batch_load_event_bodies(
   if event_type == "Rewiring":
     # 批量查 rewiring_events
     for batch in event_ids_itr:
-      sql = f"SELECT event_id, unfollow, follow FROM rewiring_events WHERE event_id IN ({','.join(['?']*len(batch))})"
+      sql = f"SELECT event_id, agent_id, unfollow, follow FROM rewiring_events WHERE event_id IN ({','.join(['?']*len(batch))})"
       cur.execute(sql, batch)
-      for eid, unf, fol in cur.fetchall():
-        id2body[eid] = RewiringEventBody(unfollow=unf, follow=fol)
+      for eid, aid, unf, fol in cur.fetchall():
+        id2body[eid] = RewiringEventBody(agent_id=aid, unfollow=unf, follow=fol)
   elif event_type == "Post":
     # 批量查 post_events
     for batch in event_ids_itr:

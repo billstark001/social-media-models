@@ -100,7 +100,7 @@ func TestParsableProgressOutput(t *testing.T) {
 				strings.Contains(line, "DONE_TYPE:ITER") ||
 				strings.Contains(line, "DONE_TYPE:HALT")
 			if !validDoneType {
-				t.Errorf("DONE line has unrecognised DONE_TYPE: %s", line)
+				t.Errorf("DONE line has unrecognized DONE_TYPE: %s", line)
 			}
 		}
 		if strings.Contains(line, "TYPE:PROGRESS") {

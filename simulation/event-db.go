@@ -45,6 +45,7 @@ func OpenEventDB(filename string, batchSize int) (*EventDB, error) {
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS rewiring_events (
 			event_id INTEGER PRIMARY KEY,
+			agent_id INTEGER NOT NULL,
 			unfollow INTEGER NOT NULL,
 			follow INTEGER NOT NULL,
 			FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
@@ -94,7 +95,7 @@ func OpenEventDB(filename string, batchSize int) (*EventDB, error) {
 		return nil, fmt.Errorf("failed to prepare event insert: %w", err)
 	}
 
-	rewiringStmt, err := db.Prepare("INSERT INTO rewiring_events (event_id, unfollow, follow) VALUES (?, ?, ?)")
+	rewiringStmt, err := db.Prepare("INSERT INTO rewiring_events (event_id, agent_id, unfollow, follow) VALUES (?, ?, ?, ?)")
 	if err != nil {
 		eventStmt.Close()
 		db.Close()
@@ -184,7 +185,7 @@ func (edb *EventDB) flushLocked() error {
 		switch event.Type {
 		case "Rewiring":
 			if body, ok := event.Body.(model.RewiringEventBody); ok {
-				_, err := tx.Stmt(edb.rewiringStmt).Exec(eventIDs[i], body.Unfollow, body.Follow)
+				_, err := tx.Stmt(edb.rewiringStmt).Exec(eventIDs[i], body.AgentID, body.Unfollow, body.Follow)
 				if err != nil {
 					tx.Rollback()
 					return fmt.Errorf("failed to insert rewiring event: %w", err)
@@ -291,8 +292,8 @@ func (edb *EventDB) GetEvents() ([]*model.EventRecord, error) {
 		case "Rewiring":
 			var body model.RewiringEventBody
 			err = edb.db.QueryRow(
-				"SELECT unfollow, follow FROM rewiring_events WHERE event_id = ?", id,
-			).Scan(&body.Unfollow, &body.Follow)
+				"SELECT agent_id, unfollow, follow FROM rewiring_events WHERE event_id = ?", id,
+			).Scan(&body.AgentID, &body.Unfollow, &body.Follow)
 			if err != nil {
 				return nil, fmt.Errorf("failed to scan rewiring event: %w", err)
 			}
