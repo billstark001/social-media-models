@@ -40,3 +40,6 @@ main.exe
 __pycache__
 *.log
 smp_bindings.egg-info
+
+/smp
+/main

@@ -87,13 +87,34 @@ func GetFloat64RecsysFactories[P any]() map[string]model.RecsysFactory[float64, 
 
 // GetBoolRecsysFactories returns the available recsys factories for bool-opinion
 // models with params type P (used by Galam and Voter).
-// Only "Random" is available for bool-opinion models.
+// "Random" and "StructureM9" (90% structure + 10% random) are supported.
 func GetBoolRecsysFactories[P any]() map[string]model.RecsysFactory[bool, P] {
-	return map[string]model.RecsysFactory[bool, P]{
+	ret := map[string]model.RecsysFactory[bool, P]{
 		"Random": func(h *model.SMPModel[bool, P]) model.SMPModelRecommendationSystem[bool, P] {
 			return recsys.NewRandom(h, nil)
 		},
+		"Structure": func(h *model.SMPModel[bool, P]) model.SMPModelRecommendationSystem[bool, P] {
+			return recsys.NewStructure(h, 0.1, nil, true, func(s string) {
+				fmt.Println(s)
+			})
+		},
+		"StructureRandom": func(h *model.SMPModel[bool, P]) model.SMPModelRecommendationSystem[bool, P] {
+			return recsys.NewStructureRandom(h, nil, 1, 0.1, 0, true, func(s string) {
+				fmt.Println(s)
+			})
+		},
 	}
+
+	ret["StructureM9"] = func(h *model.SMPModel[bool, P]) model.SMPModelRecommendationSystem[bool, P] {
+		return &recsys.Mix[bool, P]{
+			Model:       h,
+			RecSys1:     ret["Random"](h),
+			RecSys2:     ret["Structure"](h),
+			RecSys1Rate: 0.1,
+		}
+	}
+
+	return ret
 }
 
 // GetDefaultRecsysFactoryDefs returns the HK recsys factories for backward compatibility.
