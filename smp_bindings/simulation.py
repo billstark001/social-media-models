@@ -95,11 +95,13 @@ def run_simulation(
       bufsize=1,
   )
 
-  # Drain stderr in a background thread to prevent the pipe from blocking.
+  # Collect stderr in a background thread to prevent the pipe from blocking.
+  stderr_lines: List[str] = []
+
   def _drain_stderr() -> None:
     assert proc.stderr is not None
-    for _ in proc.stderr:
-      pass
+    for line in proc.stderr:
+      stderr_lines.append(line)
 
   stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
   stderr_thread.start()
@@ -136,6 +138,14 @@ def run_simulation(
 
   proc.wait()
   stderr_thread.join(timeout=2)
+
+  if proc.returncode != 0:
+    stderr_output = "".join(stderr_lines).strip()
+    raise RuntimeError(
+        f"Simulation '{unique_name}' failed with exit code {proc.returncode}"
+        + (f":\n{stderr_output}" if stderr_output else "")
+    )
+
   return unique_name
 
 

@@ -42,4 +42,9 @@ __pycache__
 smp_bindings.egg-info
 
 /smp
+/smp_*
+/smp.exe
+!/smp_bindings
 /main
+!/main.go
+/main.exe

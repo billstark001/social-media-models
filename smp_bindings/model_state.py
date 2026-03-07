@@ -9,7 +9,11 @@ import msgpack
 import networkx as nx
 
 
-def load_accumulative_model_state(path: str):
+def load_accumulative_model_state(
+    path: str,
+    with_agent_numbers: bool = False,
+    with_agent_opinion_sums: bool = False
+) -> Dict[str, Any]:
   with open(path, 'rb') as f:
     raw = f.read()
   # LZ4 解压
@@ -27,35 +31,38 @@ def load_accumulative_model_state(path: str):
     opinions.append(arr)
     offset += 4 * agents
 
-  # 读取AgentNumbers
-  agent_numbers = []
-  for _ in range(steps_p1):
-    step_arr = []
-    for _ in range(agents):
-      arr = struct.unpack_from('<4h', decompressed, offset)
-      step_arr.append(arr)
-      offset += 4 * 2
-    agent_numbers.append(step_arr)
-
-  # 读取AgentOpinionSums
-  agent_opinion_sums = []
-  for _ in range(steps_p1):
-    step_arr = []
-    for _ in range(agents):
-      arr = struct.unpack_from('<4f', decompressed, offset)
-      step_arr.append(arr)
-      offset += 4 * 4
-    agent_opinion_sums.append(step_arr)
-
-  return {
+  ret = {
       'steps': steps_p1 - 1,
       'agents': agents,
       'opinions': np.array(opinions),  # shape: (steps + 1, agents)
-      # shape: (steps + 1, agents, 4)
-      'agent_numbers': np.array(agent_numbers),
-      # shape: (steps + 1, agents, 4)
-      'agent_opinion_sums': np.array(agent_opinion_sums),
   }
+
+  if with_agent_numbers:
+    agent_numbers = []
+    for _ in range(steps_p1):
+      step_arr = []
+      for _ in range(agents):
+        arr = struct.unpack_from('<4h', decompressed, offset)
+        step_arr.append(arr)
+        offset += 4 * 2
+      agent_numbers.append(step_arr)
+    # shape: (steps + 1, agents, 4)
+    ret['agent_numbers'] = np.array(agent_numbers)
+
+  if with_agent_opinion_sums:
+    agent_opinion_sums = []
+    for _ in range(steps_p1):
+      step_arr = []
+      for _ in range(agents):
+        arr = struct.unpack_from('<4f', decompressed, offset)
+        step_arr.append(arr)
+        offset += 4 * 4
+      agent_opinion_sums.append(step_arr)
+    # shape: (steps + 1, agents, 4)
+    ret['agent_opinion_sums'] = np.array(
+        agent_opinion_sums)
+
+  return ret
 
 
 def load_gonum_graph_dump(filename: str, check_sanity=True):

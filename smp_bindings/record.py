@@ -48,19 +48,26 @@ class RawSimulationRecord:
     self.max_step: int = 0
     self.metadata: dict = dict(**metadata)  # type: ignore
 
+  def _get_stored_graph(self, step: int) -> nx.DiGraph:
+    """按需从文件加载并缓存 graphs_stored 中的图（懒加载）。"""
+    if step not in self.graphs_stored:
+      self.graphs_stored[step] = load_gonum_graph_dump(self.graph_paths[step])  # type: ignore
+    return self.graphs_stored[step]
+
   def load(self):
-    acc_state = load_accumulative_model_state(self.acc_state_path)
+    acc_state = load_accumulative_model_state(
+      self.acc_state_path,
+      with_agent_numbers=True,
+      with_agent_opinion_sums=True,
+    )
     events_db = load_events_db(self.events_db_path)
-    graphs: Dict[int, nx.DiGraph] = {}
-    for graph_name, graph_path in self.graph_paths.items():
-      graphs[graph_name] = load_gonum_graph_dump(graph_path)  # type: ignore
 
     self.acc_state = acc_state
     self.events_db = events_db
-    self.graphs_stored = graphs
+    self.graphs_stored: Dict[int, nx.DiGraph] = {}  # lazy-loaded cache
     self.graphs: Dict[int, nx.DiGraph] = {}
     self.graph_steps: List[int] = []
-    self.graph_steps.extend(self.graphs_stored.keys())
+    self.graph_steps.extend(self.graph_paths.keys())
     self.graph_steps.sort()
 
     # store acc state data locally
@@ -70,15 +77,16 @@ class RawSimulationRecord:
     self.agents = int(self.acc_state['agents'])
     self.max_step = int(acc_state['steps'])
 
-    g0 = self.graphs_stored[0]
+    g0 = self._get_stored_graph(0)
     follow_counts = [len(g0.out_edges(x)) for x in range(self.agents)]
     self.followers = np.array(follow_counts)
 
   def dispose(self):
     self.events_db.close()
     self.graphs = {}
+    self.graphs_stored = {}
     self.graph_steps = []
-    self.graph_steps.extend(self.graphs_stored.keys())
+    self.graph_steps.extend(self.graph_paths.keys())
     self.graph_steps.sort()
 
   def __enter__(self):
@@ -94,12 +102,19 @@ class RawSimulationRecord:
       raise ValueError("invalid step")
 
     # the step is already available
-    if step in self.graphs_stored:
+    if step in self.graph_paths and step not in self.graphs_stored:
+      # stored graph not yet loaded — skip to lazy-load path below
+      pass
+    elif step in self.graphs_stored:
       return self.graphs_stored[step]
-    if step in self.graphs:
+    elif step in self.graphs:
       return self.graphs[step]
 
-    # the step needs to be parsed
+    # the step needs to be parsed (or is a stored graph not yet loaded)
+
+    # if the step matches a stored file exactly, lazy-load and return
+    if step in self.graph_paths:
+      return self._get_stored_graph(step)
 
     # get graph
     nearest_available_step_idx = _last_less_than(
@@ -108,8 +123,8 @@ class RawSimulationRecord:
       raise ValueError('bad dump data (graph)')
     nearest_available_step = self.graph_steps[nearest_available_step_idx]
     nearest_available_graph: nx.DiGraph = (
-        self.graphs_stored[nearest_available_step]
-        if nearest_available_step in self.graphs_stored else
+        self._get_stored_graph(nearest_available_step)
+        if nearest_available_step in self.graph_paths else
         self.graphs[nearest_available_step]
     ).copy()  # type: ignore
 
