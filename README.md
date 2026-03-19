@@ -148,6 +148,31 @@ pip install .             # regular install
 
 Dependencies: `msgpack`, `numpy`, `networkx`, `lz4`.
 
+### IDE Configuration (VSCode/Pylance)
+
+After installing `smp_bindings`, VSCode's Pylance linter may not immediately recognize the package even though the Python interpreter can import it normally. To fix this:
+
+1. **Select the correct Python interpreter in VSCode**
+   - Press `Cmd+Shift+P` (macOS) or `Ctrl+Shift+P` (Linux/Windows)
+   - Search for "Python: Select Interpreter"
+   - Choose your conda/virtual environment (e.g., `./miniconda3/envs/your-env/bin/python`)
+
+2. **Install in editable mode** (recommended for development)
+
+   ```bash
+   pip install -e /path/to/social-media-models
+   ```
+
+3. **Restart VSCode** to allow Pylance to re-index packages
+
+The project is preconfigured with:
+
+- `.vscode/settings.json` — Pylance type-checking mode and Python environment detection
+- `pyproject.toml` — `[tool.pyright]` configuration for type checking
+- `smp_bindings/py.typed` — marker file indicating type support
+
+These configurations ensure that Pylance correctly discovers and analyzes the `smp_bindings` package alongside your code.
+
 ### Loading simulation output
 
 ```python
@@ -269,3 +294,4 @@ python -m smp_bindings.migrate events   ./run/my-sim/events.db
 
 - [`docs/architecture.md`](docs/architecture.md) — package structure, data-flow diagram, serialization schema
 - [`docs/migration.md`](docs/migration.md) — breaking changes and migration scripts
+- [`docs/ide-setup.md`](docs/ide-setup.md) — VSCode/Pylance configuration for `smp_bindings` development

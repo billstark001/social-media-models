@@ -20,3 +20,15 @@ smp-migrate = "smp_bindings.migrate:main"
 
 [tool.setuptools.packages.find]
 include = ["smp_bindings*"]
+
+[tool.setuptools.package-data]
+smp_bindings = ["py.typed"]
+
+[tool.pylance]
+extraPaths = ["${workspaceFolder}"]
+
+[tool.pyright]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
+include = ["smp_bindings"]
+extraPaths = ["${workspaceFolder}"]
