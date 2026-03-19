@@ -40,7 +40,9 @@ def migrate_snapshot(path: str, dynamics_type: str = "HK") -> None:
       数据来自旧 Deffuant 仿真时应传 ``"Deffuant"``，以此类推。
   """
   data = pathlib.Path(path).read_bytes()
-  inner = msgpack.unpackb(data, raw=False)
+  # Some historical snapshots contain non-string map keys in nested objects.
+  # Use strict_map_key=False to keep backward compatibility during migration.
+  inner = msgpack.unpackb(data, raw=False, strict_map_key=False)
 
   # 检测是否已经是 v3 信封格式
   if isinstance(inner, dict) and "DynamicsType" in inner and "Data" in inner:
@@ -48,8 +50,11 @@ def migrate_snapshot(path: str, dynamics_type: str = "HK") -> None:
     return
 
   # v1→v2：Tweets → Posts
-  if b"Tweets" in inner:
-    inner[b"Posts"] = inner.pop(b"Tweets")
+  if isinstance(inner, dict):
+    if "Tweets" in inner and "Posts" not in inner:
+      inner["Posts"] = inner.pop("Tweets")
+    elif b"Tweets" in inner and b"Posts" not in inner:
+      inner[b"Posts"] = inner.pop(b"Tweets")
 
   # v2→v3：包装进信封
   inner_bytes = msgpack.packb(inner)
