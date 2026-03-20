@@ -15,6 +15,10 @@ import (
 
 const MAX_SIM_COUNT = 15000
 
+func usage(program string) {
+	log.Printf("Usage: %s <base_path> <metadata_json> [parsable_progress]", program)
+}
+
 func main() {
 	metadata := &simulation.ScenarioMetadata{
 
@@ -53,6 +57,12 @@ func main() {
 	}
 
 	args := os.Args
+	if len(args) < 3 {
+		log.Printf("missing required arguments: <base_path> and <metadata_json>")
+		usage(args[0])
+		os.Exit(2)
+	}
+
 	basePath := args[1]
 	metadataJson := []byte(args[2])
 

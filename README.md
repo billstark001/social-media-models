@@ -96,6 +96,24 @@ Snapshots are stored as **msgpack** files; accumulative time-series data uses a 
 
 See [`docs/architecture.md`](docs/architecture.md) for the full file layout.
 
+## Build
+
+This project depends on `github.com/mattn/go-sqlite3`, so the Go toolchain needs a working C compiler.
+
+macOS / Linux:
+
+```bash
+go build -o smp .
+```
+
+Windows PowerShell:
+
+```powershell
+go build -o smp.exe .
+```
+
+If `go-sqlite3` fails to compile on Windows, install a GCC-compatible toolchain first, for example MinGW-w64 via `winget install --id MSYS2.MSYS2 -e`, then build again from an MSYS2 MinGW shell or a PowerShell session with GCC on `PATH`.
+
 ## CLI Usage
 
 The compiled binary (`smp`) accepts the following positional arguments:
@@ -114,6 +132,12 @@ Example:
 
 ```bash
 ./smp ./run '{"UniqueName":"run-001","DynamicsType":"HK",...}' 1
+```
+
+Windows PowerShell example:
+
+```powershell
+./smp.exe ./run '{"UniqueName":"run-001","DynamicsType":"HK",...}' 1
 ```
 
 When parsable progress is enabled, each step emits a line of the form:
