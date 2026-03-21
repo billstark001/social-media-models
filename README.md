@@ -266,7 +266,8 @@ Validation rules currently enforced by the Go runtime:
 
 - UniqueName: non-empty, no leading/trailing spaces, max length 128, chars in [A-Za-z0-9._-]
 - DynamicsType: required, must be one of HK / Deffuant / Galam / Voter
-- RecsysCount and PostRetainCount: > 0
+- RecsysCount: > 0
+- PostRetainCount: >= 0
 - MaxSimulationStep: > 0
 - NodeCount: >= 2
 - NodeFollowCount: in [1, NodeCount-1]

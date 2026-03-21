@@ -83,8 +83,8 @@ func (m *ScenarioMetadata) Validate() error {
 	if m.RecsysCount <= 0 {
 		return fmt.Errorf("RecsysCount must be > 0, got %d", m.RecsysCount)
 	}
-	if m.PostRetainCount <= 0 {
-		return fmt.Errorf("PostRetainCount must be > 0, got %d", m.PostRetainCount)
+	if m.PostRetainCount < 0 {
+		return fmt.Errorf("PostRetainCount must be >= 0, got %d", m.PostRetainCount)
 	}
 
 	if m.MaxSimulationStep <= 0 {
