@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"smp/dynamics"
 	"smp/model"
 	"smp/simulation"
 	"strings"
@@ -21,16 +20,6 @@ func usage(program string) {
 
 func main() {
 	metadata := &simulation.ScenarioMetadata{
-
-		DynamicsType: simulation.DynamicsTypeHK,
-
-		HKParams: dynamics.HKParams{
-
-			Influence:    0.01,
-			Tolerance:    0.45,
-			RewiringRate: 0.05,
-			RepostRate:   0.3,
-		},
 
 		SMPModelPureParams: model.SMPModelPureParams{
 
@@ -52,8 +41,6 @@ func main() {
 		NodeFollowCount:   15,
 
 		MaxSimulationStep: MAX_SIM_COUNT,
-
-		UniqueName: "test",
 	}
 
 	args := os.Args
@@ -69,6 +56,10 @@ func main() {
 	err := json.Unmarshal(metadataJson, metadata)
 	if err != nil {
 		log.Fatalf("Failed to unmarshal metadata file: %v", err)
+	}
+
+	if err := metadata.Validate(); err != nil {
+		log.Fatalf("Invalid metadata: %v", err)
 	}
 
 	outputParsableProgress := false

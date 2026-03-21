@@ -146,6 +146,134 @@ When parsable progress is enabled, each step emits a line of the form:
 TASK:<name>;TYPE:PROGRESS;STEP:<n>;
 ```
 
+### Parameter Types
+
+The following TypeScript definition matches the runtime metadata fields used by the CLI:
+
+```ts
+export type DynamicsType = "HK" | "Deffuant" | "Galam" | "Voter";
+export type NetworkType = "Random";
+
+export type RecsysFactoryTypeFloat64 =
+    | "Random"
+    | "Opinion"
+    | "Structure"
+    | "OpinionRandom"
+    | "StructureRandom"
+    | "OpinionM9"
+    | "StructureM9";
+
+export type RecsysFactoryTypeBool =
+    | "Random"
+    | "Structure"
+    | "StructureRandom"
+    | "StructureM9";
+
+export interface HKParams {
+    Tolerance: number;
+    Influence: number;   // [0, 1]
+    RewiringRate: number; // [0, 1]
+    RepostRate: number;   // [0, 1]
+}
+
+export interface DeffuantParams {
+    Tolerance: number;
+    Influence: number;   // [0, 1]
+    RewiringRate: number; // [0, 1]
+    RepostRate: number;   // [0, 1]
+}
+
+export interface GalamParams {
+    Influence: number;   // [0, 1]
+    RewiringRate: number; // [0, 1]
+    RepostRate: number;   // [0, 1]
+}
+
+export interface VoterParams {
+    Influence: number;   // [0, 1]
+    RewiringRate: number; // [0, 1]
+    RepostRate: number;   // [0, 1]
+}
+
+export interface CollectItemOptions {
+    AgentNumber: boolean;
+    OpinionSum: boolean;
+    RewiringEvent: boolean;
+    ViewPostsEvent: boolean;
+    PostEvent: boolean;
+}
+
+export interface RecSysParams {
+    // For float64 recsys path (HK/Deffuant)
+    NoiseStd?: number;
+    OpRandomNoiseStd?: number;
+    UseCache?: boolean;
+    Tolerance?: number;
+    Steepness?: number;
+    RandomRatio?: number;
+    MixRate?: number;
+
+    // For bool recsys path (Galam/Voter)
+    NoiseStd?: number;
+    UseCache?: boolean;
+    Steepness?: number;
+    RandomRatio?: number;
+    MixRate?: number;
+}
+
+interface ScenarioMetadataBase {
+    UniqueName: string;
+    DynamicsType: DynamicsType;
+    MaxSimulationStep: number;
+    NetworkType: NetworkType;
+    NodeCount: number;
+    NodeFollowCount: number;
+    RecsysCount: number;
+    PostRetainCount: number;
+    CollectItemOptions?: CollectItemOptions;
+    AgentNumber?: boolean;
+    OpinionSum?: boolean;
+    RewiringEvent?: boolean;
+    ViewPostsEvent?: boolean;
+    PostEvent?: boolean;
+    RecSysParams?: RecSysParams;
+}
+
+export type ScenarioMetadata =
+    | (ScenarioMetadataBase & {
+            DynamicsType: "HK";
+            HKParams: HKParams;
+            RecsysFactoryType: RecsysFactoryTypeFloat64;
+        })
+    | (ScenarioMetadataBase & {
+            DynamicsType: "Deffuant";
+            DeffuantParams: DeffuantParams;
+            RecsysFactoryType: RecsysFactoryTypeFloat64;
+        })
+    | (ScenarioMetadataBase & {
+            DynamicsType: "Galam";
+            GalamParams: GalamParams;
+            RecsysFactoryType: RecsysFactoryTypeBool;
+        })
+    | (ScenarioMetadataBase & {
+            DynamicsType: "Voter";
+            VoterParams: VoterParams;
+            RecsysFactoryType: RecsysFactoryTypeBool;
+        });
+```
+
+Validation rules currently enforced by the Go runtime:
+
+- UniqueName: non-empty, no leading/trailing spaces, max length 128, chars in [A-Za-z0-9._-]
+- DynamicsType: required, must be one of HK / Deffuant / Galam / Voter
+- RecsysCount and PostRetainCount: > 0
+- MaxSimulationStep: > 0
+- NodeCount: >= 2
+- NodeFollowCount: in [1, NodeCount-1]
+- NetworkType: currently only Random
+- Influence / RewiringRate / RepostRate: in [0, 1]
+- Tolerance: must be finite and >= 0
+
 ## Testing
 
 ```bash

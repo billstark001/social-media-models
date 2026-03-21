@@ -40,6 +40,9 @@ const MAX_POST_EVENT_INTERVAL = 500
 const DB_CACHE_SIZE = 40000
 
 func (s *Scenario) Init() {
+	if err := s.Metadata.Validate(); err != nil {
+		log.Fatalf("Invalid scenario metadata: %v", err)
+	}
 
 	nodeCount := max(s.Metadata.NodeCount, 1)
 	edgeCount := max(s.Metadata.NodeFollowCount, 1)
@@ -122,6 +125,9 @@ func (s *Scenario) Init() {
 }
 
 func (s *Scenario) Load() bool {
+	if err := s.Metadata.Validate(); err != nil {
+		log.Fatalf("Invalid scenario metadata: %v", err)
+	}
 
 	dbPath := filepath.Join(s.BaseDir, s.Metadata.UniqueName, "events.db")
 	_, err := os.Stat(dbPath)
