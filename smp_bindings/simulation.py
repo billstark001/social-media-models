@@ -67,9 +67,13 @@ def _parse_progress_line(line: str) -> Optional[Dict[str, str]]:
 
 def _send_signal_to_process_group_or_proc(
     proc: subprocess.Popen,
-    sig: signal.Signals,
+    sig: Union[signal.Signals, int],
 ) -> None:
-  """Send a signal to proc's process group, falling back to the proc itself."""
+  """Send a signal to proc's process group, falling back to the proc itself.
+
+  On Linux/POSIX: sends POSIX signals to process group.
+  On Windows: uses proc.send_signal() for CTRL_C_EVENT, or terminate/kill for others.
+  """
   if proc.poll() is not None:
     return
 
@@ -81,28 +85,55 @@ def _send_signal_to_process_group_or_proc(
       return
     except PermissionError:
       pass
-
-  try:
-    proc.send_signal(sig)
-  except ProcessLookupError:
-    return
+    # Fall through for PermissionError on posix
+    try:
+      proc.send_signal(sig)
+    except ProcessLookupError:
+      return
+  else:
+    # Windows: use proc.send_signal() only for CTRL_C_EVENT
+    if sig == signal.CTRL_C_EVENT:
+      try:
+        proc.send_signal(sig)
+      except (ProcessLookupError, ValueError):
+        return
+    # For other signals on Windows, no direct equivalent
+    # The caller should use proc.terminate() or proc.kill() instead
 
 
 def _terminate_process(proc: subprocess.Popen) -> None:
-  """Try graceful stop first, then escalate if the subprocess does not exit."""
+  """Try graceful stop first, then escalate if the subprocess does not exit.
+
+  On Linux: SIGINT -> SIGTERM -> SIGKILL
+  On Windows: CTRL_C_EVENT -> terminate() -> kill()
+  """
   if proc.poll() is not None:
     return
 
-  _send_signal_to_process_group_or_proc(proc, signal.SIGINT)
-  try:
-    proc.wait(timeout=8)
-  except subprocess.TimeoutExpired:
-    _send_signal_to_process_group_or_proc(proc, signal.SIGTERM)
+  if os.name == "posix":
+    # Linux/POSIX: use signals
+    _send_signal_to_process_group_or_proc(proc, signal.SIGINT)
     try:
-      proc.wait(timeout=3)
+      proc.wait(timeout=8)
     except subprocess.TimeoutExpired:
-      _send_signal_to_process_group_or_proc(proc, signal.SIGKILL)
-      proc.wait()
+      _send_signal_to_process_group_or_proc(proc, signal.SIGTERM)
+      try:
+        proc.wait(timeout=3)
+      except subprocess.TimeoutExpired:
+        _send_signal_to_process_group_or_proc(proc, signal.SIGKILL)
+        proc.wait()
+  else:
+    # Windows: use process methods
+    try:
+      _send_signal_to_process_group_or_proc(proc, signal.CTRL_C_EVENT)
+      proc.wait(timeout=8)
+    except subprocess.TimeoutExpired:
+      try:
+        proc.terminate()
+        proc.wait(timeout=3)
+      except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +236,9 @@ def run_simulation(
           )
         elif msg_type == "PROGRESS":
           suffix = f"/{max_step}" if max_step else ""
-          progress_text = f"{progress_prefix}[{unique_name}] step {step}{suffix}"
+          progress_text = (
+              f"{progress_prefix}[{unique_name}] step {step}{suffix}"
+          )
           last_len = int(progress_line_state.get("last_len", 0))
           padding = " " * max(0, last_len - len(progress_text))
           print("\r" + progress_text + padding, end="", flush=True)
@@ -392,13 +425,17 @@ def run_simulations(
         stop_event.set()
         raise
       finally:
-        executor.shutdown(wait=not stop_event.is_set(),
-                          cancel_futures=stop_event.is_set())
+        executor.shutdown(
+            wait=not stop_event.is_set(), cancel_futures=stop_event.is_set()
+        )
   except KeyboardInterrupt:
     interrupted = True
     stop_event.set()
     with print_lock:
-      print("\nKeyboardInterrupt received: stopping running simulations...", file=sys.stderr)
+      print(
+          "\nKeyboardInterrupt received: stopping running simulations...",
+          file=sys.stderr,
+      )
     with active_procs_lock:
       running_procs = list(active_procs)
     for proc in running_procs:
