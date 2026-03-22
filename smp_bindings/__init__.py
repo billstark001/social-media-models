@@ -6,6 +6,11 @@ from smp_bindings.simulation import (
     run_simulation,
     run_simulations,
 )
+from smp_bindings.cleanup import (
+    prune_non_latest_state_files,
+    inspect_problematic_simulations,
+    delete_problematic_simulations,
+)
 from smp_bindings.model_state import (
     load_accumulative_model_state,
     load_gonum_graph_dump,

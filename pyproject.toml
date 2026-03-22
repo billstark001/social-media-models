@@ -17,6 +17,7 @@ dependencies = [
 
 [project.scripts]
 smp-migrate = "smp_bindings.migrate:main"
+smp-cleanup = "smp_bindings.cleanup:main"
 
 [tool.setuptools.packages.find]
 include = ["smp_bindings*"]
