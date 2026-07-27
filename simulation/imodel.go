@@ -24,6 +24,7 @@ type IModel interface {
 	ValidateAcc(acc *AccumulativeModelState) bool
 	// RawDump serializes the model state to msgpack bytes for snapshotting.
 	RawDump() ([]byte, error)
+	GetOpinions() []float64
 }
 
 // ---- Float64ModelWrapper ----
@@ -60,6 +61,10 @@ func (w *Float64ModelWrapper[P]) ValidateAcc(acc *AccumulativeModelState) bool {
 
 func (w *Float64ModelWrapper[P]) RawDump() ([]byte, error) {
 	return msgpack.Marshal(w.M.Dump())
+}
+
+func (w *Float64ModelWrapper[P]) GetOpinions() []float64 {
+	return w.M.CollectOpinions()
 }
 
 // ---- BoolModelWrapper ----
@@ -104,4 +109,17 @@ func (w *BoolModelWrapper[P]) ValidateAcc(acc *AccumulativeModelState) bool {
 
 func (w *BoolModelWrapper[P]) RawDump() ([]byte, error) {
 	return msgpack.Marshal(w.M.Dump())
+}
+
+func (w *BoolModelWrapper[P]) GetOpinions() []float64 {
+	opinions := w.M.CollectOpinions()
+	ret := make([]float64, len(opinions))
+	for i, v := range opinions {
+		if v {
+			ret[i] = 1.0
+		} else {
+			ret[i] = -1.0
+		}
+	}
+	return ret
 }

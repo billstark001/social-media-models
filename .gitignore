@@ -48,3 +48,4 @@ smp_bindings.egg-info
 /main
 !/main.go
 /main.exe
+/viz-simulation/

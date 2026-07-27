@@ -9,27 +9,26 @@ import (
 )
 
 // Opinion implements a recommendation system based on opinion similarity.
-// O is fixed to float64; P is the params type.
-type Opinion[P any] struct {
-	model.BaseRecommendationSystem[float64, P]
-	Model               *model.SMPModel[float64, P]
+type Opinion[O any, P any] struct {
+	model.BaseRecommendationSystem[O, P]
+	Model               *model.SMPModel[O, P]
 	NoiseStd            float64
 	HistoricalPostCount int
 
 	NumNodes     int
 	Epsilon      []float64
 	PostIndices  []*PostIndex
-	AgentMap     map[int64]*model.SMPAgent[float64, P]
+	AgentMap     map[int64]*model.SMPAgent[O, P]
 	AgentIndices map[int64]int
 }
 
 // NewOpinion creates a new opinion-based recommendation system.
-func NewOpinion[P any](m *model.SMPModel[float64, P], noiseStd float64, historicalPostCount *int) *Opinion[P] {
+func NewOpinion[O any, P any](m *model.SMPModel[O, P], noiseStd float64, historicalPostCount *int) *Opinion[O, P] {
 	h := m.ModelParams.PostRetainCount
 	if historicalPostCount != nil {
 		h = *historicalPostCount
 	}
-	return &Opinion[P]{
+	return &Opinion[O, P]{
 		Model:               m,
 		NoiseStd:            noiseStd,
 		HistoricalPostCount: h,
@@ -37,11 +36,11 @@ func NewOpinion[P any](m *model.SMPModel[float64, P], noiseStd float64, historic
 }
 
 // PostInit implements model.SMPModelRecommendationSystem
-func (o *Opinion[P]) PostInit(dumpData []byte) {
+func (o *Opinion[O, P]) PostInit(dumpData []byte) {
 	o.NumNodes = o.Model.Graph.Nodes().Len()
 	normHistCount := max(o.HistoricalPostCount, 0)
 	o.PostIndices = make([]*PostIndex, 0)
-	o.AgentMap = make(map[int64]*model.SMPAgent[float64, P], o.NumNodes)
+	o.AgentMap = make(map[int64]*model.SMPAgent[O, P], o.NumNodes)
 	o.AgentIndices = make(map[int64]int, o.NumNodes)
 	o.Epsilon = make([]float64, o.NumNodes)
 
@@ -62,12 +61,12 @@ func (o *Opinion[P]) PostInit(dumpData []byte) {
 }
 
 // PreStep implements model.SMPModelRecommendationSystem
-func (o *Opinion[P]) PreStep() {
+func (o *Opinion[O, P]) PreStep() {
 	visiblePosts := o.Model.Grid.PostMap
 	fetchOpinion := func(pi *PostIndex) float64 {
 		tsi := visiblePosts[pi.AgentID]
 		if pi.HistoryID == -1 {
-			return o.AgentMap[pi.AgentID].CurOpinion
+			return toFloat64(o.AgentMap[pi.AgentID].CurOpinion)
 		}
 		if len(tsi) <= pi.HistoryID {
 			return -2
@@ -76,7 +75,7 @@ func (o *Opinion[P]) PreStep() {
 		if post == nil || post.AgentID != pi.AgentID {
 			return -2
 		}
-		return tsi[pi.HistoryID].Opinion
+		return toFloat64(tsi[pi.HistoryID].Opinion)
 	}
 
 	for _, pi := range o.PostIndices {
@@ -97,13 +96,13 @@ func (o *Opinion[P]) PreStep() {
 }
 
 // Recommend implements model.SMPModelRecommendationSystem
-func (o *Opinion[P]) Recommend(agent *model.SMPAgent[float64, P], neighborIDs map[int64]bool, count int) []*model.PostRecord[float64] {
-	opinionWithNoise := agent.CurOpinion + o.Epsilon[agent.ID]
+func (o *Opinion[O, P]) Recommend(agent *model.SMPAgent[O, P], neighborIDs map[int64]bool, count int) []*model.PostRecord[O] {
+	opinionWithNoise := toFloat64(agent.CurOpinion) + o.Epsilon[agent.ID]
 
 	iPre := o.AgentIndices[agent.ID] - 1
 	iPost := o.AgentIndices[agent.ID] + 1
 
-	ret := make([]*model.PostRecord[float64], 0, count)
+	ret := make([]*model.PostRecord[O], 0, count)
 
 	visiblePosts := o.Model.Grid.PostMap
 	for len(ret) < count {

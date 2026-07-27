@@ -351,7 +351,9 @@ func GetFloat64RecsysFactories[P any]() map[string]model.RecsysFactory[float64, 
 // reading configuration from the provided params map (nil uses all defaults).
 func GetBoolRecsysFactoriesWithParams[P any](params map[string]any) map[string]model.RecsysFactory[bool, P] {
 	noiseStd := getParamWithFallback(params, "NoiseStd", []string{"noiseStd"}, 0.1)
+	opRandNoiseStd := getParamWithFallback(params, "OpRandomNoiseStd", []string{"opRandomNoiseStd"}, 2.0)
 	useCache := getParamWithFallback(params, "UseCache", []string{"useCache"}, true)
+	tolerance := getParamWithFallback(params, "Tolerance", []string{"tolerance"}, 0.4)
 	steepness := getParamWithFallback(params, "Steepness", []string{"steepness"}, 1.0)
 	randomRatio := getParamWithFallback(params, "RandomRatio", []string{"randomRatio"}, 0.0)
 	mixRate := getParamWithFallback(params, "MixRate", []string{"mixRate"}, 0.1)
@@ -360,16 +362,31 @@ func GetBoolRecsysFactoriesWithParams[P any](params map[string]any) map[string]m
 		"Random": func(h *model.SMPModel[bool, P]) model.SMPModelRecommendationSystem[bool, P] {
 			return recsys.NewRandom(h, nil)
 		},
+		"Opinion": func(h *model.SMPModel[bool, P]) model.SMPModelRecommendationSystem[bool, P] {
+			return recsys.NewOpinion(h, noiseStd, nil)
+		},
 		"Structure": func(h *model.SMPModel[bool, P]) model.SMPModelRecommendationSystem[bool, P] {
 			return recsys.NewStructure(h, noiseStd, nil, useCache, func(s string) {
 				fmt.Println(s)
 			})
+		},
+		"OpinionRandom": func(h *model.SMPModel[bool, P]) model.SMPModelRecommendationSystem[bool, P] {
+			return recsys.NewOpinionRandom(h, nil, tolerance, steepness, opRandNoiseStd, randomRatio)
 		},
 		"StructureRandom": func(h *model.SMPModel[bool, P]) model.SMPModelRecommendationSystem[bool, P] {
 			return recsys.NewStructureRandom(h, nil, steepness, noiseStd, randomRatio, useCache, func(s string) {
 				fmt.Println(s)
 			})
 		},
+	}
+
+	ret["OpinionM9"] = func(h *model.SMPModel[bool, P]) model.SMPModelRecommendationSystem[bool, P] {
+		return &recsys.Mix[bool, P]{
+			Model:       h,
+			RecSys1:     ret["Random"](h),
+			RecSys2:     ret["Opinion"](h),
+			RecSys1Rate: mixRate,
+		}
 	}
 
 	ret["StructureM9"] = func(h *model.SMPModel[bool, P]) model.SMPModelRecommendationSystem[bool, P] {

@@ -8,10 +8,9 @@ import (
 )
 
 // OpinionRandom implements a recommendation system with random opinion preferences.
-// O is fixed to float64; P is the params type.
-type OpinionRandom[P any] struct {
-	model.BaseRecommendationSystem[float64, P]
-	Model               *model.SMPModel[float64, P]
+type OpinionRandom[O any, P any] struct {
+	model.BaseRecommendationSystem[O, P]
+	Model               *model.SMPModel[O, P]
 	HistoricalPostCount int
 	AgentCount          int
 	Tolerance           float64
@@ -20,22 +19,22 @@ type OpinionRandom[P any] struct {
 	RandomRatio         float64
 
 	NumNodes   int
-	Agents     []*model.SMPAgent[float64, P]
+	Agents     []*model.SMPAgent[O, P]
 	AllIndices []int
 	RateMat    [][]float64
 }
 
 // NewOpinionRandom creates a new random opinion-based recommendation system.
-func NewOpinionRandom[P any](
-	m *model.SMPModel[float64, P],
+func NewOpinionRandom[O any, P any](
+	m *model.SMPModel[O, P],
 	historicalPostCount *int,
 	tolerance, steepness, noiseStd, randomRatio float64,
-) *OpinionRandom[P] {
+) *OpinionRandom[O, P] {
 	h := m.ModelParams.PostRetainCount
 	if historicalPostCount != nil {
 		h = *historicalPostCount
 	}
-	return &OpinionRandom[P]{
+	return &OpinionRandom[O, P]{
 		Model:               m,
 		AgentCount:          m.Graph.Nodes().Len(),
 		HistoricalPostCount: h,
@@ -47,7 +46,7 @@ func NewOpinionRandom[P any](
 }
 
 // PostInit implements model.SMPModelRecommendationSystem
-func (o *OpinionRandom[P]) PostInit(dumpData []byte) {
+func (o *OpinionRandom[O, P]) PostInit(dumpData []byte) {
 	o.NumNodes = o.Model.Graph.Nodes().Len()
 	o.AllIndices = make([]int, o.NumNodes)
 	for i := range o.NumNodes {
@@ -58,10 +57,10 @@ func (o *OpinionRandom[P]) PostInit(dumpData []byte) {
 }
 
 // PreStep implements model.SMPModelRecommendationSystem
-func (o *OpinionRandom[P]) PreStep() {
+func (o *OpinionRandom[O, P]) PreStep() {
 	opinions := make([]float64, o.NumNodes)
 	for i, agent := range o.Agents {
-		opinions[i] = agent.CurOpinion
+		opinions[i] = toFloat64(agent.CurOpinion)
 	}
 
 	rawRateMat := makeRawMat[float64](o.NumNodes, o.NumNodes)
@@ -105,11 +104,11 @@ func (o *OpinionRandom[P]) PreStep() {
 }
 
 // Recommend implements model.SMPModelRecommendationSystem
-func (o *OpinionRandom[P]) Recommend(
-	agent *model.SMPAgent[float64, P],
+func (o *OpinionRandom[O, P]) Recommend(
+	agent *model.SMPAgent[O, P],
 	neighborIDs map[int64]bool,
 	count int,
-) []*model.PostRecord[float64] {
+) []*model.PostRecord[O] {
 
 	visiblePosts := o.Model.Grid.PostMap
 
@@ -132,7 +131,7 @@ func (o *OpinionRandom[P]) Recommend(
 
 	candidates := sampleWithoutReplacement(o.AllIndices, count+4, rateVec)
 
-	ret := make([]*model.PostRecord[float64], 0, count)
+	ret := make([]*model.PostRecord[O], 0, count)
 	for _, idx := range candidates {
 		if len(ret) >= count {
 			break

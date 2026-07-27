@@ -52,6 +52,21 @@ type PostIndex struct {
 	TempOpinion float64
 }
 
+// toFloat64 converts any opinion type to float64 for similarity computation.
+func toFloat64(val any) float64 {
+	switch v := val.(type) {
+	case float64:
+		return v
+	case bool:
+		if v {
+			return 1.0
+		}
+		return 0.0
+	default:
+		return 0.0
+	}
+}
+
 func selectPost[O any, P any](
 	historicalPostCount int,
 	selfAndNeighborIDs map[int64]bool,

@@ -89,7 +89,7 @@ func TestScenarioMetadataValidateAcceptsLargeTolerance(t *testing.T) {
 func TestScenarioMetadataValidateRejectsInvalidRecsysForDynamics(t *testing.T) {
 	meta := makeValidMetadata()
 	meta.DynamicsType = simulation.DynamicsTypeVoter
-	meta.RecsysFactoryType = "Opinion"
+	meta.RecsysFactoryType = "NonExistent"
 
 	if err := meta.Validate(); err == nil {
 		t.Fatal("expected error for invalid recsys_factory_type, got nil")
