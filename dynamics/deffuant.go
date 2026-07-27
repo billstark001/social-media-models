@@ -33,13 +33,13 @@ var _ model.Dynamics[float64, DeffuantParams] = (*Deffuant)(nil)
 var _ model.PreStepDynamics = (*Deffuant)(nil)
 
 // PrepareStep pre-generates n random floats for use in Step calls.
-func (d *Deffuant) PrepareStep(n int) {
+func (d *Deffuant) PrepareStep(n int, rng *rand.Rand) {
 	if cap(d.rndVals) < n {
 		d.rndVals = make([]float64, n)
 	}
 	d.rndVals = d.rndVals[:n]
 	for i := range d.rndVals {
-		d.rndVals[i] = rand.Float64()
+		d.rndVals[i] = rng.Float64()
 	}
 	d.stepIdx = 0
 }
@@ -48,7 +48,7 @@ func (d *Deffuant) Concordant(myOp, otherOp float64, params *DeffuantParams) boo
 	return math.Abs(myOp-otherOp) <= params.Tolerance
 }
 
-func (d *Deffuant) Step(myOp float64, cN, cR, dN, dR []float64, params *DeffuantParams) (float64, model.AgentOpinionSumRecord) {
+func (d *Deffuant) Step(myOp float64, cN, cR, dN, dR []float64, params *DeffuantParams, rng *rand.Rand) (float64, model.AgentOpinionSumRecord) {
 	var sumN, sumR, sumND, sumRD float64
 	for _, o := range cN {
 		sumN += o - myOp
@@ -71,7 +71,7 @@ func (d *Deffuant) Step(myOp float64, cN, cR, dN, dR []float64, params *Deffuant
 			rnd = d.rndVals[d.stepIdx]
 			d.stepIdx++
 		} else {
-			rnd = rand.Float64()
+			rnd = rng.Float64()
 		}
 		idx := int(rnd * float64(total))
 		var picked float64

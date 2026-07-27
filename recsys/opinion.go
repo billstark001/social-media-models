@@ -2,10 +2,10 @@ package recsys
 
 import (
 	"math"
-	"math/rand/v2"
 	"sort"
 
 	"smp/model"
+	smprng "smp/rng"
 )
 
 // Opinion implements a recommendation system based on opinion similarity.
@@ -82,7 +82,14 @@ func (o *Opinion[O, P]) PreStep() {
 		pi.TempOpinion = fetchOpinion(pi)
 	}
 	sort.Slice(o.PostIndices, func(i, j int) bool {
-		return o.PostIndices[i].TempOpinion < o.PostIndices[j].TempOpinion
+		left, right := o.PostIndices[i], o.PostIndices[j]
+		if left.TempOpinion != right.TempOpinion {
+			return left.TempOpinion < right.TempOpinion
+		}
+		if left.AgentID != right.AgentID {
+			return left.AgentID < right.AgentID
+		}
+		return left.HistoryID < right.HistoryID
 	})
 	for i, a := range o.PostIndices {
 		if a.HistoryID == -1 {
@@ -90,8 +97,9 @@ func (o *Opinion[O, P]) PreStep() {
 		}
 	}
 
+	rng := o.Model.RNG.Stream(smprng.StreamRecommendation)
 	for i := range o.Epsilon {
-		o.Epsilon[i] = rand.NormFloat64() * o.NoiseStd
+		o.Epsilon[i] = rng.NormFloat64() * o.NoiseStd
 	}
 }
 

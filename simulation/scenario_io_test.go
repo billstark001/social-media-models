@@ -1,4 +1,4 @@
-package main
+package simulation_test
 
 import (
 	"bytes"
@@ -62,7 +62,10 @@ func TestParsableProgressOutput(t *testing.T) {
 		t.Fatalf("Failed to create test dir: %v", err)
 	}
 
-	scenario := simulation.NewScenario(basePath, metadata, true)
+	scenario := simulation.NewScenarioWithOptions(basePath, metadata, simulation.ScenarioOptions{
+		OutputParsableProgress: true,
+		EnableDumps:            false,
+	})
 	scenario.Init()
 
 	output := captureStdout(func() {
@@ -146,7 +149,10 @@ func TestParsableProgressOutputDeffuant(t *testing.T) {
 		t.Fatalf("Failed to create test dir: %v", err)
 	}
 
-	scenario := simulation.NewScenario(basePath, metadata, true)
+	scenario := simulation.NewScenarioWithOptions(basePath, metadata, simulation.ScenarioOptions{
+		OutputParsableProgress: true,
+		EnableDumps:            false,
+	})
 	scenario.Init()
 
 	output := captureStdout(func() {
@@ -186,7 +192,10 @@ func TestParsableProgressOutputGalam(t *testing.T) {
 		t.Fatalf("Failed to create test dir: %v", err)
 	}
 
-	scenario := simulation.NewScenario(basePath, metadata, true)
+	scenario := simulation.NewScenarioWithOptions(basePath, metadata, simulation.ScenarioOptions{
+		OutputParsableProgress: true,
+		EnableDumps:            false,
+	})
 	scenario.Init()
 
 	output := captureStdout(func() {
@@ -226,7 +235,10 @@ func TestParsableProgressOutputVoter(t *testing.T) {
 		t.Fatalf("Failed to create test dir: %v", err)
 	}
 
-	scenario := simulation.NewScenario(basePath, metadata, true)
+	scenario := simulation.NewScenarioWithOptions(basePath, metadata, simulation.ScenarioOptions{
+		OutputParsableProgress: true,
+		EnableDumps:            false,
+	})
 	scenario.Init()
 
 	output := captureStdout(func() {

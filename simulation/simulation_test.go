@@ -1,10 +1,12 @@
 package simulation_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
+	smprng "smp/rng"
 	"smp/simulation"
 )
 
@@ -130,6 +132,22 @@ func TestSimulationSerializerMetadataRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSimulationSerializerMissingLegacyMetadata(t *testing.T) {
+	dir := t.TempDir()
+	simDir := filepath.Join(dir, "legacy")
+	if err := os.MkdirAll(simDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	ser := simulation.NewSimulationSerializer(dir, "legacy", 5)
+	metadata, err := ser.LoadMetadata()
+	if err != nil {
+		t.Fatalf("legacy run without metadata.json returned an error: %v", err)
+	}
+	if metadata != nil {
+		t.Fatalf("legacy run unexpectedly returned metadata: %+v", metadata)
+	}
+}
+
 func TestSimulationSerializerFinishMark(t *testing.T) {
 	dir := t.TempDir()
 	ser := simulation.NewSimulationSerializer(dir, "finish-test", 5)
@@ -146,7 +164,10 @@ func TestSimulationSerializerFinishMark(t *testing.T) {
 		t.Error("should not be finished before marking")
 	}
 
-	if err := ser.MarkFinished(); err != nil {
+	if err := ser.MarkFinished(simulation.FinishMark{
+		DataVersion: simulation.CurrentDataVersion,
+		RNG:         smprng.FixedSpec(1, 2),
+	}); err != nil {
 		t.Fatalf("MarkFinished: %v", err)
 	}
 
@@ -156,6 +177,16 @@ func TestSimulationSerializerFinishMark(t *testing.T) {
 	}
 	if !finished {
 		t.Error("should be finished after marking")
+	}
+	mark, err := ser.GetFinishMark()
+	if err != nil {
+		t.Fatalf("GetFinishMark: %v", err)
+	}
+	if mark == nil || mark.DataVersion != simulation.CurrentDataVersion {
+		t.Fatalf("unexpected finish mark: %+v", mark)
+	}
+	if mark.RNG != smprng.FixedSpec(1, 2) {
+		t.Fatalf("finish mark RNG mismatch: %+v", mark)
 	}
 }
 
@@ -204,5 +235,63 @@ func TestSimulationSerializerCleanOldFiles(t *testing.T) {
 	}
 	if lz4Count > 2 {
 		t.Errorf("expected at most 2 acc-state files, found %d", lz4Count)
+	}
+}
+
+func TestScenarioPersistsResolvedVersionAndRNG(t *testing.T) {
+	dir := t.TempDir()
+	meta := makeValidMetadata()
+	meta.UniqueName = "resolved-metadata"
+	meta.DataVersion = 0
+	meta.RNG = smprng.Spec{}
+	meta.MaxSimulationStep = 1
+
+	scenario := simulation.NewScenarioWithOptions(dir, meta, simulation.ScenarioOptions{
+		OutputParsableProgress: true,
+		EnableDumps:            false,
+	})
+	scenario.Init()
+	t.Cleanup(func() {
+		if scenario.DB != nil {
+			_ = scenario.DB.Close()
+		}
+	})
+
+	if meta.DataVersion != simulation.CurrentDataVersion {
+		t.Fatalf("resolved DataVersion: got %d, want %d", meta.DataVersion, simulation.CurrentDataVersion)
+	}
+	if meta.RNG.IsZero() {
+		t.Fatal("scenario did not resolve RNG parameters")
+	}
+
+	stored, err := scenario.Serializer.LoadMetadata()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored == nil || stored.DataVersion != simulation.CurrentDataVersion || stored.RNG != meta.RNG {
+		t.Fatalf("stored metadata does not contain resolved version/RNG: %+v", stored)
+	}
+
+	scenario.StepTillEnd(context.Background())
+	mark, err := scenario.Serializer.GetFinishMark()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mark == nil || mark.DataVersion != simulation.CurrentDataVersion || mark.RNG != meta.RNG {
+		t.Fatalf("finish mark does not contain resolved version/RNG: %+v", mark)
+	}
+
+	entries, err := os.ReadDir(filepath.Join(dir, meta.UniqueName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if filepath.Ext(name) == ".lz4" ||
+			filepath.Ext(name) == ".msgpack" &&
+				(len(name) >= len("snapshot-") && name[:len("snapshot-")] == "snapshot-" ||
+					len(name) >= len("graph-") && name[:len("graph-")] == "graph-") {
+			t.Fatalf("dumps disabled but found %q", name)
+		}
 	}
 }

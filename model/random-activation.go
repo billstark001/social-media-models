@@ -1,6 +1,6 @@
 package model
 
-import "math/rand/v2"
+import smprng "smp/rng"
 
 // RandomActivation manages agent activation and scheduling.
 type RandomActivation[O any, P any] struct {
@@ -23,15 +23,17 @@ func (ra *RandomActivation[O, P]) AddAgent(agent *SMPAgent[O, P]) {
 
 // Step activates all agents in random order.
 func (ra *RandomActivation[O, P]) Step() {
+	dynamicsRNG := ra.Model.RNG.Stream(smprng.StreamDynamics)
 	if ps, ok := any(ra.Model.Dynamics).(PreStepDynamics); ok {
-		ps.PrepareStep(len(ra.Agents))
+		ps.PrepareStep(len(ra.Agents), dynamicsRNG)
 	}
+	scheduleRNG := ra.Model.RNG.Stream(smprng.StreamSchedule)
 	indices := make([]int, len(ra.Agents))
 	for i := range indices {
 		indices[i] = i
 	}
 	for i := len(indices) - 1; i > 0; i-- {
-		j := rand.IntN(i + 1)
+		j := scheduleRNG.IntN(i + 1)
 		indices[i], indices[j] = indices[j], indices[i]
 	}
 	for _, i := range indices {

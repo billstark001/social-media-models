@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"smp/dynamics"
 	"smp/model"
+	smprng "smp/rng"
 	"smp/utils"
 	"time"
 
@@ -23,16 +23,35 @@ type Scenario struct {
 	AccState   *AccumulativeModelState
 	Serializer *SimulationSerializer
 	DB         *EventDB
+	RNG        *smprng.Pool
 
 	OutputParsableProgress bool
+	EnableDumps            bool
 }
 
+// ScenarioOptions controls runner behavior that is not part of the simulated
+// model. The zero value is useful for lightweight tests.
+type ScenarioOptions struct {
+	OutputParsableProgress bool
+	EnableDumps            bool
+}
+
+// NewScenario preserves the historical constructor behavior, including dumps.
 func NewScenario(dir string, metadata *ScenarioMetadata, outputParsableProgress bool) *Scenario {
+	return NewScenarioWithOptions(dir, metadata, ScenarioOptions{
+		OutputParsableProgress: outputParsableProgress,
+		EnableDumps:            true,
+	})
+}
+
+// NewScenarioWithOptions constructs a scenario with explicit runner options.
+func NewScenarioWithOptions(dir string, metadata *ScenarioMetadata, options ScenarioOptions) *Scenario {
 	return &Scenario{
 		BaseDir:                dir,
 		Metadata:               metadata,
 		Serializer:             NewSimulationSerializer(dir, metadata.UniqueName, 2),
-		OutputParsableProgress: outputParsableProgress,
+		OutputParsableProgress: options.OutputParsableProgress,
+		EnableDumps:            options.EnableDumps,
 	}
 }
 
@@ -40,8 +59,19 @@ const MAX_POST_EVENT_INTERVAL = 500
 const DB_CACHE_SIZE = 40000
 
 func (s *Scenario) Init() {
+	if err := s.Metadata.PrepareForNewRun(); err != nil {
+		log.Fatalf("Failed to resolve scenario RNG: %v", err)
+	}
 	if err := s.Metadata.Validate(); err != nil {
 		log.Fatalf("Invalid scenario metadata: %v", err)
+	}
+	rngPool, err := smprng.NewPool(s.Metadata.RNG)
+	if err != nil {
+		log.Fatalf("Failed to initialize scenario RNG: %v", err)
+	}
+	s.RNG = rngPool
+	if err := s.Serializer.SaveMetadata(s.Metadata); err != nil {
+		log.Fatalf("Failed to persist resolved metadata: %v", err)
 	}
 
 	nodeCount := max(s.Metadata.NodeCount, 1)
@@ -49,6 +79,7 @@ func (s *Scenario) Init() {
 	graph := utils.CreateRandomNetwork(
 		nodeCount,
 		float64(edgeCount)/(float64(nodeCount)-1),
+		s.RNG.Stream(smprng.StreamNetwork),
 	)
 
 	switch s.Metadata.DynamicsType {
@@ -58,7 +89,7 @@ func (s *Scenario) Init() {
 			SMPModelPureParams: s.Metadata.SMPModelPureParams,
 			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
 		}
-		m := model.NewSMPModelFloat64(graph, nil, &params, &s.Metadata.HKParams, &dynamics.HK{}, &s.Metadata.CollectItemOptions, s.logEvent)
+		m := model.NewSMPModelFloat64(graph, nil, &params, &s.Metadata.HKParams, &dynamics.HK{}, &s.Metadata.CollectItemOptions, s.logEvent, s.RNG)
 		s.Model = &Float64ModelWrapper[dynamics.HKParams]{M: m}
 	case DynamicsTypeDeffuant:
 		factories := GetFloat64RecsysFactoriesWithParams[dynamics.DeffuantParams](s.Metadata.RecSysParams)
@@ -66,7 +97,7 @@ func (s *Scenario) Init() {
 			SMPModelPureParams: s.Metadata.SMPModelPureParams,
 			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
 		}
-		m := model.NewSMPModelFloat64(graph, nil, &params, &s.Metadata.DeffuantParams, &dynamics.Deffuant{}, &s.Metadata.CollectItemOptions, s.logEvent)
+		m := model.NewSMPModelFloat64(graph, nil, &params, &s.Metadata.DeffuantParams, &dynamics.Deffuant{}, &s.Metadata.CollectItemOptions, s.logEvent, s.RNG)
 		s.Model = &Float64ModelWrapper[dynamics.DeffuantParams]{M: m}
 	case DynamicsTypeGalam:
 		factories := GetBoolRecsysFactoriesWithParams[dynamics.GalamParams](s.Metadata.RecSysParams)
@@ -76,10 +107,11 @@ func (s *Scenario) Init() {
 		}
 		n := graph.Nodes().Len()
 		ops := make([]bool, n)
+		opinionRNG := s.RNG.Stream(smprng.StreamOpinion)
 		for i := range ops {
-			ops[i] = rand.IntN(2) == 1
+			ops[i] = opinionRNG.IntN(2) == 1
 		}
-		m := model.NewSMPModel(graph, &ops, &params, &s.Metadata.GalamParams, &dynamics.Galam{}, &s.Metadata.CollectItemOptions, s.logEvent)
+		m := model.NewSMPModel(graph, &ops, &params, &s.Metadata.GalamParams, &dynamics.Galam{}, &s.Metadata.CollectItemOptions, s.logEvent, s.RNG)
 		s.Model = &BoolModelWrapper[dynamics.GalamParams]{M: m}
 	case DynamicsTypeVoter:
 		factories := GetBoolRecsysFactoriesWithParams[dynamics.VoterParams](s.Metadata.RecSysParams)
@@ -89,10 +121,11 @@ func (s *Scenario) Init() {
 		}
 		n := graph.Nodes().Len()
 		ops := make([]bool, n)
+		opinionRNG := s.RNG.Stream(smprng.StreamOpinion)
 		for i := range ops {
-			ops[i] = rand.IntN(2) == 1
+			ops[i] = opinionRNG.IntN(2) == 1
 		}
-		m := model.NewSMPModel(graph, &ops, &params, &s.Metadata.VoterParams, &dynamics.Voter{}, &s.Metadata.CollectItemOptions, s.logEvent)
+		m := model.NewSMPModel(graph, &ops, &params, &s.Metadata.VoterParams, &dynamics.Voter{}, &s.Metadata.CollectItemOptions, s.logEvent, s.RNG)
 		s.Model = &BoolModelWrapper[dynamics.VoterParams]{M: m}
 	default:
 		log.Fatalf("Unknown DynamicsType: %q", s.Metadata.DynamicsType)
@@ -100,7 +133,7 @@ func (s *Scenario) Init() {
 
 	s.Model.InitPosts()
 
-	err := os.MkdirAll(
+	err = os.MkdirAll(
 		filepath.Join(s.BaseDir, s.Metadata.UniqueName),
 		0755,
 	)
@@ -117,7 +150,9 @@ func (s *Scenario) Init() {
 
 	s.DB = db
 
-	s.Serializer.SaveGraph(utils.SerializeGraph(s.Model.GetGraph()), s.Model.GetCurStep())
+	if s.EnableDumps {
+		s.Serializer.SaveGraph(utils.SerializeGraph(s.Model.GetGraph()), s.Model.GetCurStep())
+	}
 	s.Model.Accumulate(s.AccState)
 	s.Model.SetCurStep(1)
 
@@ -125,15 +160,45 @@ func (s *Scenario) Init() {
 }
 
 func (s *Scenario) Load() bool {
+	storedMetadata, err := s.Serializer.LoadMetadata()
+	if err != nil {
+		log.Printf("Failed to load resolved metadata: %v", err)
+		return false
+	}
+	if storedMetadata != nil {
+		s.Metadata.DataVersion = storedMetadata.DataVersion
+		s.Metadata.RNG = storedMetadata.RNG
+	}
 	if err := s.Metadata.Validate(); err != nil {
 		log.Fatalf("Invalid scenario metadata: %v", err)
 	}
 
 	dbPath := filepath.Join(s.BaseDir, s.Metadata.UniqueName, "events.db")
-	_, err := os.Stat(dbPath)
+	_, err = os.Stat(dbPath)
 	if os.IsNotExist(err) {
 		return false
 	}
+	if err != nil {
+		log.Printf("Failed to inspect event db: %v", err)
+		return false
+	}
+
+	if s.Metadata.RNG.IsZero() {
+		resolved, resolveErr := smprng.Resolve(s.Metadata.RNG)
+		if resolveErr != nil {
+			log.Printf("Failed to create compatibility RNG for legacy data: %v", resolveErr)
+			return false
+		}
+		s.Metadata.RNG = resolved
+		log.Printf("Loading legacy DataVersion 0 without reproducible RNG state")
+	}
+	rngPool, err := smprng.NewPool(s.Metadata.RNG)
+	if err != nil {
+		log.Printf("Failed to initialize scenario RNG: %v", err)
+		return false
+	}
+	s.RNG = rngPool
+
 	db, err := OpenEventDB(dbPath, DB_CACHE_SIZE)
 	if err != nil {
 		log.Printf("Failed to create event db logger: %v", err)
@@ -173,7 +238,7 @@ func (s *Scenario) Load() bool {
 			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
 		}
 		s.Model = &Float64ModelWrapper[dynamics.HKParams]{
-			M: dump.Load(&params, &s.Metadata.HKParams, &dynamics.HK{}, &s.Metadata.CollectItemOptions, s.logEvent),
+			M: dump.Load(&params, &s.Metadata.HKParams, &dynamics.HK{}, &s.Metadata.CollectItemOptions, s.logEvent, s.RNG),
 		}
 	case DynamicsTypeDeffuant:
 		var dump model.SMPModelDumpData[float64, dynamics.DeffuantParams]
@@ -187,7 +252,7 @@ func (s *Scenario) Load() bool {
 			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
 		}
 		s.Model = &Float64ModelWrapper[dynamics.DeffuantParams]{
-			M: dump.Load(&params, &s.Metadata.DeffuantParams, &dynamics.Deffuant{}, &s.Metadata.CollectItemOptions, s.logEvent),
+			M: dump.Load(&params, &s.Metadata.DeffuantParams, &dynamics.Deffuant{}, &s.Metadata.CollectItemOptions, s.logEvent, s.RNG),
 		}
 	case DynamicsTypeGalam:
 		var dump model.SMPModelDumpData[bool, dynamics.GalamParams]
@@ -201,7 +266,7 @@ func (s *Scenario) Load() bool {
 			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
 		}
 		s.Model = &BoolModelWrapper[dynamics.GalamParams]{
-			M: dump.Load(&params, &s.Metadata.GalamParams, &dynamics.Galam{}, &s.Metadata.CollectItemOptions, s.logEvent),
+			M: dump.Load(&params, &s.Metadata.GalamParams, &dynamics.Galam{}, &s.Metadata.CollectItemOptions, s.logEvent, s.RNG),
 		}
 	case DynamicsTypeVoter:
 		var dump model.SMPModelDumpData[bool, dynamics.VoterParams]
@@ -215,7 +280,7 @@ func (s *Scenario) Load() bool {
 			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
 		}
 		s.Model = &BoolModelWrapper[dynamics.VoterParams]{
-			M: dump.Load(&params, &s.Metadata.VoterParams, &dynamics.Voter{}, &s.Metadata.CollectItemOptions, s.logEvent),
+			M: dump.Load(&params, &s.Metadata.VoterParams, &dynamics.Voter{}, &s.Metadata.CollectItemOptions, s.logEvent, s.RNG),
 		}
 	default:
 		log.Printf("Unknown DynamicsType in snapshot: %q", dynamicsType)
@@ -247,6 +312,9 @@ func (s *Scenario) sanitize() {
 }
 
 func (s *Scenario) Dump() {
+	if !s.EnableDumps {
+		return
+	}
 	s.DB.Flush()
 	data, err := s.Model.RawDump()
 	if err != nil {
@@ -263,7 +331,7 @@ func (s *Scenario) Step() (int, float64) {
 	s.Model.Accumulate(s.AccState)
 	s.AccState.UnsafePostEvent += changedCount
 
-	if s.AccState.UnsafePostEvent > MAX_POST_EVENT_INTERVAL {
+	if s.EnableDumps && s.AccState.UnsafePostEvent > MAX_POST_EVENT_INTERVAL {
 		s.Serializer.SaveGraph(utils.SerializeGraph(s.Model.GetGraph()), s.Model.GetCurStep())
 		s.AccState.UnsafePostEvent = 0
 	}
@@ -297,8 +365,21 @@ func (s *Scenario) StepTillEnd(ctx context.Context) {
 	var bar *progressbar.ProgressBar
 	lastPrintTime := time.Now()
 	if s.OutputParsableProgress {
+		fmt.Printf(
+			"TASK:%s;TYPE:RNG;ALGORITHM:%s;SEED1:%s;SEED2:%s;\n",
+			s.Metadata.UniqueName,
+			s.Metadata.RNG.Algorithm,
+			s.Metadata.RNG.Seed1,
+			s.Metadata.RNG.Seed2,
+		)
 		fmt.Printf("TASK:%s;TYPE:INIT;STEP:%d;\n", s.Metadata.UniqueName, s.Model.GetCurStep())
 	} else {
+		log.Printf(
+			"RNG algorithm=%s seed1=%s seed2=%s",
+			s.Metadata.RNG.Algorithm,
+			s.Metadata.RNG.Seed1,
+			s.Metadata.RNG.Seed2,
+		)
 		bar = progressbar.Default(int64(maxSimCount))
 		bar.Set(s.Model.GetCurStep())
 	}
@@ -333,7 +414,7 @@ func (s *Scenario) StepTillEnd(ctx context.Context) {
 		}
 
 		timeInterval := time.Since(lastSaveTime)
-		if timeInterval.Seconds() >= SAVE_INTERVAL {
+		if s.EnableDumps && timeInterval.Seconds() >= SAVE_INTERVAL {
 			lastSaveTime = time.Now()
 			s.Dump()
 			didDump = true
@@ -371,7 +452,7 @@ iterLoop:
 		fmt.Println("")
 	}
 
-	if !didDump {
+	if s.EnableDumps && !didDump {
 		s.Dump()
 	}
 
@@ -397,8 +478,13 @@ iterLoop:
 				log.Printf("Simulation ended (shouldContinue == false, step: %d)", st)
 			}
 		}
-		s.Serializer.MarkFinished()
-		s.Serializer.SaveGraph(utils.SerializeGraph(s.Model.GetGraph()), st)
+		s.Serializer.MarkFinished(FinishMark{
+			DataVersion: s.Metadata.DataVersion,
+			RNG:         s.Metadata.RNG,
+		})
+		if s.EnableDumps {
+			s.Serializer.SaveGraph(utils.SerializeGraph(s.Model.GetGraph()), st)
+		}
 	}
 
 }

@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"math/rand/v2"
 	"os"
 	"path"
 	"testing"
@@ -8,12 +9,16 @@ import (
 	"gonum.org/v1/gonum/graph/simple"
 )
 
+func testRNG() *rand.Rand {
+	return rand.New(rand.NewPCG(1, 2))
+}
+
 // Test case for SerializeGraph and DeserializeGraph
 func TestSerializeAndDeserializeGraph(t *testing.T) {
 	// Create a random graph
 	nodeCount := 100
 	edgeProbability := 0.3
-	g := CreateRandomNetwork(nodeCount, edgeProbability)
+	g := CreateRandomNetwork(nodeCount, edgeProbability, testRNG())
 
 	// Serialize the graph
 	nxGraph := SerializeGraph(g)
@@ -32,7 +37,7 @@ func TestSaveAndLoadGraphToFile(t *testing.T) {
 	// Create a random graph
 	nodeCount := 100
 	edgeProbability := 0.3
-	g := CreateRandomNetwork(nodeCount, edgeProbability)
+	g := CreateRandomNetwork(nodeCount, edgeProbability, testRNG())
 
 	// Save the graph to a file
 	tempDir := os.TempDir()
@@ -60,7 +65,7 @@ func TestSmallWorldNetworkSerialization(t *testing.T) {
 	nodeCount := 100
 	k := 4
 	rewireProbability := 0.1
-	g := CreateSmallWorldNetwork(nodeCount, k, rewireProbability)
+	g := CreateSmallWorldNetwork(nodeCount, k, rewireProbability, testRNG())
 
 	// Serialize the graph
 	nxGraph := SerializeGraph(g)

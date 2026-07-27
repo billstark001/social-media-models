@@ -20,7 +20,7 @@ func makeRawMat[T any](h int, w int) [][]T {
 // sampleWithoutReplacement samples n items from population without replacement
 // using the given probabilities via the Efraimidis-Spirakis A-ES algorithm.
 // Each item i gets key = log(U) / p[i]; the n items with the largest keys are returned.
-func sampleWithoutReplacement(population []int, n int, probabilities []float64) []int {
+func sampleWithoutReplacement(population []int, n int, probabilities []float64, rng *rand.Rand) []int {
 	if n >= len(population) {
 		result := make([]int, len(population))
 		copy(result, population)
@@ -33,7 +33,7 @@ func sampleWithoutReplacement(population []int, n int, probabilities []float64) 
 	}
 	items := make([]keyed, len(population))
 	for i, p := range probabilities {
-		items[i] = keyed{math.Log(rand.Float64()) / p, i}
+		items[i] = keyed{math.Log(rng.Float64()) / p, i}
 	}
 	sort.Slice(items, func(a, b int) bool {
 		return items[a].key > items[b].key
@@ -73,10 +73,11 @@ func selectPost[O any, P any](
 	agentPickedID int64,
 	agentMap map[int64]*model.SMPAgent[O, P],
 	visiblePosts map[int64][]*model.PostRecord[O],
+	rng *rand.Rand,
 ) *model.PostRecord[O] {
 	postPickedIndex := -1
 	if historicalPostCount > 0 {
-		postPickedIndex = rand.IntN(historicalPostCount)
+		postPickedIndex = rng.IntN(historicalPostCount)
 	}
 	var el *model.PostRecord[O]
 	if postPickedIndex != -1 && postPickedIndex < len(visiblePosts[agentPickedID]) {

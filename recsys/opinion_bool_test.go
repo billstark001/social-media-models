@@ -6,13 +6,15 @@ import (
 	"smp/dynamics"
 	"smp/model"
 	"smp/recsys"
+	smprng "smp/rng"
 	"smp/utils"
 )
 
 // makeBoolModel builds a small SMPModel[bool, P] suitable for recsys testing.
 // n agents are placed on a random graph with edgeDensity ≈ followCount/(n-1).
 func makeBoolVoterModel(n, followCount int, opinions []bool) *model.SMPModel[bool, dynamics.VoterParams] {
-	graph := utils.CreateRandomNetwork(n, float64(followCount)/float64(n-1))
+	pool := smprng.MustNewPool(smprng.FixedSpec(10, 20))
+	graph := utils.CreateRandomNetwork(n, float64(followCount)/float64(n-1), pool.Stream(smprng.StreamNetwork))
 	params := &model.SMPModelParams[bool, dynamics.VoterParams]{
 		SMPModelPureParams: model.SMPModelPureParams{
 			RecsysCount:     5,
@@ -23,11 +25,12 @@ func makeBoolVoterModel(n, followCount int, opinions []bool) *model.SMPModel[boo
 	dynParams := dynamics.DefaultVoterParams()
 	dynParams.RepostRate = 0.0
 	dynParams.RewiringRate = 0.0
-	return model.NewSMPModel(graph, &opinions, params, dynParams, &dynamics.Voter{}, &model.CollectItemOptions{}, nil)
+	return model.NewSMPModel(graph, &opinions, params, dynParams, &dynamics.Voter{}, &model.CollectItemOptions{}, nil, pool)
 }
 
 func makeBoolGalamModel(n, followCount int, opinions []bool) *model.SMPModel[bool, dynamics.GalamParams] {
-	graph := utils.CreateRandomNetwork(n, float64(followCount)/float64(n-1))
+	pool := smprng.MustNewPool(smprng.FixedSpec(30, 40))
+	graph := utils.CreateRandomNetwork(n, float64(followCount)/float64(n-1), pool.Stream(smprng.StreamNetwork))
 	params := &model.SMPModelParams[bool, dynamics.GalamParams]{
 		SMPModelPureParams: model.SMPModelPureParams{
 			RecsysCount:     5,
@@ -38,7 +41,7 @@ func makeBoolGalamModel(n, followCount int, opinions []bool) *model.SMPModel[boo
 	dynParams := dynamics.DefaultGalamParams()
 	dynParams.RepostRate = 0.0
 	dynParams.RewiringRate = 0.0
-	return model.NewSMPModel(graph, &opinions, params, dynParams, &dynamics.Galam{}, &model.CollectItemOptions{}, nil)
+	return model.NewSMPModel(graph, &opinions, params, dynParams, &dynamics.Galam{}, &model.CollectItemOptions{}, nil, pool)
 }
 
 // TestOpinionRecsysBoolVoter verifies that NewOpinion works with bool-opinion Voter models.

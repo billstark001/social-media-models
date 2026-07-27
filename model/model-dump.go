@@ -1,6 +1,9 @@
 package model
 
-import utils "smp/utils"
+import (
+	smprng "smp/rng"
+	utils "smp/utils"
+)
 
 type SMPModelDumpData[O any, P any] struct {
 	CurStep          int
@@ -10,6 +13,7 @@ type SMPModelDumpData[O any, P any] struct {
 	AgentOpinionSums []AgentOpinionSumRecord
 	Posts            map[int64][]PostRecord[O]
 	RecsysDumpData   []byte
+	RNGStates        map[string][]byte
 }
 
 func (m *SMPModel[O, P]) Dump() *SMPModelDumpData[O, P] {
@@ -21,6 +25,11 @@ func (m *SMPModel[O, P]) Dump() *SMPModelDumpData[O, P] {
 		AgentOpinionSums: m.CollectAgentOpinions(),
 		Posts:            m.CollectPosts(),
 	}
+	rngStates, err := m.RNG.Snapshot()
+	if err != nil {
+		panic(err)
+	}
+	ret.RNGStates = rngStates
 	if m.Recsys != nil {
 		ret.RecsysDumpData = m.Recsys.Dump()
 	}
@@ -33,6 +42,7 @@ func (d *SMPModelDumpData[O, P]) Load(
 	dynamics Dynamics[O, P],
 	collectItems *CollectItemOptions,
 	eventLogger func(*EventRecord),
+	rngPool *smprng.Pool,
 ) *SMPModel[O, P] {
 	m := NewSMPModel(
 		utils.DeserializeGraph(&d.Graph),
@@ -42,6 +52,7 @@ func (d *SMPModelDumpData[O, P]) Load(
 		dynamics,
 		collectItems,
 		eventLogger,
+		rngPool,
 	)
 
 	for _, agent := range m.Schedule.Agents {
@@ -64,6 +75,13 @@ func (d *SMPModelDumpData[O, P]) Load(
 
 	if m.Recsys != nil {
 		m.Recsys.PostInit(d.RecsysDumpData)
+	}
+	// Constructors and PostInit may derive temporary state. Restore last so the
+	// next simulated action starts at exactly the snapshotted RNG position.
+	if len(d.RNGStates) > 0 {
+		if err := rngPool.Restore(d.RNGStates); err != nil {
+			panic(err)
+		}
 	}
 
 	return m

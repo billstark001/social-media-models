@@ -30,7 +30,7 @@ func (d *Galam) Concordant(myOp, otherOp bool, params *GalamParams) bool {
 	return myOp == otherOp
 }
 
-func (d *Galam) Step(myOp bool, cN, cR, dN, dR []bool, params *GalamParams) (bool, model.AgentOpinionSumRecord) {
+func (d *Galam) Step(myOp bool, cN, cR, dN, dR []bool, params *GalamParams, rng *rand.Rand) (bool, model.AgentOpinionSumRecord) {
 	var sumN, sumR, sumND, sumRD float64
 	var opDiff float64
 	if myOp {
@@ -43,7 +43,7 @@ func (d *Galam) Step(myOp bool, cN, cR, dN, dR []bool, params *GalamParams) (boo
 
 	next := myOp
 	if sumND+sumRD > sumN+sumR {
-		if rand.Float64() < params.Influence {
+		if rng.Float64() < params.Influence {
 			next = !myOp
 		}
 	}

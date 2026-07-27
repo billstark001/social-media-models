@@ -5,11 +5,14 @@ import (
 
 	"smp/dynamics"
 	"smp/model"
+	smprng "smp/rng"
 	"smp/simulation"
 )
 
 func makeValidMetadata() *simulation.ScenarioMetadata {
 	return &simulation.ScenarioMetadata{
+		DataVersion:       simulation.CurrentDataVersion,
+		RNG:               smprng.FixedSpec(1, 2),
 		UniqueName:        "valid-name_01",
 		DynamicsType:      simulation.DynamicsTypeHK,
 		HKParams:          *dynamics.DefaultHKParams(),

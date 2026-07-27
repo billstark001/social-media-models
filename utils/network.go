@@ -9,7 +9,7 @@ import (
 // n, p graph
 //
 // p = m / (n - 1),
-func CreateRandomNetwork(nodeCount int, edgeProbability float64) *simple.DirectedGraph {
+func CreateRandomNetwork(nodeCount int, edgeProbability float64, rng *rand.Rand) *simple.DirectedGraph {
 	g := simple.NewDirectedGraph()
 
 	for i := range nodeCount {
@@ -18,7 +18,7 @@ func CreateRandomNetwork(nodeCount int, edgeProbability float64) *simple.Directe
 
 	for i := range nodeCount {
 		for j := range nodeCount {
-			if i != j && rand.Float64() < edgeProbability {
+			if i != j && rng.Float64() < edgeProbability {
 				g.SetEdge(g.NewEdge(simple.Node(i), simple.Node(j)))
 			}
 		}
@@ -27,7 +27,7 @@ func CreateRandomNetwork(nodeCount int, edgeProbability float64) *simple.Directe
 	return g
 }
 
-func CreateSmallWorldNetwork(nodeCount int, k int, rewireProbability float64) *simple.DirectedGraph {
+func CreateSmallWorldNetwork(nodeCount int, k int, rewireProbability float64, rng *rand.Rand) *simple.DirectedGraph {
 	g := simple.NewDirectedGraph()
 
 	for i := range nodeCount {
@@ -47,14 +47,14 @@ func CreateSmallWorldNetwork(nodeCount int, k int, rewireProbability float64) *s
 	// random reconnect
 	for i := 0; i < nodeCount; i++ {
 		for j := 1; j <= k/2; j++ {
-			if rand.Float64() < rewireProbability {
+			if rng.Float64() < rewireProbability {
 				// current target
 				oldTarget := (i + j) % nodeCount
 
 				// find new target
 				var newTarget int
 				for {
-					newTarget = rand.IntN(nodeCount)
+					newTarget = rng.IntN(nodeCount)
 					if newTarget != i && !g.HasEdgeBetween(int64(i), int64(newTarget)) {
 						break
 					}

@@ -3,6 +3,7 @@ package recsys
 import (
 	"math"
 	"smp/model"
+	smprng "smp/rng"
 )
 
 // StructureRandom implements a weighted random recommendation based on network structure.
@@ -45,6 +46,7 @@ func (s *StructureRandom[O, P]) Recommend(
 ) []*model.PostRecord[O] {
 	visiblePosts := s.Model.Grid.PostMap
 	g := s.Model.Graph
+	rng := s.Model.RNG.Stream(smprng.StreamRecommendation)
 
 	// Attempt to read raw scores from cache.
 	var rawCounts map[int64]float64
@@ -126,7 +128,7 @@ func (s *StructureRandom[O, P]) Recommend(
 		rateVec[id] = 0
 	}
 
-	candidates := sampleWithoutReplacement(s.AllIndices, count+4, rateVec)
+	candidates := sampleWithoutReplacement(s.AllIndices, count+4, rateVec, rng)
 
 	ret := make([]*model.PostRecord[O], 0, count)
 	for _, idx := range candidates {
@@ -140,6 +142,7 @@ func (s *StructureRandom[O, P]) Recommend(
 			agentPicked.ID,
 			s.Model.Grid.AgentMap,
 			visiblePosts,
+			rng,
 		)
 		if post != nil {
 			ret = append(ret, post)

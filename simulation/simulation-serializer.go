@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	smprng "smp/rng"
 	utils "smp/utils"
 
 	"github.com/vmihailenco/msgpack/v5"
@@ -186,10 +187,12 @@ func (s *SimulationSerializer) SaveRawSnapshot(dynamicsType string, data []byte)
 // #region finished mark
 
 type FinishMark struct {
+	DataVersion int
+	RNG         smprng.Spec
 }
 
-func (s *SimulationSerializer) MarkFinished() error {
-	return s._write("finished", &FinishMark{})
+func (s *SimulationSerializer) MarkFinished(mark FinishMark) error {
+	return s._write("finished", &mark)
 }
 
 func (s *SimulationSerializer) IsFinished() (bool, error) {
@@ -199,6 +202,22 @@ func (s *SimulationSerializer) IsFinished() (bool, error) {
 	}
 	finished := len(files) > 0
 	return finished, nil
+}
+
+// GetFinishMark loads the newest finish mark.
+func (s *SimulationSerializer) GetFinishMark() (*FinishMark, error) {
+	files, err := s._list("finished", ".msgpack")
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, nil
+	}
+	ret, err := s._read(files[len(files)-1], &FinishMark{})
+	if err != nil {
+		return nil, err
+	}
+	return ret.(*FinishMark), nil
 }
 
 // #endregion
@@ -350,6 +369,11 @@ func (s *SimulationSerializer) LoadMetadata() (*ScenarioMetadata, error) {
 	// 读取并解析元数据
 	data, err := os.ReadFile(filePath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			// DataVersion 0 runs predate metadata.json. The caller can still
+			// recover them from the CLI metadata and the stored snapshot.
+			return nil, nil
+		}
 		return nil, err
 	}
 

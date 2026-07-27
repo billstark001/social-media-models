@@ -1,6 +1,7 @@
 package model
 
 import (
+	"sort"
 	"sync"
 
 	"gonum.org/v1/gonum/graph/simple"
@@ -60,6 +61,7 @@ func (ng *NetworkGrid[O, P]) GetNeighbors(nodeID int64, includeCenter bool) []*S
 		neighborID := neighbors.Node().ID()
 		result = append(result, ng.AgentMap[neighborID])
 	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 	if includeCenter {
 		result = append(result, ng.AgentMap[nodeID])
 	}

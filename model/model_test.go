@@ -6,10 +6,15 @@ import (
 
 	"smp/dynamics"
 	"smp/model"
+	smprng "smp/rng"
 	"smp/utils"
 
 	"gonum.org/v1/gonum/graph/simple"
 )
+
+func testPool() *smprng.Pool {
+	return smprng.MustNewPool(smprng.FixedSpec(1, 2))
+}
 
 // helper: build a small HK model with n agents in a ring graph
 func makeHKModel(n int, opinions []float64) *model.SMPModel[float64, dynamics.HKParams] {
@@ -38,6 +43,7 @@ func makeHKModel(n int, opinions []float64) *model.SMPModel[float64, dynamics.HK
 		&dynamics.HK{},
 		&model.CollectItemOptions{AgentNumber: true, OpinionSum: true},
 		nil,
+		testPool(),
 	)
 }
 
@@ -88,7 +94,7 @@ func TestPartitionPostsAllConcordant(t *testing.T) {
 	mp := model.DefaultSMPModelParams[float64, dynamics.HKParams]()
 	m := model.NewSMPModel[float64, dynamics.HKParams](
 		g, nil, mp, p, hk,
-		&model.CollectItemOptions{}, nil,
+		&model.CollectItemOptions{}, nil, testPool(),
 	)
 
 	neighbors := []*model.SMPAgent[float64, dynamics.HKParams]{
@@ -202,7 +208,7 @@ func TestModelStepOpinionChanges(t *testing.T) {
 
 	m := model.NewSMPModelFloat64(
 		g, &opinions, mp, params, &dynamics.HK{},
-		&model.CollectItemOptions{OpinionSum: true}, nil,
+		&model.CollectItemOptions{OpinionSum: true}, nil, testPool(),
 	)
 	m.SetAgentCurPosts()
 
@@ -249,10 +255,10 @@ func TestModelCollectPosts(t *testing.T) {
 // ---- NetworkGrid tests ----
 
 func TestNetworkGridPlaceAndGet(t *testing.T) {
-	g := utils.CreateRandomNetwork(5, 0.5)
+	g := utils.CreateRandomNetwork(5, 0.5, testPool().Stream(smprng.StreamNetwork))
 	mp := model.DefaultSMPModelParams[float64, dynamics.HKParams]()
 	p := dynamics.DefaultHKParams()
-	m := model.NewSMPModelFloat64(g, nil, mp, p, &dynamics.HK{}, &model.CollectItemOptions{}, nil)
+	m := model.NewSMPModelFloat64(g, nil, mp, p, &dynamics.HK{}, &model.CollectItemOptions{}, nil, testPool())
 
 	for i := 0; i < 5; i++ {
 		a := m.Grid.GetAgent(int64(i))
@@ -312,7 +318,7 @@ func TestNetworkGridGetNeighbors(t *testing.T) {
 
 	p := dynamics.DefaultHKParams()
 	mp := model.DefaultSMPModelParams[float64, dynamics.HKParams]()
-	m := model.NewSMPModelFloat64(g, nil, mp, p, &dynamics.HK{}, &model.CollectItemOptions{}, nil)
+	m := model.NewSMPModelFloat64(g, nil, mp, p, &dynamics.HK{}, &model.CollectItemOptions{}, nil, testPool())
 
 	neighbors := m.Grid.GetNeighbors(0, false)
 	if len(neighbors) != 3 {
@@ -368,7 +374,7 @@ func TestModelDumpLoad(t *testing.T) {
 	mp := model.DefaultSMPModelParams[float64, dynamics.HKParams]()
 	mp.PostRetainCount = 1
 	ci := &model.CollectItemOptions{AgentNumber: true, OpinionSum: true}
-	m2 := dump.Load(mp, p, &dynamics.HK{}, ci, nil)
+	m2 := dump.Load(mp, p, &dynamics.HK{}, ci, nil, testPool())
 
 	if m2.CurStep != m.CurStep {
 		t.Errorf("loaded CurStep %d != original %d", m2.CurStep, m.CurStep)

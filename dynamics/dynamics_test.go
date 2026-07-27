@@ -9,6 +9,10 @@ import (
 	"smp/model"
 )
 
+func testRNG() *rand.Rand {
+	return rand.New(rand.NewPCG(42, 0))
+}
+
 // ---- HK tests ----
 
 func TestHKConcordant(t *testing.T) {
@@ -37,7 +41,7 @@ func TestHKStepNoNeighbors(t *testing.T) {
 	hk := &dynamics.HK{}
 	p := &dynamics.HKParams{Tolerance: 0.3, Influence: 1.0}
 
-	next, opSum := hk.Step(0.5, nil, nil, nil, nil, p)
+	next, opSum := hk.Step(0.5, nil, nil, nil, nil, p, testRNG())
 	if next != 0.5 {
 		t.Errorf("expected opinion unchanged (0.5), got %v", next)
 	}
@@ -53,7 +57,7 @@ func TestHKStepConcordantNeighbors(t *testing.T) {
 	// myOp=0, concordantNeighbors=[0.2, 0.4], decay=1
 	// mean delta = ((0.2-0) + (0.4-0)) / 2 = 0.3
 	// nextOp = 0 + 0.3 * 1.0 = 0.3
-	next, opSum := hk.Step(0.0, []float64{0.2, 0.4}, nil, nil, nil, p)
+	next, opSum := hk.Step(0.0, []float64{0.2, 0.4}, nil, nil, nil, p, testRNG())
 	want := 0.3
 	if math.Abs(next-want) > 1e-9 {
 		t.Errorf("Step opinion: got %v, want %v", next, want)
@@ -72,7 +76,7 @@ func TestHKStepInfluenceLessThanOne(t *testing.T) {
 	p := &dynamics.HKParams{Tolerance: 0.5, Influence: 0.5}
 
 	// myOp=0.0, concordant=[0.4], decay=0.5 → next = 0 + 0.4 * 0.5 = 0.2
-	next, _ := hk.Step(0.0, []float64{0.4}, nil, nil, nil, p)
+	next, _ := hk.Step(0.0, []float64{0.4}, nil, nil, nil, p, testRNG())
 	if math.Abs(next-0.2) > 1e-9 {
 		t.Errorf("got %v, want 0.2", next)
 	}
@@ -85,7 +89,7 @@ func TestHKStepMixedConcordantRecommended(t *testing.T) {
 	// cN=[0.2], cR=[0.4], dN=[0.8], dR=[-0.9]
 	// mean delta from concordant = ((0.2-0) + (0.4-0)) / 2 = 0.3
 	// discordant sums should be present
-	next, opSum := hk.Step(0.0, []float64{0.2}, []float64{0.4}, []float64{0.8}, []float64{-0.9}, p)
+	next, opSum := hk.Step(0.0, []float64{0.2}, []float64{0.4}, []float64{0.8}, []float64{-0.9}, p, testRNG())
 	if math.Abs(next-0.3) > 1e-9 {
 		t.Errorf("next opinion: got %v, want 0.3", next)
 	}
@@ -128,7 +132,7 @@ func TestDeffuantStepNoNeighbors(t *testing.T) {
 	d := &dynamics.Deffuant{}
 	p := &dynamics.DeffuantParams{Tolerance: 0.25}
 
-	next, opSum := d.Step(0.5, nil, nil, nil, nil, p)
+	next, opSum := d.Step(0.5, nil, nil, nil, nil, p, testRNG())
 	if next != 0.5 {
 		t.Errorf("no neighbors: opinion should be unchanged, got %v", next)
 	}
@@ -145,7 +149,7 @@ func TestDeffuantStepMoveToward(t *testing.T) {
 	myOp := 0.0
 	neighborOp := 0.4
 	// next = 0 + 0.2 * (0.4 - 0) = 0.08
-	next, _ := d.Step(myOp, []float64{neighborOp}, nil, nil, nil, p)
+	next, _ := d.Step(myOp, []float64{neighborOp}, nil, nil, nil, p, testRNG())
 	want := myOp + p.Influence*(neighborOp-myOp)
 	if math.Abs(next-want) > 1e-9 {
 		t.Errorf("got %v, want %v", next, want)
@@ -158,12 +162,9 @@ func TestDeffuantStepRandomChoice(t *testing.T) {
 	d := &dynamics.Deffuant{}
 	p := &dynamics.DeffuantParams{Tolerance: 0.3, Influence: 0.5}
 
-	rng := rand.New(rand.NewPCG(42, 0))
-	_ = rng // not injected, but we can verify outcome is within expected range
-
 	cN := []float64{0.1, 0.2, 0.3}
 	myOp := 0.0
-	next, _ := d.Step(myOp, cN, nil, nil, nil, p)
+	next, _ := d.Step(myOp, cN, nil, nil, nil, p, testRNG())
 
 	// next must equal myOp + 0.3*(picked - myOp) for some picked in cN
 	valid := false
@@ -185,7 +186,7 @@ func TestDeffuantStepStatsRecorded(t *testing.T) {
 	p := &dynamics.DeffuantParams{Tolerance: 0.1}
 
 	// myOp=0, no concordant, dN=[0.5], dR=[-0.6]
-	next, opSum := d.Step(0.0, nil, nil, []float64{0.5}, []float64{-0.6}, p)
+	next, opSum := d.Step(0.0, nil, nil, []float64{0.5}, []float64{-0.6}, p, testRNG())
 	if next != 0.0 {
 		t.Errorf("opinion should not change without concordant neighbors; got %v", next)
 	}
@@ -224,10 +225,10 @@ func TestVoterInfluenceOne_FlipsWithDiscordantNeighbors(t *testing.T) {
 	// (rnd is set to 0.0 via PrepareStep with a fixed slice trick).
 	v := &dynamics.Voter{}
 	p := &dynamics.VoterParams{Influence: 1.0}
-	v.PrepareStep(1)
+	v.PrepareStep(1, testRNG())
 
 	// myOp=false, dN=[true] → should flip to true
-	next, _ := v.Step(false, nil, nil, []bool{true}, nil, p)
+	next, _ := v.Step(false, nil, nil, []bool{true}, nil, p, testRNG())
 	if !next {
 		t.Error("expected opinion to flip from false to true with Influence=1 and discordant neighbor")
 	}
@@ -237,9 +238,9 @@ func TestVoterInfluenceZero_NeverFlips(t *testing.T) {
 	// With Influence=0, the voter never flips even with discordant neighbors.
 	v := &dynamics.Voter{}
 	p := &dynamics.VoterParams{Influence: 0.0}
-	v.PrepareStep(1)
+	v.PrepareStep(1, testRNG())
 
-	next, _ := v.Step(false, nil, nil, []bool{true}, nil, p)
+	next, _ := v.Step(false, nil, nil, []bool{true}, nil, p, testRNG())
 	if next {
 		t.Error("expected opinion to remain false with Influence=0")
 	}
@@ -249,9 +250,9 @@ func TestVoterInfluence_NoDiscordantNeighbors_NoFlip(t *testing.T) {
 	// Without discordant neighbors, opinion never changes regardless of Influence.
 	v := &dynamics.Voter{}
 	p := &dynamics.VoterParams{Influence: 1.0}
-	v.PrepareStep(1)
+	v.PrepareStep(1, testRNG())
 
-	next, _ := v.Step(true, []bool{true}, nil, nil, nil, p)
+	next, _ := v.Step(true, []bool{true}, nil, nil, nil, p, testRNG())
 	if !next {
 		t.Error("expected opinion to remain true with no discordant neighbors")
 	}
@@ -277,7 +278,7 @@ func TestGalamInfluenceOne_FlipsWithDiscordantNeighbors(t *testing.T) {
 
 	allFlipped := true
 	for i := 0; i < 100; i++ {
-		next, _ := g.Step(false, nil, nil, []bool{true}, nil, p)
+		next, _ := g.Step(false, nil, nil, []bool{true}, nil, p, testRNG())
 		if !next {
 			allFlipped = false
 			break
@@ -294,7 +295,7 @@ func TestGalamInfluenceZero_NeverFlips(t *testing.T) {
 	p := &dynamics.GalamParams{Influence: 0.0}
 
 	for i := 0; i < 100; i++ {
-		next, _ := g.Step(false, nil, nil, []bool{true}, nil, p)
+		next, _ := g.Step(false, nil, nil, []bool{true}, nil, p, testRNG())
 		if next {
 			t.Error("expected Galam to never flip with Influence=0")
 			break
@@ -307,7 +308,7 @@ func TestGalamInfluence_NoDiscordantNeighbors_NoFlip(t *testing.T) {
 	g := &dynamics.Galam{}
 	p := &dynamics.GalamParams{Influence: 1.0}
 
-	next, _ := g.Step(true, []bool{true}, nil, nil, nil, p)
+	next, _ := g.Step(true, []bool{true}, nil, nil, nil, p, testRNG())
 	if !next {
 		t.Error("expected opinion to remain true with no discordant neighbors")
 	}

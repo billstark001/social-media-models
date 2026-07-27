@@ -2,10 +2,10 @@ package recsys
 
 import (
 	"log"
-	"math/rand/v2"
 	"sort"
 
 	"smp/model"
+	smprng "smp/rng"
 
 	"github.com/vmihailenco/msgpack/v5"
 )
@@ -38,7 +38,6 @@ type Structure[O any, P any] struct {
 	AgentMap   map[int64]*model.SMPAgent[O, P]
 
 	noiseStd float64
-	rng      *rand.Rand
 
 	useCache       bool
 	candidateCache map[int64][]int64           // sorted candidate IDs per agent (Structure.Recommend)
@@ -68,7 +67,6 @@ func NewStructure[O any, P any](
 		noiseStd:            noiseStd,
 		useCache:            useCache,
 	}
-	ret.rng = rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64()))
 	return ret
 }
 
@@ -149,6 +147,7 @@ func (s *Structure[O, P]) PostStep(changed []*model.RewiringEventBody) {
 // Cache disabled (useCache=false): always O(D²) on-demand computation.
 func (s *Structure[O, P]) Recommend(agent *model.SMPAgent[O, P], neighborIDs map[int64]bool, count int) []*model.PostRecord[O] {
 	visiblePosts := s.Model.Grid.PostMap
+	rng := s.Model.RNG.Stream(smprng.StreamRecommendation)
 
 	// Cache hit path.
 	if s.useCache && s.cacheValid[agent.ID] {
@@ -165,6 +164,7 @@ func (s *Structure[O, P]) Recommend(agent *model.SMPAgent[O, P], neighborIDs map
 						agentPicked.ID,
 						s.Model.Grid.AgentMap,
 						visiblePosts,
+						rng,
 					)
 					if post != nil {
 						result = append(result, post)
@@ -222,13 +222,16 @@ func (s *Structure[O, P]) Recommend(agent *model.SMPAgent[O, P], neighborIDs map
 	candidates := make([]scored, 0, len(rawScores))
 	for id, sc := range rawScores {
 		if s.noiseStd > 0 {
-			noise := s.rng.NormFloat64() * s.noiseStd
+			noise := rng.NormFloat64() * s.noiseStd
 			sc = max(sc*(1-2*noise)+noise, 0)
 		}
 		candidates = append(candidates, scored{id, sc})
 	}
 	sort.Slice(candidates, func(a, b int) bool {
-		return candidates[a].score > candidates[b].score
+		if candidates[a].score != candidates[b].score {
+			return candidates[a].score > candidates[b].score
+		}
+		return candidates[a].id < candidates[b].id
 	})
 
 	// Cache the sorted candidate ID list.
@@ -253,6 +256,7 @@ func (s *Structure[O, P]) Recommend(agent *model.SMPAgent[O, P], neighborIDs map
 				agentPicked.ID,
 				s.Model.Grid.AgentMap,
 				visiblePosts,
+				rng,
 			)
 			if post != nil {
 				result = append(result, post)

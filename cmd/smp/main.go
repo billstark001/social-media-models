@@ -68,7 +68,17 @@ func main() {
 		outputParsableProgress = v == "1" || v == "yes" || v == "true" || v == "ok"
 	}
 
-	scenario := simulation.NewScenario(basePath, metadata, outputParsableProgress)
+	// The production CLI always persists graph/model dumps. Library callers
+	// can disable them through NewScenarioWithOptions for lightweight analysis
+	// or tests.
+	scenario := simulation.NewScenarioWithOptions(
+		basePath,
+		metadata,
+		simulation.ScenarioOptions{
+			OutputParsableProgress: outputParsableProgress,
+			EnableDumps:            true,
+		},
+	)
 
 	if !scenario.Load() {
 		scenario.Init()

@@ -5,9 +5,11 @@ A Go implementation of agent-based social media simulation models with pluggable
 ## Repository Structure
 
 ```
+├── cmd/smp/        Simulator command
 ├── model/          Core types and interfaces (generic over opinion type O and params type P)
 ├── dynamics/       Opinion dynamics: HK (Hegselmann-Krause) and Deffuant
 ├── recsys/         Recommendation systems (random, opinion, structure, and hybrids)
+├── rng/            Reproducible named random streams and snapshot state
 ├── simulation/     Scenario runner, serialization (msgpack + LZ4), SQLite event log
 ├── utils/          Graph utilities (ER, small-world, serialize/deserialize)
 └── docs/           Architecture overview and migration guide
@@ -19,10 +21,14 @@ A Go implementation of agent-based social media simulation models with pluggable
 import (
     "smp/dynamics"
     "smp/model"
+    smprng "smp/rng"
     "smp/utils"
 )
 
-graph := utils.CreateRandomNetwork(500, 0.03)  // 500 nodes, ~15 follows each
+rngPool := smprng.MustNewPool(smprng.FixedSpec(1, 2))
+graph := utils.CreateRandomNetwork(
+    500, 0.03, rngPool.Stream(smprng.StreamNetwork),
+) // 500 nodes, ~15 follows each
 
 params := dynamics.DefaultHKParams()           // Hegselmann-Krause params
 params.Tolerance = 0.45
@@ -34,6 +40,7 @@ m := model.NewSMPModelFloat64(
     graph, nil, mp, params, &dynamics.HK{},
     &model.CollectItemOptions{AgentNumber: true, OpinionSum: true},
     nil,
+    rngPool,
 )
 m.SetAgentCurPosts()
 
@@ -94,6 +101,12 @@ Each agent per step:
 
 Snapshots are stored as **msgpack** files; accumulative time-series data uses a compact **binary + LZ4** format. Events (posts, rewirings, view-posts) are optionally logged to **SQLite**.
 
+The current on-disk data format is `DataVersion: 1`; metadata without
+`DataVersion` is interpreted as legacy version 0. Version 1 stores the resolved
+root RNG specification in `metadata.json` and in the `finished-*.msgpack`
+marker. Model snapshots store the current states of the named RNG streams, so a
+resumed run produces the same continuation as an uninterrupted run.
+
 See [`docs/architecture.md`](docs/architecture.md) for the full file layout.
 
 ## Build
@@ -103,13 +116,15 @@ This project depends on `github.com/mattn/go-sqlite3`, so the Go toolchain needs
 macOS / Linux:
 
 ```bash
-go build -o smp .
+make build
+# equivalent:
+go build -o ./smp ./cmd/smp
 ```
 
 Windows PowerShell:
 
 ```powershell
-go build -o smp.exe .
+go build -o smp.exe ./cmd/smp
 ```
 
 If `go-sqlite3` fails to compile on Windows, install a GCC-compatible toolchain first, for example MinGW-w64 via `winget install --id MSYS2.MSYS2 -e`, then build again from an MSYS2 MinGW shell or a PowerShell session with GCC on `PATH`.
@@ -145,6 +160,18 @@ When parsable progress is enabled, each step emits a line of the form:
 ```
 TASK:<name>;TYPE:PROGRESS;STEP:<n>;
 ```
+
+The resolved RNG parameters are also emitted once at startup:
+
+```
+TASK:<name>;TYPE:RNG;ALGORITHM:pcg64-dxsm-v1;SEED1:<hex>;SEED2:<hex>;
+```
+
+The `smp` command always enables graph, snapshot, and accumulative-state dumps.
+Library callers that only need an in-memory run can use
+`NewScenarioWithOptions(..., ScenarioOptions{EnableDumps: false})`; metadata,
+the event database, and the finish marker remain available, but bulk dumps are
+not written.
 
 ### Parameter Types
 
@@ -221,7 +248,15 @@ export interface RecSysParams {
     MixRate?: number;
 }
 
+export interface RNGSpec {
+    Algorithm: "pcg64-dxsm-v1";
+    Seed1: string; // hexadecimal uint64, e.g. "0x0000000000000001"
+    Seed2: string;
+}
+
 interface ScenarioMetadataBase {
+    DataVersion?: 1; // generated as 1 when omitted; absent stored data means v0
+    RNG?: RNGSpec;   // generated, emitted, and persisted when omitted
     UniqueName: string;
     DynamicsType: DynamicsType;
     MaxSimulationStep: number;
@@ -278,7 +313,8 @@ Validation rules currently enforced by the Go runtime:
 ## Testing
 
 ```bash
-go test ./...
+make test
+make benchmark
 ```
 
 ## Migration from v1

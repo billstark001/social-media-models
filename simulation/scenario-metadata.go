@@ -8,12 +8,17 @@ import (
 	"smp/dynamics"
 	"smp/model"
 	"smp/recsys"
+	smprng "smp/rng"
 	"sort"
 	"strings"
 )
 
 // DynamicsType constants for the four supported opinion dynamics.
 const (
+	// CurrentDataVersion is the on-disk simulation data format version.
+	// Metadata without this field is legacy version 0.
+	CurrentDataVersion = 1
+
 	DynamicsTypeHK       = "HK"
 	DynamicsTypeDeffuant = "Deffuant"
 	DynamicsTypeGalam    = "Galam"
@@ -23,6 +28,9 @@ const (
 // ScenarioMetadata holds all parameters needed to create or reproduce a simulation.
 // DynamicsType selects which dynamics to use; the corresponding *Params field is read.
 type ScenarioMetadata struct {
+	DataVersion int
+	RNG         smprng.Spec
+
 	UniqueName string
 
 	// DynamicsType selects the opinion dynamics.
@@ -55,12 +63,37 @@ type ScenarioMetadata struct {
 	RecSysParams map[string]any
 }
 
+// PrepareForNewRun resolves defaults that must be persisted before sampling.
+func (m *ScenarioMetadata) PrepareForNewRun() error {
+	if m.DataVersion == 0 {
+		m.DataVersion = CurrentDataVersion
+	}
+	resolved, err := smprng.Resolve(m.RNG)
+	if err != nil {
+		return err
+	}
+	m.RNG = resolved
+	return nil
+}
+
 var uniqueNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // Validate checks whether metadata values are executable and safe.
 func (m *ScenarioMetadata) Validate() error {
 	if m == nil {
 		return errors.New("metadata is nil")
+	}
+	if m.DataVersion < 0 || m.DataVersion > CurrentDataVersion {
+		return fmt.Errorf(
+			"unsupported DataVersion %d (supported versions are 0 through %d)",
+			m.DataVersion,
+			CurrentDataVersion,
+		)
+	}
+	if m.DataVersion == CurrentDataVersion || !m.RNG.IsZero() {
+		if _, err := smprng.Resolve(m.RNG); err != nil {
+			return err
+		}
 	}
 
 	uniqueName := strings.TrimSpace(m.UniqueName)

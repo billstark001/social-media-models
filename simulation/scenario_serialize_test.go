@@ -1,4 +1,4 @@
-package main
+package simulation_test
 
 import (
 	"context"
@@ -146,6 +146,16 @@ func TestSerializeAndDeserializeScenario(t *testing.T) {
 
 	if model1.CurStep != model2.CurStep {
 		t.Errorf("Original and loaded are not equal: model.CurStep")
+	}
+
+	// Snapshot RNG states must make a resumed step identical to uninterrupted execution.
+	model1.Step(true)
+	model2.Step(true)
+	if !CompareSlices(model1.CollectOpinions(), model2.CollectOpinions()) {
+		t.Errorf("Original and loaded diverged after continuing from snapshot")
+	}
+	if !utils.CompareGraphs(model1.Graph, model2.Graph) {
+		t.Errorf("Original and loaded graphs diverged after continuing from snapshot")
 	}
 
 }

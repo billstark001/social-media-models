@@ -2,6 +2,7 @@ package dynamics
 
 import (
 	"math"
+	"math/rand/v2"
 	"smp/model"
 )
 
@@ -30,7 +31,7 @@ func (h *HK) Concordant(myOp, otherOp float64, params *HKParams) bool {
 	return math.Abs(myOp-otherOp) <= params.Tolerance
 }
 
-func (h *HK) Step(myOp float64, cN, cR, dN, dR []float64, params *HKParams) (float64, model.AgentOpinionSumRecord) {
+func (h *HK) Step(myOp float64, cN, cR, dN, dR []float64, params *HKParams, _ *rand.Rand) (float64, model.AgentOpinionSumRecord) {
 	total := len(cN) + len(cR)
 	var sumN, sumR, sumND, sumRD float64
 	for _, o := range cN {

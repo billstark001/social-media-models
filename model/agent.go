@@ -1,6 +1,6 @@
 package model
 
-import "math/rand/v2"
+import smprng "smp/rng"
 
 // events & records
 
@@ -156,7 +156,15 @@ func (a *SMPAgent[O, P]) Step() {
 	dNOps := extractOpinions(dNP)
 	dROps := extractOpinions(dR)
 
-	nextOpinion, opSum := a.Model.Dynamics.Step(a.CurOpinion, cNOps, cROps, dNOps, dROps, a.Params)
+	nextOpinion, opSum := a.Model.Dynamics.Step(
+		a.CurOpinion,
+		cNOps,
+		cROps,
+		dNOps,
+		dROps,
+		a.Params,
+		a.Model.RNG.Stream(smprng.StreamDynamics),
+	)
 	a.NextOpinion = nextOpinion
 
 	nNeighbor := len(cNP)
@@ -180,8 +188,9 @@ func (a *SMPAgent[O, P]) Step() {
 		}
 	}
 
-	rndRepost := rand.Float64()
-	rndRewiring := rand.Float64()
+	behaviorRNG := a.Model.RNG.Stream(smprng.StreamBehavior)
+	rndRepost := behaviorRNG.Float64()
+	rndRewiring := behaviorRNG.Float64()
 
 	var behaviorParams AgentBehaviorParams
 	if bp, ok := any(a.Params).(AgentBehaviorParams); ok {
@@ -223,8 +232,8 @@ func (a *SMPAgent[O, P]) Step() {
 	if rewiringRate > 0 &&
 		len(dNP) > 0 && len(cR) > 0 &&
 		rndRewiring < rewiringRate {
-		idx1 := rand.IntN(len(cR))
-		idx2 := rand.IntN(len(dNP))
+		idx1 := behaviorRNG.IntN(len(cR))
+		idx2 := behaviorRNG.IntN(len(dNP))
 		follow := cR[idx1].AgentID
 		unfollow := dNA[idx2].ID
 		a.NextFollow = &RewiringEventBody{AgentID: a.ID, Unfollow: unfollow, Follow: follow}

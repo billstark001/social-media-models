@@ -2,9 +2,9 @@ package recsys
 
 import (
 	"math"
-	"math/rand/v2"
 
 	"smp/model"
+	smprng "smp/rng"
 )
 
 // OpinionRandom implements a recommendation system with random opinion preferences.
@@ -65,13 +65,14 @@ func (o *OpinionRandom[O, P]) PreStep() {
 
 	rawRateMat := makeRawMat[float64](o.NumNodes, o.NumNodes)
 
+	rng := o.Model.RNG.Stream(smprng.StreamRecommendation)
 	for i := range o.NumNodes {
 		for j := i + 1; j < o.NumNodes; j++ {
 			diff := math.Abs(opinions[i] - opinions[j])
 			rate := max(1.0-diff/o.Tolerance, 0)
 
 			if o.NoiseStd > 0 {
-				noise := rand.NormFloat64() * o.NoiseStd
+				noise := rng.NormFloat64() * o.NoiseStd
 				rate = max(rate*(1-2*noise)+noise, 0)
 			}
 
@@ -111,6 +112,7 @@ func (o *OpinionRandom[O, P]) Recommend(
 ) []*model.PostRecord[O] {
 
 	visiblePosts := o.Model.Grid.PostMap
+	rng := o.Model.RNG.Stream(smprng.StreamRecommendation)
 
 	rateVec := make([]float64, o.NumNodes)
 	copy(rateVec, o.RateMat[agent.ID])
@@ -129,7 +131,7 @@ func (o *OpinionRandom[O, P]) Recommend(
 		}
 	}
 
-	candidates := sampleWithoutReplacement(o.AllIndices, count+4, rateVec)
+	candidates := sampleWithoutReplacement(o.AllIndices, count+4, rateVec, rng)
 
 	ret := make([]*model.PostRecord[O], 0, count)
 	for _, idx := range candidates {
@@ -143,6 +145,7 @@ func (o *OpinionRandom[O, P]) Recommend(
 			agentPicked.ID,
 			o.Model.Grid.AgentMap,
 			visiblePosts,
+			rng,
 		)
 		if post != nil {
 			ret = append(ret, post)

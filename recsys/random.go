@@ -1,8 +1,8 @@
 package recsys
 
 import (
-	"math/rand/v2"
 	"smp/model"
+	smprng "smp/rng"
 )
 
 type Random[O any, P any] struct {
@@ -36,7 +36,8 @@ func (r *Random[O, P]) Recommend(
 	for i := range candidates {
 		candidates[i] = i
 	}
-	rand.Shuffle(len(candidates), func(i, j int) {
+	rng := r.Model.RNG.Stream(smprng.StreamRecommendation)
+	rng.Shuffle(len(candidates), func(i, j int) {
 		candidates[i], candidates[j] = candidates[j], candidates[i]
 	})
 
@@ -56,6 +57,7 @@ func (r *Random[O, P]) Recommend(
 			agentPickedID,
 			r.Model.Grid.AgentMap,
 			visiblePosts,
+			rng,
 		)
 		if post != nil {
 			result = append(result, post)

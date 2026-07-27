@@ -2,9 +2,10 @@ package model
 
 import (
 	"math"
-	"math/rand/v2"
+	"sort"
 
 	"gonum.org/v1/gonum/graph/simple"
+	smprng "smp/rng"
 )
 
 type SMPModelPureParams struct {
@@ -42,6 +43,7 @@ type SMPModel[O any, P any] struct {
 	ModelParams  *SMPModelParams[O, P]
 	CollectItems *CollectItemOptions
 	Dynamics     Dynamics[O, P]
+	RNG          *smprng.Pool
 
 	Graph *simple.DirectedGraph
 	Grid  *NetworkGrid[O, P]
@@ -63,6 +65,7 @@ func NewSMPModel[O any, P any](
 	dynamics Dynamics[O, P],
 	collectItems *CollectItemOptions,
 	eventLogger func(*EventRecord),
+	rngPool *smprng.Pool,
 ) *SMPModel[O, P] {
 	if modelParams == nil {
 		modelParams = DefaultSMPModelParams[O, P]()
@@ -76,6 +79,10 @@ func NewSMPModel[O any, P any](
 		CollectItems: collectItems,
 		EventLogger:  eventLogger,
 		CurStep:      0,
+		RNG:          rngPool,
+	}
+	if m.RNG == nil {
+		panic("model requires a non-nil RNG pool")
 	}
 
 	m.Grid = NewNetworkGrid[O, P](graph)
@@ -91,9 +98,12 @@ func NewSMPModel[O any, P any](
 	}
 
 	nodes := graph.Nodes()
-	i := 0
+	nodeIDs := make([]int64, 0, nodes.Len())
 	for nodes.Next() {
-		nodeID := nodes.Node().ID()
+		nodeIDs = append(nodeIDs, nodes.Node().ID())
+	}
+	sort.Slice(nodeIDs, func(i, j int) bool { return nodeIDs[i] < nodeIDs[j] })
+	for _, nodeID := range nodeIDs {
 		var opinion O
 		if int(nodeID) < len(opinionsVal) {
 			opinion = opinionsVal[nodeID]
@@ -101,7 +111,6 @@ func NewSMPModel[O any, P any](
 		agent := NewSMPAgent(nodeID, m, opinion)
 		m.Grid.PlaceAgent(agent, nodeID)
 		m.Schedule.AddAgent(agent)
-		i++
 	}
 
 	return m
@@ -252,14 +261,16 @@ func NewSMPModelFloat64[P any](
 	dynamics Dynamics[float64, P],
 	collectItems *CollectItemOptions,
 	eventLogger func(*EventRecord),
+	rngPool *smprng.Pool,
 ) *SMPModel[float64, P] {
 	if opinions == nil {
 		n := graph.Nodes().Len()
 		ops := make([]float64, n)
+		opinionRNG := rngPool.Stream(smprng.StreamOpinion)
 		for i := range ops {
-			ops[i] = rand.Float64()*2 - 1
+			ops[i] = opinionRNG.Float64()*2 - 1
 		}
 		opinions = &ops
 	}
-	return NewSMPModel(graph, opinions, modelParams, agentParams, dynamics, collectItems, eventLogger)
+	return NewSMPModel(graph, opinions, modelParams, agentParams, dynamics, collectItems, eventLogger, rngPool)
 }
