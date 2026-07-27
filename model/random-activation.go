@@ -6,6 +6,7 @@ import smprng "smp/rng"
 type RandomActivation[O any, P any] struct {
 	Model  *SMPModel[O, P]
 	Agents []*SMPAgent[O, P]
+	order  []int
 }
 
 // NewRandomActivation creates a new random activation scheduler.
@@ -19,6 +20,7 @@ func NewRandomActivation[O any, P any](model *SMPModel[O, P]) *RandomActivation[
 // AddAgent adds an agent to the scheduler.
 func (ra *RandomActivation[O, P]) AddAgent(agent *SMPAgent[O, P]) {
 	ra.Agents = append(ra.Agents, agent)
+	ra.order = append(ra.order, len(ra.order))
 }
 
 // Step activates all agents in random order.
@@ -28,15 +30,14 @@ func (ra *RandomActivation[O, P]) Step() {
 		ps.PrepareStep(len(ra.Agents), dynamicsRNG)
 	}
 	scheduleRNG := ra.Model.RNG.Stream(smprng.StreamSchedule)
-	indices := make([]int, len(ra.Agents))
-	for i := range indices {
-		indices[i] = i
+	for i := range ra.order {
+		ra.order[i] = i
 	}
-	for i := len(indices) - 1; i > 0; i-- {
+	for i := len(ra.order) - 1; i > 0; i-- {
 		j := scheduleRNG.IntN(i + 1)
-		indices[i], indices[j] = indices[j], indices[i]
+		ra.order[i], ra.order[j] = ra.order[j], ra.order[i]
 	}
-	for _, i := range indices {
+	for _, i := range ra.order {
 		ra.Agents[i].Step()
 	}
 }

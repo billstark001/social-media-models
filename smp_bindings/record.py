@@ -1,6 +1,7 @@
-from typing import List, Dict
+from typing import Any, List, Dict, Iterable, Mapping, Optional, Sequence
 from numpy.typing import NDArray
 
+import json
 import os
 import re
 
@@ -25,6 +26,15 @@ class RawSimulationRecord:
   def __init__(self, base_dir: str, metadata: dict):
     self.unique_name = metadata['UniqueName']
     full_path = os.path.join(base_dir, self.unique_name)
+    persisted_metadata_path = os.path.join(full_path, "metadata.json")
+    resolved_metadata = dict(metadata)
+    if os.path.isfile(persisted_metadata_path):
+      with open(persisted_metadata_path, "r", encoding="utf-8") as metadata_file:
+        persisted_metadata = json.load(metadata_file)
+      if isinstance(persisted_metadata, dict):
+        resolved_metadata.update(persisted_metadata)
+    self.metadata: dict = resolved_metadata
+
     file_list = os.listdir(full_path)
     file_list.sort()
     # finished mark
@@ -46,8 +56,6 @@ class RawSimulationRecord:
       self.graph_paths[step_index] = os.path.join(full_path, graph_name)
 
     self.max_step: int = 0
-    self.metadata: dict = dict(**metadata)  # type: ignore
-
   def _get_stored_graph(self, step: int) -> nx.DiGraph:
     """按需从文件加载并缓存 graphs_stored 中的图（懒加载）。"""
     if step not in self.graphs_stored:
@@ -155,3 +163,35 @@ class RawSimulationRecord:
     self.graph_steps.sort()
 
     return nearest_available_graph
+
+  def freeze(self, steps: Iterable[int]):
+    """Reconstruct frozen Go-probe inputs for selected completed steps."""
+    from smp_bindings.probe import freeze_record
+    return freeze_record(self, steps)
+
+  def evaluate_probe(
+      self,
+      steps: Iterable[int],
+      *,
+      h: float,
+      minimum: float = -1.0,
+      maximum: float = 1.0,
+      replicates: int = 1,
+      anchor_ids: Optional[Sequence[int]] = None,
+      rng: Optional[Mapping[str, str]] = None,
+      binary_path: Optional[str] = None,
+  ) -> Dict[str, Any]:
+    """Freeze selected steps and evaluate F_probe in the Go implementation."""
+    from smp_bindings.probe import run_probe
+    states = self.freeze(steps)
+    return run_probe(
+        states,
+        self.metadata,
+        h=h,
+        minimum=minimum,
+        maximum=maximum,
+        replicates=replicates,
+        anchor_ids=anchor_ids,
+        rng=rng,
+        binary_path=binary_path,
+    )

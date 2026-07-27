@@ -1,6 +1,7 @@
 package recsys
 
 import (
+	"math/rand/v2"
 	"smp/model"
 	smprng "smp/rng"
 )
@@ -32,24 +33,34 @@ func (r *Random[O, P]) Recommend(
 	neighborIDs map[int64]bool,
 	count int,
 ) []*model.PostRecord[O] {
-	candidates := make([]int, r.AgentCount)
-	for i := range candidates {
-		candidates[i] = i
-	}
 	rng := r.Model.RNG.Stream(smprng.StreamRecommendation)
-	rng.Shuffle(len(candidates), func(i, j int) {
-		candidates[i], candidates[j] = candidates[j], candidates[i]
-	})
+	return r.recommend(agent, neighborIDs, count, rng)
+}
 
+// RecommendAt implements counterfactual recommendation. Random recommendations
+// do not depend on opinion, but use the probe-owned RNG.
+func (r *Random[O, P]) RecommendAt(
+	agent *model.SMPAgent[O, P],
+	_ O,
+	neighborIDs map[int64]bool,
+	count int,
+	rng *rand.Rand,
+) []*model.PostRecord[O] {
+	return r.recommend(agent, neighborIDs, count, rng)
+}
+
+func (r *Random[O, P]) recommend(
+	_ *model.SMPAgent[O, P],
+	neighborIDs map[int64]bool,
+	count int,
+	rng *rand.Rand,
+) []*model.PostRecord[O] {
 	visiblePosts := r.Model.Grid.PostMap
 	result := make([]*model.PostRecord[O], 0, count)
-	for _, idx := range candidates {
-		if len(result) >= count {
-			break
-		}
+	forEachRandomIndex(r.AgentCount, rng, func(idx int) bool {
 		agentPickedID := int64(idx)
 		if neighborIDs[agentPickedID] {
-			continue
+			return true
 		}
 		post := selectPost(
 			r.HistoricalPostCount,
@@ -62,6 +73,7 @@ func (r *Random[O, P]) Recommend(
 		if post != nil {
 			result = append(result, post)
 		}
-	}
+		return len(result) < count
+	})
 	return result
 }

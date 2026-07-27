@@ -6,9 +6,11 @@ A Go implementation of agent-based social media simulation models with pluggable
 
 ```
 ├── cmd/smp/        Simulator command
+├── cmd/smp-probe/  Frozen-state counterfactual force evaluator
 ├── model/          Core types and interfaces (generic over opinion type O and params type P)
 ├── dynamics/       Opinion dynamics: HK (Hegselmann-Krause) and Deffuant
 ├── recsys/         Recommendation systems (random, opinion, structure, and hybrids)
+├── probe/          Go probe protocol and HK/Deffuant force measurement
 ├── rng/            Reproducible named random streams and snapshot state
 ├── simulation/     Scenario runner, serialization (msgpack + LZ4), SQLite event log
 ├── utils/          Graph utilities (ER, small-world, serialize/deserialize)
@@ -73,7 +75,7 @@ Each agent per step:
 | Dynamics | Update Rule | Params |
 |----------|-------------|--------|
 | **HK** (Hegselmann-Krause) | Move to weighted mean of concordant opinions × `Influence` | `HKParams` |
-| **Deffuant** | Pick one concordant opinion at random; move by `Tolerance × Δ` | `DeffuantParams` |
+| **Deffuant** | Pick one concordant opinion at random; move by `Influence × Δ` | `DeffuantParams` |
 
 ### Recommendation Systems
 
@@ -116,15 +118,17 @@ This project depends on `github.com/mattn/go-sqlite3`, so the Go toolchain needs
 macOS / Linux:
 
 ```bash
-make build
+make build-all
 # equivalent:
 go build -o ./smp ./cmd/smp
+go build -o ./smp-probe ./cmd/smp-probe
 ```
 
 Windows PowerShell:
 
 ```powershell
 go build -o smp.exe ./cmd/smp
+go build -o smp-probe.exe ./cmd/smp-probe
 ```
 
 If `go-sqlite3` fails to compile on Windows, install a GCC-compatible toolchain first, for example MinGW-w64 via `winget install --id MSYS2.MSYS2 -e`, then build again from an MSYS2 MinGW shell or a PowerShell session with GCC on `PATH`.
@@ -172,6 +176,61 @@ Library callers that only need an in-memory run can use
 `NewScenarioWithOptions(..., ScenarioOptions{EnableDumps: false})`; metadata,
 the event database, and the finish marker remain available, but bulk dumps are
 not written.
+
+## Counterfactual probe
+
+`smp-probe` evaluates the recommender for a hypothetical agent opinion
+`x ∈ [-1, 1]` on one or more frozen simulation steps. It does not resume the
+simulation and does not require an analysis checkpoint: Python reconstructs a
+minimal frozen state from the saved opinion rows, network snapshots/rewiring
+events, and repost events, then sends that state to Go. Recommendation logic is
+therefore implemented only once, in Go.
+
+The original `Recommend` method and simulation path are unchanged. Built-in
+recommenders additionally implement `RecommendAt(agent, opinion, ..., rng)`.
+The explicit probe RNG is independent of the simulation RNG, so analysis cannot
+change a later simulation continuation. Opinion-independent recommenders reuse
+one recommendation sample across all grid points in a replicate.
+
+The result contains, for each step and grid point:
+
+- `f_probe`: the expected one-step opinion drift;
+- `f_neighbor` and `f_recommendation`: additive components whose means sum to
+  `f_probe`;
+- concordant neighbor/recommendation counts for node-only or node-edge
+  analysis;
+- sample count, active count, and population variance.
+
+For HK, `f_probe` is its deterministic bounded-confidence drift. For Deffuant,
+it is the exact conditional expectation of uniformly selecting one concordant
+post and applying `Influence × Δ`. The command intentionally rejects
+boolean-opinion Galam/Voter states.
+
+The binary protocol is msgpack on stdin/stdout. Most users should call it
+through the Python binding:
+
+```python
+from smp_bindings import RawSimulationRecord
+
+with RawSimulationRecord("./run", metadata) as rec:
+    result = rec.evaluate_probe(
+        steps=[0, 100, 500],
+        h=0.02,
+        replicates=20,
+        binary_path="./smp-probe",
+    )
+
+print(result["rng"])  # generated or supplied probe RNG
+points = result["results"][0]["points"]
+f_probe = [point["f_probe"]["mean"] for point in points]
+```
+
+When `rng` is omitted, the binding uses the resolved RNG in `metadata.json`
+when available; old data without one receives a generated RNG returned in the
+response. If `RepostRate` is nonzero, `PostEvent` collection must have been
+enabled because repost history cannot otherwise be reconstructed exactly. If
+`RewiringRate` is nonzero, intermediate steps likewise require
+`RewiringEvent`, unless that exact step already has a graph dump.
 
 ### Parameter Types
 
@@ -314,7 +373,9 @@ Validation rules currently enforced by the Go runtime:
 
 ```bash
 make test
+make test-python
 make benchmark
+make benchmark-recsys
 ```
 
 ## Migration from v1

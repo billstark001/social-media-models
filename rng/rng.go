@@ -24,6 +24,7 @@ const (
 	StreamDynamics       = "dynamics"
 	StreamBehavior       = "behavior"
 	StreamRecommendation = "recommendation"
+	StreamProbe          = "probe"
 )
 
 var standardStreamNames = []string{

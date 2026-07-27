@@ -1,8 +1,11 @@
 package model
 
 import (
+	"fmt"
 	"math"
+	"math/rand/v2"
 	"sort"
+	"sync"
 
 	"gonum.org/v1/gonum/graph/simple"
 	smprng "smp/rng"
@@ -54,6 +57,8 @@ type SMPModel[O any, P any] struct {
 	Recsys      SMPModelRecommendationSystem[O, P]
 	Schedule    *RandomActivation[O, P]
 	EventLogger func(*EventRecord)
+
+	neighborIDsPool sync.Pool
 }
 
 // NewSMPModel creates a new social media platform model.
@@ -87,6 +92,9 @@ func NewSMPModel[O any, P any](
 
 	m.Grid = NewNetworkGrid[O, P](graph)
 	m.Schedule = NewRandomActivation(m)
+	m.neighborIDsPool.New = func() any {
+		return make(map[int64]bool, 16)
+	}
 
 	if modelParams.RecsysFactory != nil {
 		m.Recsys = modelParams.RecsysFactory(m)
@@ -197,13 +205,19 @@ func (m *SMPModel[O, P]) Step(doIncrementCurStep bool) (int, float64) {
 	return changedCount, changedOpinionMax
 }
 
-func makeSelfAndNeighborIDsMap[O any, P any](agentID int64, neighbors []*SMPAgent[O, P]) map[int64]bool {
-	neighborIDs := make(map[int64]bool)
+func (m *SMPModel[O, P]) acquireNeighborIDs(agentID int64, neighbors []*SMPAgent[O, P]) map[int64]bool {
+	neighborIDs := m.neighborIDsPool.Get().(map[int64]bool)
+	clear(neighborIDs)
 	neighborIDs[agentID] = true
-	for _, n := range neighbors {
-		neighborIDs[n.ID] = true
+	for _, neighbor := range neighbors {
+		neighborIDs[neighbor.ID] = true
 	}
 	return neighborIDs
+}
+
+func (m *SMPModel[O, P]) releaseNeighborIDs(neighborIDs map[int64]bool) {
+	clear(neighborIDs)
+	m.neighborIDsPool.Put(neighborIDs)
 }
 
 // GetRecommendation gets recommendations for an agent.
@@ -211,8 +225,32 @@ func (m *SMPModel[O, P]) GetRecommendation(agent *SMPAgent[O, P], neighbors []*S
 	if m.Recsys == nil {
 		return []*PostRecord[O]{}
 	}
-	neighborIDs := makeSelfAndNeighborIDsMap(agent.ID, neighbors)
+	neighborIDs := m.acquireNeighborIDs(agent.ID, neighbors)
+	defer m.releaseNeighborIDs(neighborIDs)
 	return m.Recsys.Recommend(agent, neighborIDs, m.ModelParams.RecsysCount)
+}
+
+// GetRecommendationAt evaluates the configured recommender at a hypothetical
+// opinion. It does not consume the simulation's RNG streams.
+func (m *SMPModel[O, P]) GetRecommendationAt(
+	agent *SMPAgent[O, P],
+	opinion O,
+	neighbors []*SMPAgent[O, P],
+	rng *rand.Rand,
+) ([]*PostRecord[O], error) {
+	if m.Recsys == nil {
+		return []*PostRecord[O]{}, nil
+	}
+	if rng == nil {
+		return nil, fmt.Errorf("RecommendAt requires a non-nil RNG")
+	}
+	recsysAt, ok := m.Recsys.(SMPModelRecommendationAtSystem[O, P])
+	if !ok {
+		return nil, fmt.Errorf("recommendation system %T does not implement RecommendAt", m.Recsys)
+	}
+	neighborIDs := m.acquireNeighborIDs(agent.ID, neighbors)
+	defer m.releaseNeighborIDs(neighborIDs)
+	return recsysAt.RecommendAt(agent, opinion, neighborIDs, m.ModelParams.RecsysCount, rng), nil
 }
 
 func (m *SMPModel[O, P]) CollectOpinions() []O {

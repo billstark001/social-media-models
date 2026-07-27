@@ -2,6 +2,7 @@ package recsys
 
 import (
 	"math"
+	"math/rand/v2"
 
 	"smp/model"
 	smprng "smp/rng"
@@ -110,13 +111,70 @@ func (o *OpinionRandom[O, P]) Recommend(
 	neighborIDs map[int64]bool,
 	count int,
 ) []*model.PostRecord[O] {
-
-	visiblePosts := o.Model.Grid.PostMap
 	rng := o.Model.RNG.Stream(smprng.StreamRecommendation)
 
 	rateVec := make([]float64, o.NumNodes)
 	copy(rateVec, o.RateMat[agent.ID])
+	return o.recommendFromRates(agent, neighborIDs, count, rateVec, rng)
+}
 
+// RecommendAt evaluates the weighted opinion recommender for a hypothetical
+// opinion without rebuilding the O(N²) real-agent rate matrix.
+func (o *OpinionRandom[O, P]) RecommendAt(
+	agent *model.SMPAgent[O, P],
+	opinion O,
+	neighborIDs map[int64]bool,
+	count int,
+	rng *rand.Rand,
+) []*model.PostRecord[O] {
+	query := toFloat64(opinion)
+	rawRates := make([]float64, o.NumNodes)
+	rawTotal := 0.0
+	for i, candidate := range o.Agents {
+		if candidate.ID == agent.ID {
+			continue
+		}
+		diff := math.Abs(query - toFloat64(candidate.CurOpinion))
+		rate := 0.0
+		if o.Tolerance > 0 {
+			rate = max(1.0-diff/o.Tolerance, 0)
+		} else if diff == 0 {
+			rate = 1
+		}
+		if o.NoiseStd > 0 {
+			noise := rng.NormFloat64() * o.NoiseStd
+			rate = max(rate*(1-2*noise)+noise, 0)
+		}
+		if o.Steepness != 1 {
+			rate = math.Pow(rate, o.Steepness)
+		}
+		rawRates[i] = rate
+		rawTotal += rate
+	}
+
+	rateVec := make([]float64, o.NumNodes)
+	for i, rawRate := range rawRates {
+		if int64(i) == agent.ID {
+			continue
+		}
+		if rawTotal > 0 {
+			rateVec[i] = (1-o.RandomRatio)*rawRate/rawTotal +
+				o.RandomRatio/float64(max(o.NumNodes-1, 1))
+		} else if o.RandomRatio > 0 {
+			rateVec[i] = 1 / float64(max(o.NumNodes-1, 1))
+		}
+	}
+	return o.recommendFromRates(agent, neighborIDs, count, rateVec, rng)
+}
+
+func (o *OpinionRandom[O, P]) recommendFromRates(
+	agent *model.SMPAgent[O, P],
+	neighborIDs map[int64]bool,
+	count int,
+	rateVec []float64,
+	rng *rand.Rand,
+) []*model.PostRecord[O] {
+	visiblePosts := o.Model.Grid.PostMap
 	sum := 0.0
 	rateVec[agent.ID] = 0
 	for id := range neighborIDs {

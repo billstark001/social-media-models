@@ -2,6 +2,7 @@ package recsys
 
 import (
 	"math"
+	"math/rand/v2"
 	"sort"
 
 	"smp/model"
@@ -62,6 +63,21 @@ func (o *Opinion[O, P]) PostInit(dumpData []byte) {
 
 // PreStep implements model.SMPModelRecommendationSystem
 func (o *Opinion[O, P]) PreStep() {
+	o.prepareIndex()
+
+	rng := o.Model.RNG.Stream(smprng.StreamRecommendation)
+	for i := range o.Epsilon {
+		o.Epsilon[i] = rng.NormFloat64() * o.NoiseStd
+	}
+}
+
+// PrepareProbe builds the searchable post index without consuming simulation
+// recommendation noise.
+func (o *Opinion[O, P]) PrepareProbe() {
+	o.prepareIndex()
+}
+
+func (o *Opinion[O, P]) prepareIndex() {
 	visiblePosts := o.Model.Grid.PostMap
 	fetchOpinion := func(pi *PostIndex) float64 {
 		tsi := visiblePosts[pi.AgentID]
@@ -96,11 +112,6 @@ func (o *Opinion[O, P]) PreStep() {
 			o.AgentIndices[a.AgentID] = i
 		}
 	}
-
-	rng := o.Model.RNG.Stream(smprng.StreamRecommendation)
-	for i := range o.Epsilon {
-		o.Epsilon[i] = rng.NormFloat64() * o.NoiseStd
-	}
 }
 
 // Recommend implements model.SMPModelRecommendationSystem
@@ -109,7 +120,36 @@ func (o *Opinion[O, P]) Recommend(agent *model.SMPAgent[O, P], neighborIDs map[i
 
 	iPre := o.AgentIndices[agent.ID] - 1
 	iPost := o.AgentIndices[agent.ID] + 1
+	return o.recommendAround(agent.ID, opinionWithNoise, iPre, iPost, neighborIDs, count)
+}
 
+// RecommendAt evaluates opinion-nearest recommendation around a hypothetical
+// opinion. Binary search replaces the real agent marker used by Recommend.
+func (o *Opinion[O, P]) RecommendAt(
+	agent *model.SMPAgent[O, P],
+	opinion O,
+	neighborIDs map[int64]bool,
+	count int,
+	rng *rand.Rand,
+) []*model.PostRecord[O] {
+	opinionWithNoise := toFloat64(opinion)
+	if o.NoiseStd > 0 {
+		opinionWithNoise += rng.NormFloat64() * o.NoiseStd
+	}
+	cursor := sort.Search(len(o.PostIndices), func(i int) bool {
+		return o.PostIndices[i].TempOpinion >= opinionWithNoise
+	})
+	return o.recommendAround(agent.ID, opinionWithNoise, cursor-1, cursor, neighborIDs, count)
+}
+
+func (o *Opinion[O, P]) recommendAround(
+	agentID int64,
+	opinionWithNoise float64,
+	iPre int,
+	iPost int,
+	neighborIDs map[int64]bool,
+	count int,
+) []*model.PostRecord[O] {
 	ret := make([]*model.PostRecord[O], 0, count)
 
 	visiblePosts := o.Model.Grid.PostMap
@@ -136,14 +176,14 @@ func (o *Opinion[O, P]) Recommend(agent *model.SMPAgent[O, P], neighborIDs map[i
 		if o.HistoricalPostCount < 1 {
 			postToRecommend := o.AgentMap[a.AgentID].CurPost
 			cond := postToRecommend != nil &&
-				postToRecommend.AgentID != agent.ID &&
+				postToRecommend.AgentID != agentID &&
 				!neighborIDs[postToRecommend.AgentID]
 			if cond {
 				ret = append(ret, postToRecommend)
 				continue
 			}
 		}
-		cond := a.AgentID != agent.ID &&
+		cond := a.AgentID != agentID &&
 			a.HistoryID != -1 &&
 			!neighborIDs[a.AgentID]
 		if cond {

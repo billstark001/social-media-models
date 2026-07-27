@@ -2,6 +2,7 @@ package recsys
 
 import (
 	"log"
+	"math/rand/v2"
 	"smp/model"
 
 	"github.com/vmihailenco/msgpack/v5"
@@ -41,6 +42,15 @@ func (rs *Mix[O, P]) PreStep() {
 	rs.RecSys2.PreStep()
 }
 
+func (rs *Mix[O, P]) PrepareProbe() {
+	if preparer, ok := rs.RecSys1.(model.SMPModelProbePreparer); ok {
+		preparer.PrepareProbe()
+	}
+	if preparer, ok := rs.RecSys2.(model.SMPModelProbePreparer); ok {
+		preparer.PrepareProbe()
+	}
+}
+
 func (rs *Mix[O, P]) PreCommit() {
 	rs.RecSys1.PreCommit()
 	rs.RecSys2.PreCommit()
@@ -64,6 +74,35 @@ func (rs *Mix[O, P]) Recommend(
 	}
 	if r2Count > 0 {
 		ret = append(ret, rs.RecSys2.Recommend(agent, neighborIDs, r2Count)...)
+	}
+	return ret
+}
+
+// RecommendAt evaluates each component through the counterfactual interface
+// while preserving the same rounded split as Recommend.
+func (rs *Mix[O, P]) RecommendAt(
+	agent *model.SMPAgent[O, P],
+	opinion O,
+	neighborIDs map[int64]bool,
+	count int,
+	rng *rand.Rand,
+) []*model.PostRecord[O] {
+	r1Count := int(float64(count)*rs.RecSys1Rate + 0.5)
+	r2Count := count - r1Count
+	ret := make([]*model.PostRecord[O], 0, count)
+	if r1Count > 0 {
+		at, ok := rs.RecSys1.(model.SMPModelRecommendationAtSystem[O, P])
+		if !ok {
+			panic("Mix RecSys1 does not implement RecommendAt")
+		}
+		ret = append(ret, at.RecommendAt(agent, opinion, neighborIDs, r1Count, rng)...)
+	}
+	if r2Count > 0 {
+		at, ok := rs.RecSys2.(model.SMPModelRecommendationAtSystem[O, P])
+		if !ok {
+			panic("Mix RecSys2 does not implement RecommendAt")
+		}
+		ret = append(ret, at.RecommendAt(agent, opinion, neighborIDs, r2Count, rng)...)
 	}
 	return ret
 }

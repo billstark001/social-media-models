@@ -2,6 +2,7 @@ package recsys
 
 import (
 	"log"
+	"math/rand/v2"
 	"sort"
 
 	"smp/model"
@@ -43,6 +44,12 @@ type Structure[O any, P any] struct {
 	candidateCache map[int64][]int64           // sorted candidate IDs per agent (Structure.Recommend)
 	rawScoreCache  map[int64]map[int64]float64 // raw 2-hop counts per agent (shared with StructureRandom)
 	cacheValid     map[int64]bool
+
+	neighborSeen   []uint32
+	candidateSeen  []uint32
+	rawCounts      []float64
+	neighborEpoch  uint32
+	candidateEpoch uint32
 }
 
 // NewStructure creates a structure-based recommendation system.
@@ -82,6 +89,9 @@ func (s *Structure[O, P]) PostInit(dumpData []byte) {
 	for _, a := range s.Model.Schedule.Agents {
 		s.AgentMap[a.ID] = a
 	}
+	s.neighborSeen = make([]uint32, s.NumNodes)
+	s.candidateSeen = make([]uint32, s.NumNodes)
+	s.rawCounts = make([]float64, s.NumNodes)
 
 	if s.useCache {
 		if dumpData != nil {
@@ -138,6 +148,68 @@ func (s *Structure[O, P]) PostStep(changed []*model.RewiringEventBody) {
 	s.invalidateAffected(affected)
 }
 
+func nextEpoch(epoch *uint32, seen []uint32) uint32 {
+	(*epoch)++
+	if *epoch == 0 {
+		clear(seen)
+		*epoch = 1
+	}
+	return *epoch
+}
+
+// computeRawScores counts unique undirected two-hop paths using reusable dense
+// scratch arrays. It replaces the nested per-neighbor maps on the hot path.
+func (s *Structure[O, P]) computeRawScores(agentID int64) map[int64]float64 {
+	g := s.Model.Graph
+	neighborEpoch := nextEpoch(&s.neighborEpoch, s.neighborSeen)
+	neighbors := make([]int64, 0, 32)
+	addNeighbor := func(id int64) {
+		if id == agentID || s.neighborSeen[id] == neighborEpoch {
+			return
+		}
+		s.neighborSeen[id] = neighborEpoch
+		neighbors = append(neighbors, id)
+	}
+	it := g.From(agentID)
+	for it.Next() {
+		addNeighbor(it.Node().ID())
+	}
+	it = g.To(agentID)
+	for it.Next() {
+		addNeighbor(it.Node().ID())
+	}
+
+	touched := make([]int64, 0, len(neighbors)*8)
+	for _, neighborID := range neighbors {
+		candidateEpoch := nextEpoch(&s.candidateEpoch, s.candidateSeen)
+		addCandidate := func(id int64) {
+			if id == agentID || s.candidateSeen[id] == candidateEpoch {
+				return
+			}
+			s.candidateSeen[id] = candidateEpoch
+			if s.rawCounts[id] == 0 {
+				touched = append(touched, id)
+			}
+			s.rawCounts[id]++
+		}
+		it = g.From(neighborID)
+		for it.Next() {
+			addCandidate(it.Node().ID())
+		}
+		it = g.To(neighborID)
+		for it.Next() {
+			addCandidate(it.Node().ID())
+		}
+	}
+
+	result := make(map[int64]float64, len(touched))
+	for _, id := range touched {
+		result[id] = s.rawCounts[id]
+		s.rawCounts[id] = 0
+	}
+	return result
+}
+
 // Recommend implements model.SMPModelRecommendationSystem.
 //
 // Cache enabled (useCache=true):
@@ -146,11 +218,33 @@ func (s *Structure[O, P]) PostStep(changed []*model.RewiringEventBody) {
 //
 // Cache disabled (useCache=false): always O(D²) on-demand computation.
 func (s *Structure[O, P]) Recommend(agent *model.SMPAgent[O, P], neighborIDs map[int64]bool, count int) []*model.PostRecord[O] {
-	visiblePosts := s.Model.Grid.PostMap
 	rng := s.Model.RNG.Stream(smprng.StreamRecommendation)
+	return s.recommend(agent, neighborIDs, count, rng, s.useCache)
+}
+
+// RecommendAt implements counterfactual recommendation. Structural scores do
+// not depend on opinion, but stochastic ties/history use the probe-owned RNG.
+func (s *Structure[O, P]) RecommendAt(
+	agent *model.SMPAgent[O, P],
+	_ O,
+	neighborIDs map[int64]bool,
+	count int,
+	rng *rand.Rand,
+) []*model.PostRecord[O] {
+	return s.recommend(agent, neighborIDs, count, rng, false)
+}
+
+func (s *Structure[O, P]) recommend(
+	agent *model.SMPAgent[O, P],
+	neighborIDs map[int64]bool,
+	count int,
+	rng *rand.Rand,
+	useCache bool,
+) []*model.PostRecord[O] {
+	visiblePosts := s.Model.Grid.PostMap
 
 	// Cache hit path.
-	if s.useCache && s.cacheValid[agent.ID] {
+	if useCache && s.cacheValid[agent.ID] {
 		if candidates, ok := s.candidateCache[agent.ID]; ok {
 			result := make([]*model.PostRecord[O], 0, count)
 			for _, cid := range candidates {
@@ -175,42 +269,10 @@ func (s *Structure[O, P]) Recommend(agent *model.SMPAgent[O, P], neighborIDs map
 		}
 	}
 
-	g := s.Model.Graph
-
-	// Collect undirected 1-hop neighborhood of agent (union of From and To).
-	agentNeighbors := make(map[int64]struct{})
-	it := g.From(agent.ID)
-	for it.Next() {
-		agentNeighbors[it.Node().ID()] = struct{}{}
-	}
-	it = g.To(agent.ID)
-	for it.Next() {
-		agentNeighbors[it.Node().ID()] = struct{}{}
-	}
-	delete(agentNeighbors, agent.ID)
-
-	// For each 1-hop neighbor w, count how many times each 2-hop node
-	// appears – that count equals the number of common neighbors with agent.
-	rawScores := make(map[int64]float64, len(agentNeighbors)*8)
-	for w := range agentNeighbors {
-		wNeighbors := make(map[int64]struct{})
-		it := g.From(w)
-		for it.Next() {
-			wNeighbors[it.Node().ID()] = struct{}{}
-		}
-		it = g.To(w)
-		for it.Next() {
-			wNeighbors[it.Node().ID()] = struct{}{}
-		}
-		for v := range wNeighbors {
-			if v != agent.ID {
-				rawScores[v]++
-			}
-		}
-	}
+	rawScores := s.computeRawScores(agent.ID)
 
 	// Persist raw scores so StructureRandom.Recommend can reuse them.
-	if s.useCache {
+	if useCache {
 		s.rawScoreCache[agent.ID] = rawScores
 	}
 
@@ -220,7 +282,12 @@ func (s *Structure[O, P]) Recommend(agent *model.SMPAgent[O, P], neighborIDs map
 		score float64
 	}
 	candidates := make([]scored, 0, len(rawScores))
-	for id, sc := range rawScores {
+	for index := range s.NumNodes {
+		id := int64(index)
+		sc, ok := rawScores[id]
+		if !ok {
+			continue
+		}
 		if s.noiseStd > 0 {
 			noise := rng.NormFloat64() * s.noiseStd
 			sc = max(sc*(1-2*noise)+noise, 0)
@@ -235,7 +302,7 @@ func (s *Structure[O, P]) Recommend(agent *model.SMPAgent[O, P], neighborIDs map
 	})
 
 	// Cache the sorted candidate ID list.
-	if s.useCache {
+	if useCache {
 		ids := make([]int64, len(candidates))
 		for i, c := range candidates {
 			ids[i] = c.id

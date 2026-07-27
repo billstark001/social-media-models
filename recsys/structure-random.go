@@ -2,6 +2,7 @@ package recsys
 
 import (
 	"math"
+	"math/rand/v2"
 	"smp/model"
 	smprng "smp/rng"
 )
@@ -44,65 +45,66 @@ func (s *StructureRandom[O, P]) Recommend(
 	neighborIDs map[int64]bool,
 	count int,
 ) []*model.PostRecord[O] {
-	visiblePosts := s.Model.Grid.PostMap
-	g := s.Model.Graph
 	rng := s.Model.RNG.Stream(smprng.StreamRecommendation)
+	return s.recommendRandom(agent, neighborIDs, count, rng, s.useCache)
+}
+
+// RecommendAt implements counterfactual recommendation. StructureRandom is
+// opinion-independent and uses the caller's RNG for sampling.
+func (s *StructureRandom[O, P]) RecommendAt(
+	agent *model.SMPAgent[O, P],
+	_ O,
+	neighborIDs map[int64]bool,
+	count int,
+	rng *rand.Rand,
+) []*model.PostRecord[O] {
+	return s.recommendRandom(agent, neighborIDs, count, rng, false)
+}
+
+func (s *StructureRandom[O, P]) recommendRandom(
+	agent *model.SMPAgent[O, P],
+	neighborIDs map[int64]bool,
+	count int,
+	rng *rand.Rand,
+	useCache bool,
+) []*model.PostRecord[O] {
+	visiblePosts := s.Model.Grid.PostMap
 
 	// Attempt to read raw scores from cache.
 	var rawCounts map[int64]float64
-	if s.useCache && s.cacheValid[agent.ID] {
+	if useCache && s.cacheValid[agent.ID] {
 		rawCounts = s.rawScoreCache[agent.ID]
 	}
 
 	if rawCounts == nil {
-		// Collect undirected 1-hop neighborhood of agent.
-		agentNeighborSet := make(map[int64]struct{})
-		it := g.From(agent.ID)
-		for it.Next() {
-			agentNeighborSet[it.Node().ID()] = struct{}{}
-		}
-		it = g.To(agent.ID)
-		for it.Next() {
-			agentNeighborSet[it.Node().ID()] = struct{}{}
-		}
-		delete(agentNeighborSet, agent.ID)
+		rawCounts = s.computeRawScores(agent.ID)
 
-		// Count 2-hop neighbors.
-		rawCounts = make(map[int64]float64, len(agentNeighborSet)*8)
-		for w := range agentNeighborSet {
-			wNeighborSet := make(map[int64]struct{})
-			it := g.From(w)
-			for it.Next() {
-				wNeighborSet[it.Node().ID()] = struct{}{}
-			}
-			it = g.To(w)
-			for it.Next() {
-				wNeighborSet[it.Node().ID()] = struct{}{}
-			}
-			for v := range wNeighborSet {
-				if v != agent.ID {
-					rawCounts[v]++
-				}
-			}
-		}
-
-		if s.useCache {
+		if useCache {
 			s.rawScoreCache[agent.ID] = rawCounts
 			s.cacheValid[agent.ID] = true
 		}
 	}
 
 	// Apply steepness and compute total.
-	protoScores := make(map[int64]float64, len(rawCounts))
+	type weightedScore struct {
+		id    int64
+		score float64
+	}
+	protoScores := make([]weightedScore, 0, len(rawCounts))
 	total := 0.0
-	for v, sc := range rawCounts {
+	for index := range s.NumNodes {
+		id := int64(index)
+		sc, ok := rawCounts[id]
+		if !ok {
+			continue
+		}
 		var transformed float64
 		if s.Steepness != 1 {
 			transformed = math.Pow(sc, s.Steepness)
 		} else {
 			transformed = sc
 		}
-		protoScores[v] = transformed
+		protoScores = append(protoScores, weightedScore{id: id, score: transformed})
 		total += transformed
 	}
 
@@ -117,8 +119,8 @@ func (s *StructureRandom[O, P]) Recommend(
 	}
 	if total > 0 {
 		structWeight := 1 - s.RandomRatio
-		for v, sc := range protoScores {
-			rateVec[v] += structWeight * sc / total
+		for _, candidate := range protoScores {
+			rateVec[candidate.id] += structWeight * candidate.score / total
 		}
 	}
 

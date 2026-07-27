@@ -1,10 +1,10 @@
 package recsys
 
 import (
+	"container/heap"
 	"math"
 	"math/rand/v2"
 	"smp/model"
-	"sort"
 
 	"gonum.org/v1/gonum/graph"
 )
@@ -21,28 +21,74 @@ func makeRawMat[T any](h int, w int) [][]T {
 // using the given probabilities via the Efraimidis-Spirakis A-ES algorithm.
 // Each item i gets key = log(U) / p[i]; the n items with the largest keys are returned.
 func sampleWithoutReplacement(population []int, n int, probabilities []float64, rng *rand.Rand) []int {
-	if n >= len(population) {
-		result := make([]int, len(population))
-		copy(result, population)
-		return result
+	if n <= 0 {
+		return nil
 	}
 
-	type keyed struct {
-		key float64
-		i   int
-	}
-	items := make([]keyed, len(population))
+	selected := make(weightedMinHeap, 0, min(n, len(population)))
 	for i, p := range probabilities {
-		items[i] = keyed{math.Log(rng.Float64()) / p, i}
+		if p <= 0 || math.IsNaN(p) {
+			continue
+		}
+		item := weightedItem{
+			key:   math.Log1p(-rng.Float64()) / p,
+			index: i,
+		}
+		if len(selected) < n {
+			heap.Push(&selected, item)
+		} else if item.key > selected[0].key {
+			selected[0] = item
+			heap.Fix(&selected, 0)
+		}
 	}
-	sort.Slice(items, func(a, b int) bool {
-		return items[a].key > items[b].key
-	})
-	result := make([]int, n)
-	for i := range n {
-		result[i] = population[items[i].i]
+
+	result := make([]int, len(selected))
+	// Pop from smallest to largest into the slice backwards, yielding the same
+	// descending-key order the previous full sort used.
+	for i := len(result) - 1; i >= 0; i-- {
+		result[i] = population[heap.Pop(&selected).(weightedItem).index]
 	}
 	return result
+}
+
+type weightedItem struct {
+	key   float64
+	index int
+}
+
+type weightedMinHeap []weightedItem
+
+func (h weightedMinHeap) Len() int           { return len(h) }
+func (h weightedMinHeap) Less(i, j int) bool { return h[i].key < h[j].key }
+func (h weightedMinHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *weightedMinHeap) Push(x any)        { *h = append(*h, x.(weightedItem)) }
+func (h *weightedMinHeap) Pop() any {
+	old := *h
+	last := old[len(old)-1]
+	*h = old[:len(old)-1]
+	return last
+}
+
+// forEachRandomIndex visits a uniformly random permutation lazily, stopping
+// when visit returns false. It avoids allocating and shuffling an O(N) slice
+// when a recommender normally needs only a small prefix.
+func forEachRandomIndex(n int, rng *rand.Rand, visit func(int) bool) {
+	swaps := make(map[int]int)
+	valueAt := func(i int) int {
+		if value, ok := swaps[i]; ok {
+			return value
+		}
+		return i
+	}
+	for i := 0; i < n; i++ {
+		j := i + rng.IntN(n-i)
+		chosen := valueAt(j)
+		swaps[j] = valueAt(i)
+		delete(swaps, i)
+		if !visit(chosen) {
+			return
+		}
+	}
 }
 
 // PostIndex is used by the opinion-based recsys to index and sort posts.

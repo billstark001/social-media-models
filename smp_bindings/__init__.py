@@ -1,6 +1,11 @@
 
 
 from smp_bindings.record import RawSimulationRecord
+from smp_bindings.probe import (
+    FrozenSimulationState,
+    freeze_record,
+    run_probe,
+)
 from smp_bindings.simulation import (
     is_simulation_finished,
     run_simulation,

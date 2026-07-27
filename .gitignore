@@ -43,7 +43,9 @@ smp_bindings.egg-info
 
 /smp
 /smp_*
+/smp-probe
 /smp.exe
+/smp-probe.exe
 !/smp_bindings
 /main
 !/main.go

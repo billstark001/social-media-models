@@ -6,6 +6,7 @@ stream, and run multiple simulations concurrently with a configurable
 concurrency limit.
 
 Stdout protocol (produced by the Go binary with parsable-progress enabled):
+    TASK:<name>;TYPE:RNG;ALGORITHM:<name>;SEED1:<hex>;SEED2:<hex>;
     TASK:<name>;TYPE:INIT;STEP:<n>;
     TASK:<name>;TYPE:PROGRESS;STEP:<n>;
     TASK:<name>;TYPE:DONE;DONE_TYPE:(SIG|ITER|HALT);STEP:<n>;
@@ -216,14 +217,20 @@ def run_simulation(
         _terminate_process(proc)
         raise KeyboardInterrupt
 
-      if not show_progress:
-        continue
       line = raw_line.rstrip("\n")
       parsed = _parse_progress_line(line)
       if parsed is None:
         continue
 
       msg_type = parsed.get("TYPE", "")
+      if msg_type == "RNG":
+        metadata["RNG"] = {
+            "Algorithm": parsed.get("ALGORITHM", ""),
+            "Seed1": parsed.get("SEED1", ""),
+            "Seed2": parsed.get("SEED2", ""),
+        }
+      if not show_progress:
+        continue
       step_raw = parsed.get("STEP", "0")
       step = int(step_raw) if step_raw.isdigit() else 0
 
