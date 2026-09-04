@@ -5,23 +5,21 @@ Launch Go SMP simulations from Python, parse their per-step stdout progress
 stream, and run multiple simulations concurrently with a configurable
 concurrency limit.
 
-Stdout protocol (produced by the Go binary with parsable-progress enabled):
-    TASK:<name>;TYPE:RNG;ALGORITHM:<name>;SEED1:<hex>;SEED2:<hex>;
-    TASK:<name>;TYPE:INIT;STEP:<n>;
-    TASK:<name>;TYPE:PROGRESS;STEP:<n>;
-    TASK:<name>;TYPE:DONE;DONE_TYPE:(SIG|ITER|HALT);STEP:<n>;
+Progress uses the compact JSONL codec shared with ``smp-batch``.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import signal
 import subprocess
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, Iterable, Iterator, List, Optional, Union
+from typing import Iterable, Iterator, List, Optional, Union
+
+from smp_bindings.codec import decode_progress_line
+from smp_bindings.process import process_group_kwargs, terminate_process
 
 try:
   from tqdm import tqdm as _tqdm
@@ -51,93 +49,6 @@ def is_simulation_finished(base_path: str, metadata: dict) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
-def _parse_progress_line(line: str) -> Optional[Dict[str, str]]:
-  """Parse a ``KEY:VALUE;...`` progress line; return None for other lines."""
-  parts = [p for p in line.strip().split(";") if p]
-  result: Dict[str, str] = {}
-  for part in parts:
-    if ":" in part:
-      k, _, v = part.partition(":")
-      result[k] = v
-  return result if result else None
-
-
-def _send_signal_to_process_group_or_proc(
-    proc: subprocess.Popen,
-    sig: Union[signal.Signals, int],
-) -> None:
-  """Send a signal to proc's process group, falling back to the proc itself.
-
-  On Linux/POSIX: sends POSIX signals to process group.
-  On Windows: uses proc.send_signal() for CTRL_C_EVENT, or terminate/kill for others.
-  """
-  if proc.poll() is not None:
-    return
-
-  if os.name == "posix":
-    try:
-      os.killpg(os.getpgid(proc.pid), sig)
-      return
-    except ProcessLookupError:
-      return
-    except PermissionError:
-      pass
-    # Fall through for PermissionError on posix
-    try:
-      proc.send_signal(sig)
-    except ProcessLookupError:
-      return
-  else:
-    # Windows: use proc.send_signal() only for CTRL_C_EVENT
-    if sig == signal.CTRL_C_EVENT:
-      try:
-        proc.send_signal(sig)
-      except (ProcessLookupError, ValueError):
-        return
-    # For other signals on Windows, no direct equivalent
-    # The caller should use proc.terminate() or proc.kill() instead
-
-
-def _terminate_process(proc: subprocess.Popen) -> None:
-  """Try graceful stop first, then escalate if the subprocess does not exit.
-
-  On Linux: SIGINT -> SIGTERM -> SIGKILL
-  On Windows: CTRL_C_EVENT -> terminate() -> kill()
-  """
-  if proc.poll() is not None:
-    return
-
-  if os.name == "posix":
-    # Linux/POSIX: use signals
-    _send_signal_to_process_group_or_proc(proc, signal.SIGINT)
-    try:
-      proc.wait(timeout=8)
-    except subprocess.TimeoutExpired:
-      _send_signal_to_process_group_or_proc(proc, signal.SIGTERM)
-      try:
-        proc.wait(timeout=3)
-      except subprocess.TimeoutExpired:
-        _send_signal_to_process_group_or_proc(proc, signal.SIGKILL)
-        proc.wait()
-  else:
-    # Windows: use process methods
-    try:
-      _send_signal_to_process_group_or_proc(proc, signal.CTRL_C_EVENT)
-      proc.wait(timeout=8)
-    except subprocess.TimeoutExpired:
-      try:
-        proc.terminate()
-        proc.wait(timeout=3)
-      except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-
-
-# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -157,8 +68,8 @@ def run_simulation(
 ) -> str:
   """Run one simulation subprocess and return its unique name on completion.
 
-  The Go binary is always started with parsable-progress output.  When
-  *show_progress* is True the INIT / PROGRESS / DONE messages are printed
+  The Go binary is always started with compact JSON progress output. When
+  *show_progress* is True the start / progress / done messages are printed
   to stdout; otherwise they are silently consumed so that the subprocess
   stdout pipe never blocks.
   """
@@ -184,12 +95,10 @@ def run_simulation(
       "stdout": subprocess.PIPE,
       "stderr": subprocess.PIPE,
       "text": True,
+      "encoding": "utf-8",
       "bufsize": 1,
   }
-  if os.name == "posix":
-    # Ensure each simulation is its own process-group leader so interrupts can
-    # fan out to children spawned by the Go process.
-    popen_kwargs["start_new_session"] = True
+  popen_kwargs.update(process_group_kwargs())
 
   proc = subprocess.Popen(
       [binary_path, base_path, metadata_json, "1"],
@@ -209,39 +118,37 @@ def run_simulation(
 
   stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
   stderr_thread.start()
+  unexpected_stdout: Optional[str] = None
 
   try:
     assert proc.stdout is not None
     for raw_line in proc.stdout:
       if stop_event is not None and stop_event.is_set():
-        _terminate_process(proc)
+        terminate_process(proc, process_group=True)
         raise KeyboardInterrupt
 
       line = raw_line.rstrip("\n")
-      parsed = _parse_progress_line(line)
-      if parsed is None:
+      event = decode_progress_line(line)
+      if event is None:
+        if line.strip() and unexpected_stdout is None:
+          unexpected_stdout = line
         continue
 
-      msg_type = parsed.get("TYPE", "")
-      if msg_type == "RNG":
-        metadata["RNG"] = {
-            "Algorithm": parsed.get("ALGORITHM", ""),
-            "Seed1": parsed.get("SEED1", ""),
-            "Seed2": parsed.get("SEED2", ""),
-        }
+      msg_type = event["type"]
+      if msg_type == "rng":
+        metadata["RNG"] = event["rng"]
       if not show_progress:
         continue
-      step_raw = parsed.get("STEP", "0")
-      step = int(step_raw) if step_raw.isdigit() else 0
+      step = int(event.get("step", 0))
 
       with print_lock:
-        if msg_type == "INIT":
+        if msg_type == "start":
           _clear_inline_progress_line()
           print(
               f"{progress_prefix}[{unique_name}] started (step {step})",
               flush=True,
           )
-        elif msg_type == "PROGRESS":
+        elif msg_type == "progress":
           suffix = f"/{max_step}" if max_step else ""
           progress_text = (
               f"{progress_prefix}[{unique_name}] step {step}{suffix}"
@@ -251,9 +158,9 @@ def run_simulation(
           print("\r" + progress_text + padding, end="", flush=True)
           progress_line_state["active"] = True
           progress_line_state["last_len"] = len(progress_text)
-        elif msg_type == "DONE":
+        elif msg_type == "done":
           _clear_inline_progress_line()
-          done_type = parsed.get("DONE_TYPE", "?")
+          done_type = event.get("stop_reason", "?")
           print(
               f"{progress_prefix}[{unique_name}] done ({done_type}) at step {step}",
               flush=True,
@@ -267,10 +174,19 @@ def run_simulation(
           f"Simulation '{unique_name}' failed with exit code {proc.returncode}"
           + (f":\n{stderr_output}" if stderr_output else "")
       )
+    if unexpected_stdout:
+      raise RuntimeError(
+          f"Simulation '{unique_name}' emitted non-protocol stdout: "
+          + unexpected_stdout
+      )
 
     return unique_name
   finally:
     stderr_thread.join(timeout=2)
+    if proc.stdout is not None:
+      proc.stdout.close()
+    if proc.stderr is not None:
+      proc.stderr.close()
     if active_procs is not None and active_procs_lock is not None:
       with active_procs_lock:
         active_procs.discard(proc)
@@ -446,7 +362,7 @@ def run_simulations(
     with active_procs_lock:
       running_procs = list(active_procs)
     for proc in running_procs:
-      _terminate_process(proc)
+      terminate_process(proc, process_group=True)
   finally:
     if outer_bar is not None:
       outer_bar.close()
