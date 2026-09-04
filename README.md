@@ -5,7 +5,8 @@ A Go implementation of agent-based social media simulation models with pluggable
 ## Repository Structure
 
 ```
-├── cmd/smp/        Simulator command
+├── cmd/smp/        Persistent simulator command
+├── cmd/smp-batch/  No-file JSONL batch simulator
 ├── cmd/smp-probe/  Frozen-state counterfactual force evaluator
 ├── model/          Core types and interfaces (generic over opinion type O and params type P)
 ├── dynamics/       Opinion dynamics: HK (Hegselmann-Krause) and Deffuant
@@ -121,6 +122,7 @@ macOS / Linux:
 make build-all
 # equivalent:
 go build -o ./smp ./cmd/smp
+go build -o ./smp-batch ./cmd/smp-batch
 go build -o ./smp-probe ./cmd/smp-probe
 ```
 
@@ -128,6 +130,7 @@ Windows PowerShell:
 
 ```powershell
 go build -o smp.exe ./cmd/smp
+go build -o smp-batch.exe ./cmd/smp-batch
 go build -o smp-probe.exe ./cmd/smp-probe
 ```
 
@@ -138,14 +141,14 @@ If `go-sqlite3` fails to compile on Windows, install a GCC-compatible toolchain 
 The compiled binary (`smp`) accepts the following positional arguments:
 
 ```
-smp <base_path> <metadata_json> [parsable_progress]
+smp <base_path> <metadata_json> [json_progress]
 ```
 
 | Argument | Required | Description |
 |----------|----------|-------------|
 | `base_path` | Yes | Root output directory for simulation runs |
 | `metadata_json` | Yes | JSON string of `ScenarioMetadata` fields |
-| `parsable_progress` | No | Enable machine-readable progress output on stdout (`1`, `true`, `yes`, `ok`). Default: `false` |
+| `json_progress` | No | Enable compact JSONL progress on stdout (`1`, `true`, `yes`, `ok`). Default: `false` |
 
 Example:
 
@@ -159,23 +162,116 @@ Windows PowerShell example:
 ./smp.exe ./run '{"UniqueName":"run-001","DynamicsType":"HK",...}' 1
 ```
 
-When parsable progress is enabled, each step emits a line of the form:
+Machine progress uses the same compact JSONL codec as `smp-batch`. The
+persistent command rate-limits step events to at most four per second, so
+encoding cost does not grow with simulation step rate. A progress line is:
 
-```
-TASK:<name>;TYPE:PROGRESS;STEP:<n>;
+```json
+{"v":1,"id":"run-001","t":"progress","s":1200,"m":5000}
 ```
 
 The resolved RNG parameters are also emitted once at startup:
 
-```
-TASK:<name>;TYPE:RNG;ALGORITHM:pcg64-dxsm-v1;SEED1:<hex>;SEED2:<hex>;
+```json
+{"v":1,"id":"run-001","t":"rng","a":"pcg64-dxsm-v1","x":"<seed1>","y":"<seed2>"}
 ```
 
-The `smp` command always enables graph, snapshot, and accumulative-state dumps.
-Library callers that only need an in-memory run can use
-`NewScenarioWithOptions(..., ScenarioOptions{EnableDumps: false})`; metadata,
-the event database, and the finish marker remain available, but bulk dumps are
-not written.
+The short wire keys expand to `version`, `request_id`, `type`, `step`,
+`max_step`, `stop_reason`, `algorithm`, `seed1`, and `seed2`. Event types are
+`rng`, `start`, `progress`, and `done`. The Python codec exposes descriptive
+field names; callers do not need to interpret the short keys directly.
+
+The `smp` command always enables graph, snapshot, event, and accumulative-state
+persistence. Library callers that only need an in-memory run can use
+`NewScenarioWithOptions(..., ScenarioOptions{EnableDumps: false})`. In that
+mode the scenario performs no filesystem I/O, creates no serializer/event
+database, and does not allocate or update `AccumulativeModelState`. It is not
+resumable; callers must retain the returned summaries themselves.
+
+## No-file batch simulations
+
+`smp-batch` keeps one Go process alive for a JSONL stream and runs every item
+entirely in memory. Each non-empty input line has this shape:
+
+```json
+{
+  "schema_version": 1,
+  "request_id": "cell/replicate-0001",
+  "metadata": {
+    "UniqueName": "cell-replicate-0001",
+    "DynamicsType": "HK",
+    "HKParams": {
+      "Tolerance": 0.45,
+      "Influence": 0.05,
+      "RewiringRate": 0.05,
+      "RepostRate": 0.0
+    },
+    "RNG": {
+      "Algorithm": "pcg64-dxsm-v1",
+      "Seed1": "0x0000000000000001",
+      "Seed2": "0x0000000000000002"
+    }
+  },
+  "output": {
+    "final_opinions": false,
+    "terminal": {
+      "major_mass": 0.02,
+      "position_resolution": 0.0,
+      "mass_resolution": 0.002
+    }
+  }
+}
+```
+
+Missing metadata fields receive the same defaults as `smp`. The batch runner
+forces all history/event collection flags off because its current summaries
+need only the final in-memory state. A successful response reports the
+resolved RNG, protocol SHA-256, step/stop reason, and final opinion count,
+mean, population variance, minimum, and maximum. The optional `terminal` block
+applies the common atomic-measure component classifier and returns status,
+category, both component counts, component masses, and threshold margins.
+`major_mass=0` is normalized to the version-1 default `0.02`; production
+protocols should still send it explicitly. For an empirical population of
+size `N`, use `mass_resolution=1/N` and `position_resolution=0`; a binned
+comparison should instead report its bin width. Set `final_opinions` only when
+a downstream analysis genuinely needs the raw terminal row.
+
+```bash
+./smp-batch < requests.jsonl > results.jsonl
+./smp-batch --progress jsonl --progress-step-interval 1000 \
+  < requests.jsonl > results.jsonl 2> progress.jsonl
+```
+
+Progress is opt-in and always uses stderr, leaving stdout result-only JSONL.
+Its JSONL events use the same compact `v/id/t/s/m/r` envelope documented
+above. Step events are disabled unless `--progress-step-interval` is positive.
+Malformed request lines yield an error response and do not abort subsequent
+items. Every response is flushed before the next request, so an orchestrator
+can resume by protocol hash/request id after interruption. The no-file runner
+itself deliberately creates no resume markers.
+
+Python can run a complete request list through one process:
+
+```python
+from smp_bindings import run_batch
+
+responses = run_batch(
+    "./smp-batch",
+    requests,
+    progress=lambda event: print(event),
+    progress_step_interval=1000,
+)
+```
+
+Use `BatchClient` when requests are generated incrementally, or
+`run_batch_parallel(..., processes=N)` to load-balance them over multiple
+long-lived Go processes. `smp-batch` itself remains sequential so that each
+stdin line has exactly one immediately flushed stdout response.
+
+For custom orchestration, `smp_bindings.codec` publicly exposes the shared
+progress decoder and versioned batch request/response codecs.
+`smp_bindings.process` exposes executable validation, process-group creation,
+and safe termination helpers used by both built-in runners.
 
 ## Counterfactual probe
 
