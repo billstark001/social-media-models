@@ -1,16 +1,22 @@
-from typing import Any, List, Dict, Iterable, Mapping, Optional, Sequence
-from numpy.typing import NDArray
-
 import json
 import os
 import re
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Any
 
-import numpy as np
 import networkx as nx
+import numpy as np
+from numpy.typing import NDArray
 
-from smp_bindings.model_state import load_accumulative_model_state, load_gonum_graph_dump
-from smp_bindings.events_db import get_events_by_step_range, get_rewiring_event_body, load_events_db
-
+from smp_bindings.events_db import (
+  get_events_by_step_range,
+  get_rewiring_event_body,
+  load_events_db,
+)
+from smp_bindings.model_state import (
+  load_accumulative_model_state,
+  load_gonum_graph_dump,
+)
 
 re_graph = re.compile(r'graph-(\d+).msgpack')
 
@@ -72,9 +78,9 @@ class RawSimulationRecord:
 
     self.acc_state = acc_state
     self.events_db = events_db
-    self.graphs_stored: Dict[int, nx.DiGraph] = {}  # lazy-loaded cache
-    self.graphs: Dict[int, nx.DiGraph] = {}
-    self.graph_steps: List[int] = []
+    self.graphs_stored: dict[int, nx.DiGraph] = {}  # lazy-loaded cache
+    self.graphs: dict[int, nx.DiGraph] = {}
+    self.graph_steps: list[int] = []
     self.graph_steps.extend(self.graph_paths.keys())
     self.graph_steps.sort()
 
@@ -151,7 +157,7 @@ class RawSimulationRecord:
         raise ValueError("bad dump data (event)")
       try:
         nearest_available_graph.remove_edge(e.agent_id, body.unfollow)
-      except nx.NetworkXError as ex:
+      except nx.NetworkXError:
         # very occasional data corruption, attempt to remove inexistent edges
         # this essentially does not affect the collective pattern
         pass
@@ -177,10 +183,10 @@ class RawSimulationRecord:
       minimum: float = -1.0,
       maximum: float = 1.0,
       replicates: int = 1,
-      anchor_ids: Optional[Sequence[int]] = None,
-      rng: Optional[Mapping[str, str]] = None,
-      binary_path: Optional[str] = None,
-  ) -> Dict[str, Any]:
+      anchor_ids: Sequence[int] | None = None,
+      rng: Mapping[str, str] | None = None,
+      binary_path: str | None = None,
+  ) -> dict[str, Any]:
     """Freeze selected steps and evaluate F_probe in the Go implementation."""
     from smp_bindings.probe import run_probe
     states = self.freeze(steps)

@@ -15,8 +15,8 @@ import os
 import subprocess
 import sys
 import threading
+from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Iterable, Iterator, List, Optional, Union
 
 from smp_bindings.codec import decode_progress_line
 from smp_bindings.process import process_group_kwargs, terminate_process
@@ -59,12 +59,12 @@ def run_simulation(
     metadata: dict,
     show_progress: bool,
     print_lock: threading.Lock,
-    sim_index: Optional[int] = None,
-    sim_total: Optional[int] = None,
-    stop_event: Optional[threading.Event] = None,
-    active_procs: Optional[set] = None,
-    active_procs_lock: Optional[threading.Lock] = None,
-    progress_line_state: Optional[dict] = None,
+    sim_index: int | None = None,
+    sim_total: int | None = None,
+    stop_event: threading.Event | None = None,
+    active_procs: set | None = None,
+    active_procs_lock: threading.Lock | None = None,
+    progress_line_state: dict | None = None,
 ) -> str:
   """Run one simulation subprocess and return its unique name on completion.
 
@@ -109,16 +109,15 @@ def run_simulation(
       active_procs.add(proc)
 
   # Collect stderr in a background thread to prevent the pipe from blocking.
-  stderr_lines: List[str] = []
+  stderr_lines: list[str] = []
 
   def _drain_stderr() -> None:
     assert proc.stderr is not None
-    for line in proc.stderr:
-      stderr_lines.append(line)
+    stderr_lines.extend(proc.stderr)
 
   stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
   stderr_thread.start()
-  unexpected_stdout: Optional[str] = None
+  unexpected_stdout: str | None = None
 
   try:
     assert proc.stdout is not None
@@ -195,13 +194,13 @@ def run_simulation(
 def run_simulations(
     binary_path: str,
     base_path: str,
-    scenarios: Union[List[dict], Iterable[dict], Iterator[dict]],
+    scenarios: list[dict] | Iterable[dict] | Iterator[dict],
     *,
     max_concurrent: int = 4,
-    show_progress: Optional[bool] = None,
+    show_progress: bool | None = None,
     skip_finished: bool = True,
     show_position: bool = False,
-) -> List[str]:
+) -> list[str]:
   """Run multiple SMP simulations concurrently.
 
   Parameters
@@ -237,10 +236,10 @@ def run_simulations(
     show_progress = sys.stdout.isatty()
 
   # Materialize the iterable so we can compute totals upfront.
-  scenario_list: List[dict] = list(scenarios)
+  scenario_list: list[dict] = list(scenarios)
 
-  pending: List[dict] = []
-  skipped: List[str] = []
+  pending: list[dict] = []
+  skipped: list[str] = []
   for meta in scenario_list:
     if skip_finished and is_simulation_finished(base_path, meta):
       skipped.append(meta.get("UniqueName", ""))
@@ -261,7 +260,7 @@ def run_simulations(
   active_procs = set()
   stop_event = threading.Event()
   progress_line_state = {"active": False, "last_len": 0}
-  completed_names: List[str] = []
+  completed_names: list[str] = []
   pending_total = len(pending)
   interrupted = False
 
@@ -301,7 +300,8 @@ def run_simulations(
                 f"Completed '{name}' "
                 f"({len(completed_names)}/{len(pending)})"
             )
-        except Exception as exc:
+        # Each simulation is isolated; report its failure and continue the batch.
+        except Exception as exc:  # noqa: BLE001
           print(
               f"ERROR in simulation '{name}': {exc}",
               file=sys.stderr,
@@ -338,7 +338,8 @@ def run_simulations(
                   f"Completed '{name}' "
                   f"({len(completed_names)}/{len(pending)})"
               )
-          except Exception as exc:
+          # Future failures are per-simulation and must not cancel peer runs.
+          except Exception as exc:  # noqa: BLE001
             with print_lock:
               print(
                   f"ERROR in simulation '{name}': {exc}",

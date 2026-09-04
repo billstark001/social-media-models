@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import msgpack
 import networkx as nx
@@ -34,7 +35,7 @@ class FrozenSimulationState:
   opinions: Sequence[float]
   posts: Mapping[int, Sequence[PostRecord]]
 
-  def to_wire(self) -> Dict[str, Any]:
+  def to_wire(self) -> dict[str, Any]:
     return {
         "step": int(self.step),
         "graph": _graph_to_wire(self.graph),
@@ -53,14 +54,14 @@ class FrozenSimulationState:
     }
 
 
-def _graph_to_wire(graph: nx.DiGraph) -> Dict[str, Any]:
+def _graph_to_wire(graph: nx.DiGraph) -> dict[str, Any]:
   if not graph.is_directed():
     raise ValueError("smp-probe requires a directed graph")
   nodes = {
       int(node): dict(attributes)
       for node, attributes in graph.nodes(data=True)
   }
-  adjacency: Dict[int, Dict[int, Dict[str, Any]]] = {
+  adjacency: dict[int, dict[int, dict[str, Any]]] = {
       int(node): {} for node in graph.nodes
   }
   for source, target, attributes in graph.edges(data=True):
@@ -74,9 +75,9 @@ def _graph_to_wire(graph: nx.DiGraph) -> Dict[str, Any]:
 
 
 def freeze_record(
-    record: "RawSimulationRecord",
+    record: RawSimulationRecord,
     steps: Iterable[int],
-) -> List[FrozenSimulationState]:
+) -> list[FrozenSimulationState]:
   """Reconstruct post history and network snapshots for selected steps.
 
   Normal posts are implied by the accumulated opinion rows. Repost events are
@@ -84,7 +85,7 @@ def freeze_record(
   with nonzero ``RepostRate`` must have ``PostEvent`` collection enabled.
   """
 
-  requested_steps = sorted(set(int(step) for step in steps))
+  requested_steps = sorted({int(step) for step in steps})
   if not requested_steps:
     raise ValueError("at least one probe step is required")
   for step in requested_steps:
@@ -126,7 +127,7 @@ def freeze_record(
         "RewiringEvent collection was disabled and no exact graph dump exists"
     )
 
-  reposts_by_step: Dict[int, Dict[int, PostRecord]] = {}
+  reposts_by_step: dict[int, dict[int, PostRecord]] = {}
   if max_requested > 0 and post_events_enabled:
     events = get_events_by_step_range(
         record.events_db,
@@ -146,7 +147,7 @@ def freeze_record(
       step_events[int(event.agent_id)] = event.body.record
 
   retain_count = max(int(record.metadata.get("PostRetainCount", 0)), 1)
-  posts: Dict[int, List[PostRecord]] = {
+  posts: dict[int, list[PostRecord]] = {
       agent_id: [
           PostRecord(
               agent_id=agent_id,
@@ -157,7 +158,7 @@ def freeze_record(
       for agent_id in range(record.agents)
   }
 
-  states: List[FrozenSimulationState] = []
+  states: list[FrozenSimulationState] = []
   requested = set(requested_steps)
 
   def append_state(step: int) -> None:
@@ -201,10 +202,10 @@ def run_probe(
     minimum: float = -1.0,
     maximum: float = 1.0,
     replicates: int = 1,
-    anchor_ids: Optional[Sequence[int]] = None,
-    rng: Optional[Mapping[str, str]] = None,
-    binary_path: Optional[str] = None,
-) -> Dict[str, Any]:
+    anchor_ids: Sequence[int] | None = None,
+    rng: Mapping[str, str] | None = None,
+    binary_path: str | None = None,
+) -> dict[str, Any]:
   """Run the Go evaluator and return its decoded response."""
 
   if not states:
@@ -261,8 +262,7 @@ def run_probe(
   completed = subprocess.run(
       [os.fspath(executable)],
       input=encoded,
-      stdout=subprocess.PIPE,
-      stderr=subprocess.PIPE,
+      capture_output=True,
       check=False,
   )
   if completed.returncode != 0:
@@ -280,5 +280,5 @@ def run_probe(
   except Exception as exc:
     raise RuntimeError("smp-probe returned invalid msgpack") from exc
   if not isinstance(response, dict):
-    raise RuntimeError("smp-probe returned a non-object response")
+    raise TypeError("smp-probe returned a non-object response")
   return response

@@ -1,19 +1,18 @@
 
-import sqlite3
 import struct
-from typing import Any, Dict
+from typing import Any
 
-import numpy as np
 import lz4.frame
 import msgpack
 import networkx as nx
+import numpy as np
 
 
 def load_accumulative_model_state(
     path: str,
     with_agent_numbers: bool = False,
     with_agent_opinion_sums: bool = False
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
   with open(path, 'rb') as f:
     raw = f.read()
   # LZ4 解压
@@ -84,7 +83,7 @@ def load_gonum_graph_dump(filename: str, check_sanity=True):
     G = nx.Graph()
 
   # 添加节点属性
-  node_indices = sorted(list(nodes.keys()))
+  node_indices = sorted(nodes)
   if check_sanity:
     assert node_indices[0] == 0 and node_indices[-1] == len(
         node_indices) - 1, ' Wrong graph format'
@@ -104,7 +103,7 @@ def load_gonum_graph_dump(filename: str, check_sanity=True):
   return G
 
 
-def load_snapshot(path: str) -> Dict[str, Any]:
+def load_snapshot(path: str) -> dict[str, Any]:
   """加载 v2 格式的模型快照文件（RawSnapshotData 信封）。
 
   返回一个 dict，包含：

@@ -1,8 +1,8 @@
-from typing import Optional, List, Any, TypeVar
-
 import sqlite3
-import msgpack
 from dataclasses import dataclass
+from typing import Any, TypeVar
+
+import msgpack
 
 # ---------------- 数据模型 ----------------
 
@@ -29,10 +29,10 @@ class PostEventBody:
 
 @dataclass
 class ViewPostsEventBody:
-  neighbor_concordant: List[PostRecord]
-  neighbor_discordant: List[PostRecord]
-  recommended_concordant: List[PostRecord]
-  recommended_discordant: List[PostRecord]
+  neighbor_concordant: list[PostRecord]
+  neighbor_discordant: list[PostRecord]
+  recommended_concordant: list[PostRecord]
+  recommended_discordant: list[PostRecord]
 
 
 @dataclass
@@ -41,7 +41,7 @@ class EventRecord:
   type: str
   agent_id: int
   step: int
-  body: Optional[Any] = None  # 可选事件体
+  body: Any | None = None  # 可选事件体
 
 # ---------------- 工具函数 ----------------
 
@@ -67,8 +67,8 @@ def get_events_by_step_range(
     db: sqlite3.Connection,
     a: int,
     b: int,
-    type_: Optional[str] = None
-) -> List[EventRecord]:
+    type_: str | None = None
+) -> list[EventRecord]:
   cur = db.cursor()
   if type_:
     cur.execute(
@@ -86,7 +86,7 @@ def get_post_events_by_agent_step(
     db: sqlite3.Connection,
     agent_id: int,
     step: int
-) -> List[EventRecord]:
+) -> list[EventRecord]:
   cur = db.cursor()
   cur.execute("""
     SELECT e.id, e.type, e.agent_id, e.step, t.is_repost, t.opinion
@@ -113,8 +113,8 @@ def get_events_by_step_type(
     db: sqlite3.Connection,
     step: int,
     type_: str,
-    agent_id: Optional[int] = None
-) -> List[EventRecord]:
+    agent_id: int | None = None
+) -> list[EventRecord]:
   cur = db.cursor()
   if agent_id is not None:
     cur.execute("SELECT id, type, agent_id, step FROM events WHERE step=? AND type=? AND agent_id=?",
@@ -129,7 +129,7 @@ def get_events_by_step_type(
 def get_view_posts_event_body(
     db: sqlite3.Connection,
     event_id: int
-) -> Optional[ViewPostsEventBody]:
+) -> ViewPostsEventBody | None:
   cur = db.cursor()
   cur.execute(
       "SELECT data FROM view_posts_events WHERE event_id = ?", (event_id,))
@@ -142,7 +142,7 @@ def get_view_posts_event_body(
 def get_rewiring_event_body(
     db: sqlite3.Connection,
     event_id: int
-) -> Optional[RewiringEventBody]:
+) -> RewiringEventBody | None:
   cur = db.cursor()
   cur.execute(
       "SELECT agent_id, unfollow, follow FROM rewiring_events WHERE event_id = ?", (event_id,))
@@ -155,7 +155,7 @@ def get_rewiring_event_body(
 def get_post_event_body(
     db: sqlite3.Connection,
     event_id: int
-) -> Optional[PostEventBody]:
+) -> PostEventBody | None:
   cur = db.cursor()
   cur.execute(
       "SELECT agent_id, step, opinion, is_repost FROM post_events WHERE event_id = ?", (event_id,))
@@ -188,7 +188,7 @@ T = TypeVar('T')
 
 
 def get_batch_iterator(
-    lst: List[T],
+    lst: list[T],
     size: int,
 ):
   for i in range(0, len(lst), size):
@@ -197,10 +197,10 @@ def get_batch_iterator(
 
 def batch_load_event_bodies(
     db: sqlite3.Connection,
-    events: List[EventRecord],
-    event_type: Optional[str] = None,
+    events: list[EventRecord],
+    event_type: str | None = None,
     max_batch_size: int = 1000,
-) -> List[EventRecord]:
+) -> list[EventRecord]:
   if not events:
     return []
   event_type = event_type or events[0].type  # 假设同类

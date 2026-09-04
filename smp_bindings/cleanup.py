@@ -15,8 +15,8 @@ import argparse
 import dataclasses
 import json
 import shutil
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Iterable, Sequence
 
 
 @dataclasses.dataclass(slots=True)
