@@ -1,4 +1,4 @@
-.PHONY: build build-probe build-all test test-python benchmark benchmark-recsys fmt clean
+.PHONY: build build-batch build-probe build-all test test-python benchmark benchmark-recsys fmt clean
 
 GO ?= go
 PYTHON ?= python
@@ -6,10 +6,13 @@ PYTHON ?= python
 build:
 	$(GO) build -o ./smp ./cmd/smp
 
+build-batch:
+	$(GO) build -o ./smp-batch ./cmd/smp-batch
+
 build-probe:
 	$(GO) build -o ./smp-probe ./cmd/smp-probe
 
-build-all: build build-probe
+build-all: build build-batch build-probe
 
 test:
 	$(GO) test ./...
@@ -27,4 +30,4 @@ fmt:
 	$(GO) fmt ./...
 
 clean:
-	$(RM) ./smp ./smp.exe ./smp-probe ./smp-probe.exe
+	$(RM) ./smp ./smp.exe ./smp-batch ./smp-batch.exe ./smp-probe ./smp-probe.exe
