@@ -6,42 +6,17 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"smp/model"
 	"smp/simulation"
 	"strings"
 	"syscall"
 )
 
-const MAX_SIM_COUNT = 15000
-
 func usage(program string) {
-	log.Printf("Usage: %s <base_path> <metadata_json> [parsable_progress]", program)
+	log.Printf("Usage: %s <base_path> <metadata_json> [json_progress]", program)
 }
 
 func main() {
-	metadata := &simulation.ScenarioMetadata{
-
-		SMPModelPureParams: model.SMPModelPureParams{
-
-			PostRetainCount: 3,
-			RecsysCount:     10,
-		},
-
-		CollectItemOptions: model.CollectItemOptions{
-
-			AgentNumber:   true,
-			OpinionSum:    true,
-			RewiringEvent: true,
-			PostEvent:     true,
-		},
-
-		RecsysFactoryType: "Random",
-		NetworkType:       "Random",
-		NodeCount:         500,
-		NodeFollowCount:   15,
-
-		MaxSimulationStep: MAX_SIM_COUNT,
-	}
+	metadata := simulation.DefaultScenarioMetadata()
 
 	args := os.Args
 	if len(args) < 3 {
@@ -62,10 +37,10 @@ func main() {
 		log.Fatalf("Invalid metadata: %v", err)
 	}
 
-	outputParsableProgress := false
+	outputJSONProgress := false
 	if len(args) > 3 {
 		v := strings.ToLower(strings.TrimSpace(args[3]))
-		outputParsableProgress = v == "1" || v == "yes" || v == "true" || v == "ok"
+		outputJSONProgress = v == "1" || v == "yes" || v == "true" || v == "ok"
 	}
 
 	// The production CLI always persists graph/model dumps. Library callers
@@ -75,8 +50,8 @@ func main() {
 		basePath,
 		metadata,
 		simulation.ScenarioOptions{
-			OutputParsableProgress: outputParsableProgress,
-			EnableDumps:            true,
+			OutputJSONProgress: outputJSONProgress,
+			EnableDumps:        true,
 		},
 	)
 

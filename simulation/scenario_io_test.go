@@ -3,15 +3,17 @@ package simulation_test
 import (
 	"bytes"
 	"context"
-	"fmt"
+	"encoding/json"
 	"io"
 	"os"
 	"path"
+	"reflect"
 	"strings"
 	"testing"
 
 	"smp/dynamics"
 	"smp/model"
+	"smp/progress"
 	"smp/simulation"
 )
 
@@ -34,7 +36,21 @@ func captureStdout(fn func()) string {
 	return buf.String()
 }
 
-func TestParsableProgressOutput(t *testing.T) {
+func decodeProgressEvents(t *testing.T, output string) []progress.Event {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	events := make([]progress.Event, 0, len(lines))
+	for _, line := range lines {
+		var event progress.Event
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("invalid JSON progress line %q: %v", line, err)
+		}
+		events = append(events, event)
+	}
+	return events
+}
+
+func TestJSONProgressOutput(t *testing.T) {
 	metadata := &simulation.ScenarioMetadata{
 		DynamicsType: simulation.DynamicsTypeHK,
 		HKParams: dynamics.HKParams{
@@ -63,8 +79,8 @@ func TestParsableProgressOutput(t *testing.T) {
 	}
 
 	scenario := simulation.NewScenarioWithOptions(basePath, metadata, simulation.ScenarioOptions{
-		OutputParsableProgress: true,
-		EnableDumps:            false,
+		OutputJSONProgress: true,
+		EnableDumps:        false,
 	})
 	scenario.Init()
 
@@ -72,57 +88,45 @@ func TestParsableProgressOutput(t *testing.T) {
 		scenario.StepTillEnd(context.Background())
 	})
 
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	if len(lines) == 0 {
+	events := decodeProgressEvents(t, output)
+	if len(events) == 0 {
 		t.Fatalf("Expected stdout output, got nothing")
 	}
 
-	taskPrefix := fmt.Sprintf("TASK:%s;", metadata.UniqueName)
-
-	var hasInit, hasDone bool
-	for _, line := range lines {
-		if !strings.HasPrefix(line, taskPrefix) {
-			t.Errorf("Line missing task prefix %q: %s", taskPrefix, line)
+	var hasStart, hasDone, hasRNG bool
+	for _, event := range events {
+		if event.Version != progress.Version || event.RequestID != metadata.UniqueName {
+			t.Errorf("unexpected progress envelope: %+v", event)
 		}
-		if strings.Contains(line, "TYPE:INIT") {
-			hasInit = true
-			// Verify format: TASK:<name>;TYPE:INIT;STEP:<n>;
-			expected := fmt.Sprintf("%sTYPE:INIT;STEP:", taskPrefix)
-			if !strings.HasPrefix(line, expected) {
-				t.Errorf("INIT line has unexpected format: %s", line)
+		switch event.Type {
+		case progress.TypeRNG:
+			hasRNG = event.Algorithm != "" && event.Seed1 != "" && event.Seed2 != ""
+		case progress.TypeStart:
+			hasStart = true
+			if event.Step != 1 || event.MaxStep != metadata.MaxSimulationStep {
+				t.Errorf("unexpected start event: %+v", event)
 			}
-		}
-		if strings.Contains(line, "TYPE:DONE") {
+		case progress.TypeDone:
 			hasDone = true
-			// Verify DONE line contains DONE_TYPE
-			if !strings.Contains(line, "DONE_TYPE:") {
-				t.Errorf("DONE line missing DONE_TYPE field: %s", line)
+			if event.StopReason != "horizon" && event.StopReason != "halt" {
+				t.Errorf("unrecognized stop reason: %+v", event)
 			}
-			// DONE_TYPE must be one of SIG, ITER, HALT
-			validDoneType := strings.Contains(line, "DONE_TYPE:SIG") ||
-				strings.Contains(line, "DONE_TYPE:ITER") ||
-				strings.Contains(line, "DONE_TYPE:HALT")
-			if !validDoneType {
-				t.Errorf("DONE line has unrecognized DONE_TYPE: %s", line)
-			}
-		}
-		if strings.Contains(line, "TYPE:PROGRESS") {
-			expected := fmt.Sprintf("%sTYPE:PROGRESS;STEP:", taskPrefix)
-			if !strings.HasPrefix(line, expected) {
-				t.Errorf("PROGRESS line has unexpected format: %s", line)
+		case progress.TypeProgress:
+			if event.MaxStep != metadata.MaxSimulationStep {
+				t.Errorf("unexpected progress event: %+v", event)
 			}
 		}
 	}
 
-	if !hasInit {
-		t.Errorf("Expected an INIT line in stdout output; got:\n%s", output)
+	if !hasRNG || !hasStart {
+		t.Errorf("Expected RNG and start lines in stdout output; got:\n%s", output)
 	}
 	if !hasDone {
 		t.Errorf("Expected a DONE line in stdout output; got:\n%s", output)
 	}
 }
 
-func TestParsableProgressOutputDeffuant(t *testing.T) {
+func TestJSONProgressOutputDeffuant(t *testing.T) {
 	metadata := &simulation.ScenarioMetadata{
 		DynamicsType: simulation.DynamicsTypeDeffuant,
 		DeffuantParams: dynamics.DeffuantParams{
@@ -150,8 +154,8 @@ func TestParsableProgressOutputDeffuant(t *testing.T) {
 	}
 
 	scenario := simulation.NewScenarioWithOptions(basePath, metadata, simulation.ScenarioOptions{
-		OutputParsableProgress: true,
-		EnableDumps:            false,
+		OutputJSONProgress: true,
+		EnableDumps:        false,
 	})
 	scenario.Init()
 
@@ -159,15 +163,13 @@ func TestParsableProgressOutputDeffuant(t *testing.T) {
 		scenario.StepTillEnd(context.Background())
 	})
 
-	if !strings.Contains(output, "TYPE:INIT") {
-		t.Errorf("Deffuant: expected INIT line; got:\n%s", output)
-	}
-	if !strings.Contains(output, "TYPE:DONE") {
-		t.Errorf("Deffuant: expected DONE line; got:\n%s", output)
+	events := decodeProgressEvents(t, output)
+	if events[1].Type != progress.TypeStart || events[len(events)-1].Type != progress.TypeDone {
+		t.Errorf("Deffuant: expected start/done events; got:\n%s", output)
 	}
 }
 
-func TestParsableProgressOutputGalam(t *testing.T) {
+func TestJSONProgressOutputGalam(t *testing.T) {
 	metadata := &simulation.ScenarioMetadata{
 		DynamicsType: simulation.DynamicsTypeGalam,
 		GalamParams: dynamics.GalamParams{
@@ -193,8 +195,8 @@ func TestParsableProgressOutputGalam(t *testing.T) {
 	}
 
 	scenario := simulation.NewScenarioWithOptions(basePath, metadata, simulation.ScenarioOptions{
-		OutputParsableProgress: true,
-		EnableDumps:            false,
+		OutputJSONProgress: true,
+		EnableDumps:        false,
 	})
 	scenario.Init()
 
@@ -202,15 +204,13 @@ func TestParsableProgressOutputGalam(t *testing.T) {
 		scenario.StepTillEnd(context.Background())
 	})
 
-	if !strings.Contains(output, "TYPE:INIT") {
-		t.Errorf("Galam: expected INIT line; got:\n%s", output)
-	}
-	if !strings.Contains(output, "TYPE:DONE") {
-		t.Errorf("Galam: expected DONE line; got:\n%s", output)
+	events := decodeProgressEvents(t, output)
+	if events[1].Type != progress.TypeStart || events[len(events)-1].Type != progress.TypeDone {
+		t.Errorf("Galam: expected start/done events; got:\n%s", output)
 	}
 }
 
-func TestParsableProgressOutputVoter(t *testing.T) {
+func TestJSONProgressOutputVoter(t *testing.T) {
 	metadata := &simulation.ScenarioMetadata{
 		DynamicsType: simulation.DynamicsTypeVoter,
 		VoterParams: dynamics.VoterParams{
@@ -236,8 +236,8 @@ func TestParsableProgressOutputVoter(t *testing.T) {
 	}
 
 	scenario := simulation.NewScenarioWithOptions(basePath, metadata, simulation.ScenarioOptions{
-		OutputParsableProgress: true,
-		EnableDumps:            false,
+		OutputJSONProgress: true,
+		EnableDumps:        false,
 	})
 	scenario.Init()
 
@@ -245,10 +245,77 @@ func TestParsableProgressOutputVoter(t *testing.T) {
 		scenario.StepTillEnd(context.Background())
 	})
 
-	if !strings.Contains(output, "TYPE:INIT") {
-		t.Errorf("Voter: expected INIT line; got:\n%s", output)
+	events := decodeProgressEvents(t, output)
+	if events[1].Type != progress.TypeStart || events[len(events)-1].Type != progress.TypeDone {
+		t.Errorf("Voter: expected start/done events; got:\n%s", output)
 	}
-	if !strings.Contains(output, "TYPE:DONE") {
-		t.Errorf("Voter: expected DONE line; got:\n%s", output)
+}
+
+func TestNoDumpScenarioDoesNoIOOrHistory(t *testing.T) {
+	basePath := path.Join(t.TempDir(), "must-not-exist")
+	metadata := makeValidMetadata()
+	metadata.UniqueName = "no-io"
+	metadata.MaxSimulationStep = 5
+
+	scenario := simulation.NewScenarioWithOptions(basePath, metadata, simulation.ScenarioOptions{
+		EnableDumps: false,
+		Quiet:       true,
+	})
+	if err := scenario.InitError(); err != nil {
+		t.Fatal(err)
+	}
+	result := scenario.StepTillEndResult(context.Background())
+
+	if !result.Completed {
+		t.Fatalf("run did not complete: %+v", result)
+	}
+	if scenario.AccState != nil || scenario.Serializer != nil || scenario.DB != nil {
+		t.Fatalf(
+			"no-I/O state allocated persistence: acc=%v serializer=%v db=%v",
+			scenario.AccState != nil,
+			scenario.Serializer != nil,
+			scenario.DB != nil,
+		)
+	}
+	if _, err := os.Stat(basePath); !os.IsNotExist(err) {
+		t.Fatalf("no-I/O run touched %q: %v", basePath, err)
+	}
+}
+
+func TestNoDumpScenarioMatchesPersistentRun(t *testing.T) {
+	fullMetadata := makeValidMetadata()
+	fullMetadata.UniqueName = "full-equivalence"
+	fullMetadata.MaxSimulationStep = 20
+	noIOMetadata := *fullMetadata
+	noIOMetadata.UniqueName = "no-io-equivalence"
+
+	full := simulation.NewScenarioWithOptions(t.TempDir(), fullMetadata, simulation.ScenarioOptions{
+		EnableDumps: true,
+		Quiet:       true,
+	})
+	if err := full.InitError(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if full.DB != nil {
+			_ = full.DB.Close()
+		}
+	})
+	noIO := simulation.NewScenarioWithOptions(
+		path.Join(t.TempDir(), "must-not-exist"),
+		&noIOMetadata,
+		simulation.ScenarioOptions{EnableDumps: false, Quiet: true},
+	)
+	if err := noIO.InitError(); err != nil {
+		t.Fatal(err)
+	}
+
+	fullResult := full.StepTillEndResult(context.Background())
+	noIOResult := noIO.StepTillEndResult(context.Background())
+	if fullResult != noIOResult {
+		t.Fatalf("run summaries differ: full=%+v no_io=%+v", fullResult, noIOResult)
+	}
+	if got, want := noIO.Model.GetOpinions(), full.Model.GetOpinions(); !reflect.DeepEqual(got, want) {
+		t.Fatal("final opinions differ between persistent and no-I/O runs")
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"smp/dynamics"
 	"smp/model"
+	"smp/progress"
 	smprng "smp/rng"
 	"smp/utils"
 	"time"
@@ -25,53 +26,95 @@ type Scenario struct {
 	DB         *EventDB
 	RNG        *smprng.Pool
 
-	OutputParsableProgress bool
-	EnableDumps            bool
+	OutputJSONProgress   bool
+	EnableDumps          bool
+	Quiet                bool
+	ProgressStepInterval int
+	ProgressCallback     func(ScenarioProgress)
+}
+
+type ScenarioProgress struct {
+	Step    int
+	MaxStep int
+}
+
+type RunResult struct {
+	Step       int
+	StopReason string
+	Completed  bool
 }
 
 // ScenarioOptions controls runner behavior that is not part of the simulated
 // model. The zero value is useful for lightweight tests.
 type ScenarioOptions struct {
-	OutputParsableProgress bool
-	EnableDumps            bool
+	OutputJSONProgress   bool
+	EnableDumps          bool
+	Quiet                bool
+	ProgressStepInterval int
+	ProgressCallback     func(ScenarioProgress)
 }
 
 // NewScenario preserves the historical constructor behavior, including dumps.
-func NewScenario(dir string, metadata *ScenarioMetadata, outputParsableProgress bool) *Scenario {
+func NewScenario(dir string, metadata *ScenarioMetadata, outputJSONProgress bool) *Scenario {
 	return NewScenarioWithOptions(dir, metadata, ScenarioOptions{
-		OutputParsableProgress: outputParsableProgress,
-		EnableDumps:            true,
+		OutputJSONProgress: outputJSONProgress,
+		EnableDumps:        true,
 	})
 }
 
 // NewScenarioWithOptions constructs a scenario with explicit runner options.
 func NewScenarioWithOptions(dir string, metadata *ScenarioMetadata, options ScenarioOptions) *Scenario {
-	return &Scenario{
-		BaseDir:                dir,
-		Metadata:               metadata,
-		Serializer:             NewSimulationSerializer(dir, metadata.UniqueName, 2),
-		OutputParsableProgress: options.OutputParsableProgress,
-		EnableDumps:            options.EnableDumps,
+	scenario := &Scenario{
+		BaseDir:              dir,
+		Metadata:             metadata,
+		OutputJSONProgress:   options.OutputJSONProgress,
+		EnableDumps:          options.EnableDumps,
+		Quiet:                options.Quiet,
+		ProgressStepInterval: options.ProgressStepInterval,
+		ProgressCallback:     options.ProgressCallback,
 	}
+	if options.EnableDumps {
+		scenario.Serializer = NewSimulationSerializer(dir, metadata.UniqueName, 2)
+	}
+	return scenario
 }
 
 const MAX_POST_EVENT_INTERVAL = 500
 const DB_CACHE_SIZE = 40000
 
 func (s *Scenario) Init() {
+	if err := s.InitError(); err != nil {
+		log.Fatalf("Failed to initialize scenario: %v", err)
+	}
+}
+
+// InitError initializes a scenario and returns recoverable configuration or
+// persistence errors. With EnableDumps false it performs no filesystem I/O and
+// does not allocate an accumulative history.
+func (s *Scenario) InitError() error {
 	if err := s.Metadata.PrepareForNewRun(); err != nil {
-		log.Fatalf("Failed to resolve scenario RNG: %v", err)
+		return fmt.Errorf("resolve scenario RNG: %w", err)
 	}
 	if err := s.Metadata.Validate(); err != nil {
-		log.Fatalf("Invalid scenario metadata: %v", err)
+		return fmt.Errorf("invalid scenario metadata: %w", err)
 	}
 	rngPool, err := smprng.NewPool(s.Metadata.RNG)
 	if err != nil {
-		log.Fatalf("Failed to initialize scenario RNG: %v", err)
+		return fmt.Errorf("initialize scenario RNG: %w", err)
 	}
 	s.RNG = rngPool
-	if err := s.Serializer.SaveMetadata(s.Metadata); err != nil {
-		log.Fatalf("Failed to persist resolved metadata: %v", err)
+	if s.EnableDumps {
+		if s.Serializer == nil {
+			return fmt.Errorf("persistence is enabled without a serializer")
+		}
+		if err := s.Serializer.SaveMetadata(s.Metadata); err != nil {
+			return fmt.Errorf("persist resolved metadata: %w", err)
+		}
+	}
+
+	var eventLogger func(*model.EventRecord)
+	if s.EnableDumps {
+		eventLogger = s.logEvent
 	}
 
 	nodeCount := max(s.Metadata.NodeCount, 1)
@@ -89,7 +132,7 @@ func (s *Scenario) Init() {
 			SMPModelPureParams: s.Metadata.SMPModelPureParams,
 			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
 		}
-		m := model.NewSMPModelFloat64(graph, nil, &params, &s.Metadata.HKParams, &dynamics.HK{}, &s.Metadata.CollectItemOptions, s.logEvent, s.RNG)
+		m := model.NewSMPModelFloat64(graph, nil, &params, &s.Metadata.HKParams, &dynamics.HK{}, &s.Metadata.CollectItemOptions, eventLogger, s.RNG)
 		s.Model = &Float64ModelWrapper[dynamics.HKParams]{M: m}
 	case DynamicsTypeDeffuant:
 		factories := GetFloat64RecsysFactoriesWithParams[dynamics.DeffuantParams](s.Metadata.RecSysParams)
@@ -97,7 +140,7 @@ func (s *Scenario) Init() {
 			SMPModelPureParams: s.Metadata.SMPModelPureParams,
 			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
 		}
-		m := model.NewSMPModelFloat64(graph, nil, &params, &s.Metadata.DeffuantParams, &dynamics.Deffuant{}, &s.Metadata.CollectItemOptions, s.logEvent, s.RNG)
+		m := model.NewSMPModelFloat64(graph, nil, &params, &s.Metadata.DeffuantParams, &dynamics.Deffuant{}, &s.Metadata.CollectItemOptions, eventLogger, s.RNG)
 		s.Model = &Float64ModelWrapper[dynamics.DeffuantParams]{M: m}
 	case DynamicsTypeGalam:
 		factories := GetBoolRecsysFactoriesWithParams[dynamics.GalamParams](s.Metadata.RecSysParams)
@@ -111,7 +154,7 @@ func (s *Scenario) Init() {
 		for i := range ops {
 			ops[i] = opinionRNG.IntN(2) == 1
 		}
-		m := model.NewSMPModel(graph, &ops, &params, &s.Metadata.GalamParams, &dynamics.Galam{}, &s.Metadata.CollectItemOptions, s.logEvent, s.RNG)
+		m := model.NewSMPModel(graph, &ops, &params, &s.Metadata.GalamParams, &dynamics.Galam{}, &s.Metadata.CollectItemOptions, eventLogger, s.RNG)
 		s.Model = &BoolModelWrapper[dynamics.GalamParams]{M: m}
 	case DynamicsTypeVoter:
 		factories := GetBoolRecsysFactoriesWithParams[dynamics.VoterParams](s.Metadata.RecSysParams)
@@ -125,41 +168,47 @@ func (s *Scenario) Init() {
 		for i := range ops {
 			ops[i] = opinionRNG.IntN(2) == 1
 		}
-		m := model.NewSMPModel(graph, &ops, &params, &s.Metadata.VoterParams, &dynamics.Voter{}, &s.Metadata.CollectItemOptions, s.logEvent, s.RNG)
+		m := model.NewSMPModel(graph, &ops, &params, &s.Metadata.VoterParams, &dynamics.Voter{}, &s.Metadata.CollectItemOptions, eventLogger, s.RNG)
 		s.Model = &BoolModelWrapper[dynamics.VoterParams]{M: m}
 	default:
-		log.Fatalf("Unknown DynamicsType: %q", s.Metadata.DynamicsType)
+		return fmt.Errorf("unknown DynamicsType: %q", s.Metadata.DynamicsType)
 	}
 
 	s.Model.InitPosts()
 
-	err = os.MkdirAll(
-		filepath.Join(s.BaseDir, s.Metadata.UniqueName),
-		0755,
-	)
-	if err != nil {
-		log.Fatalf("Failed to create scenario dump folder: %v", err)
-	}
-
-	s.AccState = NewAccumulativeModelState()
-
-	db, err := OpenEventDB(filepath.Join(s.BaseDir, s.Metadata.UniqueName, "events.db"), DB_CACHE_SIZE)
-	if err != nil {
-		log.Fatalf("Failed to create event db logger: %v", err)
-	}
-
-	s.DB = db
-
 	if s.EnableDumps {
+		err = os.MkdirAll(
+			filepath.Join(s.BaseDir, s.Metadata.UniqueName),
+			0755,
+		)
+		if err != nil {
+			return fmt.Errorf("create scenario dump folder: %w", err)
+		}
+
+		s.AccState = NewAccumulativeModelState()
+		db, openErr := OpenEventDB(
+			filepath.Join(s.BaseDir, s.Metadata.UniqueName, "events.db"),
+			DB_CACHE_SIZE,
+		)
+		if openErr != nil {
+			return fmt.Errorf("create event db logger: %w", openErr)
+		}
+		s.DB = db
 		s.Serializer.SaveGraph(utils.SerializeGraph(s.Model.GetGraph()), s.Model.GetCurStep())
+		s.Model.Accumulate(s.AccState)
 	}
-	s.Model.Accumulate(s.AccState)
 	s.Model.SetCurStep(1)
 
-	s.sanitize()
+	if s.EnableDumps {
+		s.sanitize()
+	}
+	return nil
 }
 
 func (s *Scenario) Load() bool {
+	if !s.EnableDumps || s.Serializer == nil {
+		return false
+	}
 	storedMetadata, err := s.Serializer.LoadMetadata()
 	if err != nil {
 		log.Printf("Failed to load resolved metadata: %v", err)
@@ -307,12 +356,15 @@ func (s *Scenario) Load() bool {
 }
 
 func (s *Scenario) sanitize() {
+	if !s.EnableDumps || s.DB == nil || s.Serializer == nil {
+		return
+	}
 	s.DB.DeleteEventsAfterStep(s.Model.GetCurStep())
 	s.Serializer.DeleteGraphsAfterStep(s.Model.GetCurStep(), false)
 }
 
 func (s *Scenario) Dump() {
-	if !s.EnableDumps {
+	if !s.EnableDumps || s.DB == nil || s.Serializer == nil || s.AccState == nil {
 		return
 	}
 	s.DB.Flush()
@@ -328,12 +380,13 @@ func (s *Scenario) Dump() {
 func (s *Scenario) Step() (int, float64) {
 	changedCount, maxOpinionChange := s.Model.StepModel()
 
-	s.Model.Accumulate(s.AccState)
-	s.AccState.UnsafePostEvent += changedCount
-
-	if s.EnableDumps && s.AccState.UnsafePostEvent > MAX_POST_EVENT_INTERVAL {
-		s.Serializer.SaveGraph(utils.SerializeGraph(s.Model.GetGraph()), s.Model.GetCurStep())
-		s.AccState.UnsafePostEvent = 0
+	if s.EnableDumps && s.AccState != nil {
+		s.Model.Accumulate(s.AccState)
+		s.AccState.UnsafePostEvent += changedCount
+		if s.AccState.UnsafePostEvent > MAX_POST_EVENT_INTERVAL {
+			s.Serializer.SaveGraph(utils.SerializeGraph(s.Model.GetGraph()), s.Model.GetCurStep())
+			s.AccState.UnsafePostEvent = 0
+		}
 	}
 
 	s.Model.SetCurStep(s.Model.GetCurStep() + 1)
@@ -342,6 +395,9 @@ func (s *Scenario) Step() (int, float64) {
 }
 
 func (s *Scenario) IsFinished() bool {
+	if !s.EnableDumps || s.Serializer == nil {
+		return false
+	}
 	finished, _ := s.Serializer.IsFinished()
 	return finished
 }
@@ -352,28 +408,42 @@ const STOP_SIM_STEPS = 60
 const SAVE_INTERVAL = 300 // seconds
 
 func (s *Scenario) StepTillEnd(ctx context.Context) {
+	_ = s.StepTillEndResult(ctx)
+}
 
+// StepTillEndResult advances the scenario and returns a compact in-memory run
+// summary. Persistence is controlled solely by EnableDumps.
+func (s *Scenario) StepTillEndResult(ctx context.Context) RunResult {
 	maxSimCount := s.Metadata.MaxSimulationStep
 	if maxSimCount < 0 {
 		maxSimCount = 1
 	}
 
 	if s.IsFinished() {
-		return
+		return RunResult{
+			Step:       s.Model.GetCurStep() - 1,
+			StopReason: "already_finished",
+			Completed:  true,
+		}
 	}
 
 	var bar *progressbar.ProgressBar
 	lastPrintTime := time.Now()
-	if s.OutputParsableProgress {
-		fmt.Printf(
-			"TASK:%s;TYPE:RNG;ALGORITHM:%s;SEED1:%s;SEED2:%s;\n",
-			s.Metadata.UniqueName,
-			s.Metadata.RNG.Algorithm,
-			s.Metadata.RNG.Seed1,
-			s.Metadata.RNG.Seed2,
-		)
-		fmt.Printf("TASK:%s;TYPE:INIT;STEP:%d;\n", s.Metadata.UniqueName, s.Model.GetCurStep())
-	} else {
+	if s.OutputJSONProgress {
+		_ = progress.WriteJSONL(os.Stdout, progress.Event{
+			RequestID: s.Metadata.UniqueName,
+			Type:      progress.TypeRNG,
+			Algorithm: s.Metadata.RNG.Algorithm,
+			Seed1:     s.Metadata.RNG.Seed1,
+			Seed2:     s.Metadata.RNG.Seed2,
+		})
+		_ = progress.WriteJSONL(os.Stdout, progress.Event{
+			RequestID: s.Metadata.UniqueName,
+			Type:      progress.TypeStart,
+			Step:      s.Model.GetCurStep(),
+			MaxStep:   maxSimCount,
+		})
+	} else if !s.Quiet {
 		log.Printf(
 			"RNG algorithm=%s seed1=%s seed2=%s",
 			s.Metadata.RNG.Algorithm,
@@ -391,16 +461,29 @@ func (s *Scenario) StepTillEnd(ctx context.Context) {
 
 		didDump := false
 
-		if s.OutputParsableProgress {
+		if s.OutputJSONProgress {
 			if time.Since(lastPrintTime).Milliseconds() > 250 {
-				fmt.Printf("TASK:%s;TYPE:PROGRESS;STEP:%d;\n", s.Metadata.UniqueName, s.Model.GetCurStep())
+				_ = progress.WriteJSONL(os.Stdout, progress.Event{
+					RequestID: s.Metadata.UniqueName,
+					Type:      progress.TypeProgress,
+					Step:      s.Model.GetCurStep(),
+					MaxStep:   maxSimCount,
+				})
 				lastPrintTime = time.Now()
 			}
-		} else {
+		} else if bar != nil {
 			bar.Set(s.Model.GetCurStep())
 		}
 
 		nwChange, opChange := s.Step()
+		completedStep := s.Model.GetCurStep() - 1
+		if s.ProgressCallback != nil && s.ProgressStepInterval > 0 &&
+			completedStep%s.ProgressStepInterval == 0 {
+			s.ProgressCallback(ScenarioProgress{
+				Step:    completedStep,
+				MaxStep: maxSimCount,
+			})
+		}
 
 		thresholdMet := nwChange < NETWORK_CHANGE_THRESHOLD &&
 			opChange < OPINION_CHANGE_THRESHOLD
@@ -448,7 +531,7 @@ iterLoop:
 		}
 	}
 
-	if !s.OutputParsableProgress && s.Model.GetCurStep() <= maxSimCount {
+	if !s.OutputJSONProgress && !s.Quiet && s.Model.GetCurStep() <= maxSimCount {
 		fmt.Println("")
 	}
 
@@ -457,39 +540,67 @@ iterLoop:
 	}
 
 	st := s.Model.GetCurStep() - 1
+	stopReason := "horizon"
 
 	if isCtxDone {
-		if s.OutputParsableProgress {
-			fmt.Printf("TASK:%s;TYPE:DONE;DONE_TYPE:SIG;STEP:%d;\n", s.Metadata.UniqueName, s.Model.GetCurStep())
-		} else {
+		stopReason = "cancelled"
+		if s.OutputJSONProgress {
+			_ = progress.WriteJSONL(os.Stdout, progress.Event{
+				RequestID:  s.Metadata.UniqueName,
+				Type:       progress.TypeDone,
+				Step:       st,
+				MaxStep:    maxSimCount,
+				StopReason: stopReason,
+			})
+		} else if !s.Quiet {
 			log.Printf("Simulation ended (`ctx.Done()` received, step: %d)", st)
 		}
 	} else {
 		if !isShouldNotContinue {
-			if s.OutputParsableProgress {
-				fmt.Printf("TASK:%s;TYPE:DONE;DONE_TYPE:ITER;STEP:%d;\n", s.Metadata.UniqueName, s.Model.GetCurStep())
-			} else {
+			if s.OutputJSONProgress {
+				_ = progress.WriteJSONL(os.Stdout, progress.Event{
+					RequestID:  s.Metadata.UniqueName,
+					Type:       progress.TypeDone,
+					Step:       st,
+					MaxStep:    maxSimCount,
+					StopReason: stopReason,
+				})
+			} else if !s.Quiet {
 				log.Printf("Simulation ended (max iteration reached, step: %d)", st)
 			}
 		} else {
-			if s.OutputParsableProgress {
-				fmt.Printf("TASK:%s;TYPE:DONE;DONE_TYPE:HALT;STEP:%d;\n", s.Metadata.UniqueName, s.Model.GetCurStep())
-			} else {
+			stopReason = "halt"
+			if s.OutputJSONProgress {
+				_ = progress.WriteJSONL(os.Stdout, progress.Event{
+					RequestID:  s.Metadata.UniqueName,
+					Type:       progress.TypeDone,
+					Step:       st,
+					MaxStep:    maxSimCount,
+					StopReason: stopReason,
+				})
+			} else if !s.Quiet {
 				log.Printf("Simulation ended (shouldContinue == false, step: %d)", st)
 			}
 		}
-		s.Serializer.MarkFinished(FinishMark{
-			DataVersion: s.Metadata.DataVersion,
-			RNG:         s.Metadata.RNG,
-		})
-		if s.EnableDumps {
+		if s.EnableDumps && s.Serializer != nil {
+			s.Serializer.MarkFinished(FinishMark{
+				DataVersion: s.Metadata.DataVersion,
+				RNG:         s.Metadata.RNG,
+			})
 			s.Serializer.SaveGraph(utils.SerializeGraph(s.Model.GetGraph()), st)
 		}
 	}
-
+	return RunResult{
+		Step:       st,
+		StopReason: stopReason,
+		Completed:  !isCtxDone,
+	}
 }
 
 func (s *Scenario) logEvent(event *model.EventRecord) {
+	if s.DB == nil {
+		return
+	}
 
 	switch event.Type {
 

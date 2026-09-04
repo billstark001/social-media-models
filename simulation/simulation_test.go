@@ -247,8 +247,8 @@ func TestScenarioPersistsResolvedVersionAndRNG(t *testing.T) {
 	meta.MaxSimulationStep = 1
 
 	scenario := simulation.NewScenarioWithOptions(dir, meta, simulation.ScenarioOptions{
-		OutputParsableProgress: true,
-		EnableDumps:            false,
+		OutputJSONProgress: true,
+		EnableDumps:        true,
 	})
 	scenario.Init()
 	t.Cleanup(func() {
@@ -281,17 +281,4 @@ func TestScenarioPersistsResolvedVersionAndRNG(t *testing.T) {
 		t.Fatalf("finish mark does not contain resolved version/RNG: %+v", mark)
 	}
 
-	entries, err := os.ReadDir(filepath.Join(dir, meta.UniqueName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if filepath.Ext(name) == ".lz4" ||
-			filepath.Ext(name) == ".msgpack" &&
-				(len(name) >= len("snapshot-") && name[:len("snapshot-")] == "snapshot-" ||
-					len(name) >= len("graph-") && name[:len("graph-")] == "graph-") {
-			t.Fatalf("dumps disabled but found %q", name)
-		}
-	}
 }

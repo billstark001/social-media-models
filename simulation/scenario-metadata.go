@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"regexp"
 	"smp/dynamics"
 	"smp/model"
@@ -339,7 +340,7 @@ func GetFloat64RecsysFactoriesWithParams[P any](params map[string]any) map[strin
 		},
 		"Structure": func(h *model.SMPModel[float64, P]) model.SMPModelRecommendationSystem[float64, P] {
 			return recsys.NewStructure(h, noiseStd, nil, useCache, func(s string) {
-				fmt.Println(s)
+				fmt.Fprintln(os.Stderr, s)
 			})
 		},
 		"OpinionRandom": func(h *model.SMPModel[float64, P]) model.SMPModelRecommendationSystem[float64, P] {
@@ -347,7 +348,7 @@ func GetFloat64RecsysFactoriesWithParams[P any](params map[string]any) map[strin
 		},
 		"StructureRandom": func(h *model.SMPModel[float64, P]) model.SMPModelRecommendationSystem[float64, P] {
 			return recsys.NewStructureRandom(h, nil, steepness, noiseStd, randomRatio, useCache, func(s string) {
-				fmt.Println(s)
+				fmt.Fprintln(os.Stderr, s)
 			})
 		},
 	}
@@ -400,7 +401,7 @@ func GetBoolRecsysFactoriesWithParams[P any](params map[string]any) map[string]m
 		},
 		"Structure": func(h *model.SMPModel[bool, P]) model.SMPModelRecommendationSystem[bool, P] {
 			return recsys.NewStructure(h, noiseStd, nil, useCache, func(s string) {
-				fmt.Println(s)
+				fmt.Fprintln(os.Stderr, s)
 			})
 		},
 		"OpinionRandom": func(h *model.SMPModel[bool, P]) model.SMPModelRecommendationSystem[bool, P] {
@@ -408,7 +409,7 @@ func GetBoolRecsysFactoriesWithParams[P any](params map[string]any) map[string]m
 		},
 		"StructureRandom": func(h *model.SMPModel[bool, P]) model.SMPModelRecommendationSystem[bool, P] {
 			return recsys.NewStructureRandom(h, nil, steepness, noiseStd, randomRatio, useCache, func(s string) {
-				fmt.Println(s)
+				fmt.Fprintln(os.Stderr, s)
 			})
 		},
 	}
