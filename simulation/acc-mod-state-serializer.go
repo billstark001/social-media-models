@@ -28,7 +28,9 @@ func SaveAccumulativeModelState(path string, state *AccumulativeModelState) erro
 
 	// 写 Opinions
 	for _, agentsSlice := range state.Opinions {
-		binary.Write(&buf, binary.LittleEndian, agentsSlice)
+		for _, value := range agentsSlice {
+			binary.Write(&buf, binary.LittleEndian, float32(value))
+		}
 	}
 
 	// 写 AgentNumbers
@@ -41,7 +43,9 @@ func SaveAccumulativeModelState(path string, state *AccumulativeModelState) erro
 	// 写 AgentOpinionSums
 	for _, agSlice := range state.AgentOpinionSums {
 		for _, arr := range agSlice {
-			binary.Write(&buf, binary.LittleEndian, arr)
+			for _, value := range arr {
+				binary.Write(&buf, binary.LittleEndian, float32(value))
+			}
 		}
 	}
 
@@ -76,10 +80,14 @@ func LoadAccumulativeModelState(path string) (*AccumulativeModelState, error) {
 	binary.Read(reader, binary.LittleEndian, &agents)
 
 	// Opinions
-	opinions := make([][]float32, steps)
+	opinions := make([][]float64, steps)
 	for i := range opinions {
-		opinions[i] = make([]float32, agents)
-		binary.Read(reader, binary.LittleEndian, opinions[i])
+		opinions[i] = make([]float64, agents)
+		for j := range opinions[i] {
+			var value float32
+			binary.Read(reader, binary.LittleEndian, &value)
+			opinions[i][j] = float64(value)
+		}
 	}
 
 	// AgentNumbers
@@ -92,11 +100,15 @@ func LoadAccumulativeModelState(path string) (*AccumulativeModelState, error) {
 	}
 
 	// AgentOpinionSums
-	agentOpinionSums := make([][][4]float32, steps)
+	agentOpinionSums := make([][][4]float64, steps)
 	for i := range agentOpinionSums {
-		agentOpinionSums[i] = make([][4]float32, agents)
+		agentOpinionSums[i] = make([][4]float64, agents)
 		for j := range agentOpinionSums[i] {
-			binary.Read(reader, binary.LittleEndian, &agentOpinionSums[i][j])
+			for k := range agentOpinionSums[i][j] {
+				var value float32
+				binary.Read(reader, binary.LittleEndian, &value)
+				agentOpinionSums[i][j][k] = float64(value)
+			}
 		}
 	}
 

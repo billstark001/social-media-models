@@ -2,7 +2,10 @@ module smp
 
 go 1.24.1
 
-require github.com/vmihailenco/msgpack/v5 v5.4.1
+require (
+	github.com/klauspost/compress v1.18.0
+	github.com/vmihailenco/msgpack/v5 v5.4.1
+)
 
 require (
 	github.com/mitchellh/colorstring v0.0.0-20190213212951-d06e56a500db // indirect

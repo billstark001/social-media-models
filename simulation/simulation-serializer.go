@@ -1,8 +1,10 @@
 package simulation
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -14,6 +16,7 @@ import (
 	smprng "smp/rng"
 	utils "smp/utils"
 
+	"github.com/pierrec/lz4/v4"
 	"github.com/vmihailenco/msgpack/v5"
 )
 
@@ -157,8 +160,11 @@ func (s *SimulationSerializer) _clean(fileType string, all bool, suffixName stri
 
 // RawSnapshotData wraps a dynamics-type tag and the msgpack-encoded model dump.
 type RawSnapshotData struct {
-	DynamicsType string
-	Data         []byte
+	DynamicsType  string
+	Data          []byte
+	Metadata      *ScenarioMetadata
+	CompletedStep int
+	StableSteps   int
 }
 
 func (s *SimulationSerializer) GetLatestRawSnapshot() (*RawSnapshotData, error) {
@@ -178,8 +184,8 @@ func (s *SimulationSerializer) GetLatestRawSnapshot() (*RawSnapshotData, error) 
 	return ret.(*RawSnapshotData), err
 }
 
-func (s *SimulationSerializer) SaveRawSnapshot(dynamicsType string, data []byte) error {
-	return s._write("snapshot", &RawSnapshotData{DynamicsType: dynamicsType, Data: data})
+func (s *SimulationSerializer) SaveRawSnapshot(snapshot *RawSnapshotData) error {
+	return s._write("snapshot", snapshot)
 }
 
 // #endregion
@@ -268,7 +274,7 @@ func (s *SimulationSerializer) SaveGraph(graph *utils.NetworkXGraph, step int) e
 	}
 
 	// 创建图文件名
-	filename := fmt.Sprintf("graph-%d.msgpack", step)
+	filename := fmt.Sprintf("graph-%d.msgpack.lz4", step)
 	filePath := filepath.Join(s.getSimulationDir(), filename)
 
 	// 序列化并保存图
@@ -277,7 +283,19 @@ func (s *SimulationSerializer) SaveGraph(graph *utils.NetworkXGraph, step int) e
 		return err
 	}
 
-	return os.WriteFile(filePath, data, 0644)
+	var compressed bytes.Buffer
+	w := lz4.NewWriter(&compressed)
+	if _, err := w.Write(data); err != nil {
+		return err
+	}
+	if err := w.Close(); err != nil {
+		return err
+	}
+	tmp := filePath + ".tmp"
+	if err := os.WriteFile(tmp, compressed.Bytes(), 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filePath)
 }
 
 // LoadGraph 加载特定步骤的图
@@ -287,18 +305,30 @@ func (s *SimulationSerializer) LoadGraph(step int) (*utils.NetworkXGraph, error)
 	}
 
 	// 构建图文件路径
-	filename := fmt.Sprintf("graph-%d.msgpack", step)
+	filename := fmt.Sprintf("graph-%d.msgpack.lz4", step)
 	filePath := filepath.Join(s.getSimulationDir(), filename)
 
 	// 检查文件是否存在
+	compressed := true
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		return nil, nil
+		compressed = false
+		filePath = filepath.Join(s.getSimulationDir(), fmt.Sprintf("graph-%d.msgpack", step))
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			return nil, nil
+		}
 	}
 
 	// 读取并解析图数据
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, err
+	}
+	if compressed {
+		reader := lz4.NewReader(bytes.NewReader(data))
+		data, err = io.ReadAll(reader)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	var graph utils.NetworkXGraph
@@ -312,16 +342,20 @@ func (s *SimulationSerializer) LoadGraph(step int) (*utils.NetworkXGraph, error)
 
 func (s *SimulationSerializer) DeleteGraphsAfterStep(step int, ignoreStepParsingErrors bool) error {
 
-	reGraphName := regexp.MustCompile(`graph-(\d+)\.msgpack`)
+	reGraphName := regexp.MustCompile(`graph-(\d+)\.msgpack(?:\.lz4)?$`)
 
 	// list all graphs
-	files, err := s._list("graph", ".msgpack")
+	files, err := os.ReadDir(s.getSimulationDir())
 	if err != nil {
 		return err
 	}
 
-	for _, file := range files {
-		matches := reGraphName.FindStringSubmatch(file)
+	for _, entry := range files {
+		file := filepath.Join(s.getSimulationDir(), entry.Name())
+		matches := reGraphName.FindStringSubmatch(entry.Name())
+		if matches == nil {
+			continue
+		}
 		stepInt, err := strconv.Atoi(matches[1])
 		if err != nil && !ignoreStepParsingErrors {
 			return err

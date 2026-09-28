@@ -47,9 +47,7 @@ func (w *Float64ModelWrapper[P]) InitPosts() {
 }
 
 func (w *Float64ModelWrapper[P]) Accumulate(acc *AccumulativeModelState) {
-	acc.Opinions = append(acc.Opinions, float64sToFloat32s(w.M.CollectOpinions()))
-	acc.AgentNumbers = append(acc.AgentNumbers, int32sToInt16s4(w.M.CollectAgentNumbers()))
-	acc.AgentOpinionSums = append(acc.AgentOpinionSums, float64sToFloat32s4(w.M.CollectAgentOpinions()))
+	acc.appendSample(w.M.CollectOpinions(), w.M.CollectAgentNumbers(), w.M.CollectAgentOpinions())
 }
 
 func (w *Float64ModelWrapper[P]) ValidateAcc(acc *AccumulativeModelState) bool {
@@ -89,15 +87,13 @@ func (w *BoolModelWrapper[P]) InitPosts() {
 
 func (w *BoolModelWrapper[P]) Accumulate(acc *AccumulativeModelState) {
 	opinions := w.M.CollectOpinions()
-	row := make([]float32, len(opinions))
+	row := make([]float64, len(opinions))
 	for i, v := range opinions {
 		if v {
 			row[i] = 1.0
 		}
 	}
-	acc.Opinions = append(acc.Opinions, row)
-	acc.AgentNumbers = append(acc.AgentNumbers, int32sToInt16s4(w.M.CollectAgentNumbers()))
-	acc.AgentOpinionSums = append(acc.AgentOpinionSums, float64sToFloat32s4(w.M.CollectAgentOpinions()))
+	acc.appendSample(row, w.M.CollectAgentNumbers(), w.M.CollectAgentOpinions())
 }
 
 func (w *BoolModelWrapper[P]) ValidateAcc(acc *AccumulativeModelState) bool {

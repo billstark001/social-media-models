@@ -4,6 +4,7 @@ import threading
 import unittest
 
 from smp_bindings.simulation import is_simulation_finished, run_simulation
+from smp_bindings.trajectory import TrajectoryReader
 
 SMP_BINARY = os.environ.get("SMP_TEST_BINARY", "")
 
@@ -39,6 +40,9 @@ class SimulationBindingsTest(unittest.TestCase):
       self.assertEqual(name, "json-progress")
       self.assertEqual(metadata["RNG"]["Algorithm"], "pcg64-dxsm-v1")
       self.assertTrue(is_simulation_finished(base_path, metadata))
+      trajectory = TrajectoryReader(os.path.join(base_path, name))
+      self.assertEqual(str(trajectory.channel("opinions").dtype), "float32")
+      self.assertEqual(str(trajectory.channel("agent_opinion_sums").dtype), "float16")
 
 
 if __name__ == "__main__":

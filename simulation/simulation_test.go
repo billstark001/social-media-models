@@ -15,13 +15,13 @@ import (
 func makeTestAccState(steps, agents int) *simulation.AccumulativeModelState {
 	s := simulation.NewAccumulativeModelState()
 	for step := range steps {
-		opRow := make([]float32, agents)
+		opRow := make([]float64, agents)
 		numRow := make([][4]int16, agents)
-		sumRow := make([][4]float32, agents)
+		sumRow := make([][4]float64, agents)
 		for a := range agents {
-			opRow[a] = float32(step)*0.1 + float32(a)*0.01
+			opRow[a] = float64(step)*0.1 + float64(a)*0.01
 			numRow[a] = [4]int16{int16(step), int16(a), int16(step + a), 0}
-			sumRow[a] = [4]float32{float32(step), float32(a), 0, float32(step + a)}
+			sumRow[a] = [4]float64{float64(step), float64(a), 0, float64(step + a)}
 		}
 		s.Opinions = append(s.Opinions, opRow)
 		s.AgentNumbers = append(s.AgentNumbers, numRow)
@@ -49,7 +49,7 @@ func TestSaveLoadAccumulativeModelState(t *testing.T) {
 	}
 	for step := range original.Opinions {
 		for a := range original.Opinions[step] {
-			if loaded.Opinions[step][a] != original.Opinions[step][a] {
+			if loaded.Opinions[step][a] != float64(float32(original.Opinions[step][a])) {
 				t.Errorf("Opinions[%d][%d]: got %v, want %v",
 					step, a, loaded.Opinions[step][a], original.Opinions[step][a])
 			}
@@ -58,7 +58,7 @@ func TestSaveLoadAccumulativeModelState(t *testing.T) {
 					step, a, loaded.AgentNumbers[step][a], original.AgentNumbers[step][a])
 			}
 			for k := range 4 {
-				if loaded.AgentOpinionSums[step][a][k] != original.AgentOpinionSums[step][a][k] {
+				if loaded.AgentOpinionSums[step][a][k] != float64(float32(original.AgentOpinionSums[step][a][k])) {
 					t.Errorf("AgentOpinionSums[%d][%d][%d]: got %v, want %v",
 						step, a, k,
 						loaded.AgentOpinionSums[step][a][k],

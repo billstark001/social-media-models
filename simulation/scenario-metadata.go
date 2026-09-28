@@ -18,7 +18,7 @@ import (
 const (
 	// CurrentDataVersion is the on-disk simulation data format version.
 	// Metadata without this field is legacy version 0.
-	CurrentDataVersion = 1
+	CurrentDataVersion = 2
 
 	DynamicsTypeHK       = "HK"
 	DynamicsTypeDeffuant = "Deffuant"
@@ -46,11 +46,13 @@ type ScenarioMetadata struct {
 	model.SMPModelPureParams
 	model.CollectItemOptions
 
-	MaxSimulationStep int
-	RecsysFactoryType string
-	NetworkType       string
-	NodeCount         int
-	NodeFollowCount   int
+	MaxSimulationStep   int
+	CheckpointSteps     []int
+	TrajectoryPrecision TrajectoryPrecision
+	RecsysFactoryType   string
+	NetworkType         string
+	NodeCount           int
+	NodeFollowCount     int
 
 	// RecSysParams holds optional per-key overrides passed to the recsys factory.
 	// Keys and their defaults:
@@ -66,7 +68,11 @@ type ScenarioMetadata struct {
 
 // PrepareForNewRun resolves defaults that must be persisted before sampling.
 func (m *ScenarioMetadata) PrepareForNewRun() error {
-	if m.DataVersion == 0 {
+	if err := m.TrajectoryPrecision.validate(); err != nil {
+		return err
+	}
+	m.TrajectoryPrecision = m.TrajectoryPrecision.resolved()
+	if m.DataVersion <= 1 {
 		m.DataVersion = CurrentDataVersion
 	}
 	resolved, err := smprng.Resolve(m.RNG)
@@ -91,10 +97,13 @@ func (m *ScenarioMetadata) Validate() error {
 			CurrentDataVersion,
 		)
 	}
-	if m.DataVersion == CurrentDataVersion || !m.RNG.IsZero() {
+	if m.DataVersion >= 1 || !m.RNG.IsZero() {
 		if _, err := smprng.Resolve(m.RNG); err != nil {
 			return err
 		}
+	}
+	if err := m.TrajectoryPrecision.validate(); err != nil {
+		return err
 	}
 
 	uniqueName := strings.TrimSpace(m.UniqueName)
@@ -123,6 +132,11 @@ func (m *ScenarioMetadata) Validate() error {
 
 	if m.MaxSimulationStep <= 0 {
 		return fmt.Errorf("MaxSimulationStep must be > 0, got %d", m.MaxSimulationStep)
+	}
+	for _, step := range m.CheckpointSteps {
+		if step < 0 || step > m.MaxSimulationStep {
+			return fmt.Errorf("CheckpointSteps contains out-of-range step %d", step)
+		}
 	}
 	if m.NodeCount < 2 {
 		return fmt.Errorf("NodeCount must be >= 2, got %d", m.NodeCount)

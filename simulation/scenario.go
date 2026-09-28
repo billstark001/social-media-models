@@ -14,17 +14,18 @@ import (
 	"time"
 
 	"github.com/schollz/progressbar/v3"
-	"github.com/vmihailenco/msgpack/v5"
 )
 
 type Scenario struct {
-	BaseDir    string
-	Metadata   *ScenarioMetadata
-	Model      IModel
-	AccState   *AccumulativeModelState
-	Serializer *SimulationSerializer
-	DB         *EventDB
-	RNG        *smprng.Pool
+	BaseDir     string
+	Metadata    *ScenarioMetadata
+	Model       IModel
+	AccState    *AccumulativeModelState
+	Trajectory  *TrajectoryWriter
+	Serializer  *SimulationSerializer
+	DB          *EventDB
+	RNG         *smprng.Pool
+	StableSteps int
 
 	OutputJSONProgress   bool
 	EnableDumps          bool
@@ -185,7 +186,15 @@ func (s *Scenario) InitError() error {
 			return fmt.Errorf("create scenario dump folder: %w", err)
 		}
 
-		s.AccState = NewAccumulativeModelState()
+		trajectory, trajectoryErr := OpenTrajectory(filepath.Join(s.BaseDir, s.Metadata.UniqueName), nodeCount, s.Metadata.TrajectoryPrecision)
+		if trajectoryErr != nil {
+			return fmt.Errorf("open trajectory: %w", trajectoryErr)
+		}
+		if trajectory.Manifest.NextStep != 0 {
+			return fmt.Errorf("existing trajectory has %d steps but no restorable model snapshot", trajectory.Manifest.NextStep)
+		}
+		s.Trajectory = trajectory
+		s.AccState = NewTrajectoryAccumulativeState(nodeCount, s.Metadata.TrajectoryPrecision)
 		db, openErr := OpenEventDB(
 			filepath.Join(s.BaseDir, s.Metadata.UniqueName, "events.db"),
 			DB_CACHE_SIZE,
@@ -198,6 +207,11 @@ func (s *Scenario) InitError() error {
 		s.Model.Accumulate(s.AccState)
 	}
 	s.Model.SetCurStep(1)
+	if s.EnableDumps && s.checkpointRequested(0) {
+		if err := s.SaveResearchCheckpoint(); err != nil {
+			return fmt.Errorf("save step-zero checkpoint: %w", err)
+		}
+	}
 
 	if s.EnableDumps {
 		s.sanitize()
@@ -217,6 +231,9 @@ func (s *Scenario) Load() bool {
 	if storedMetadata != nil {
 		s.Metadata.DataVersion = storedMetadata.DataVersion
 		s.Metadata.RNG = storedMetadata.RNG
+		if storedMetadata.TrajectoryPrecision != (TrajectoryPrecision{}) {
+			s.Metadata.TrajectoryPrecision = storedMetadata.TrajectoryPrecision
+		}
 	}
 	if err := s.Metadata.Validate(); err != nil {
 		log.Fatalf("Invalid scenario metadata: %v", err)
@@ -266,89 +283,39 @@ func (s *Scenario) Load() bool {
 		return false
 	}
 
-	// Decode the raw snapshot into the concrete type matching DynamicsType.
-	// The DynamicsType stored in the snapshot is authoritative; the metadata field
-	// is used as a fallback when the snapshot was saved before this field existed.
-	dynamicsType := rawSnapshot.DynamicsType
-	if dynamicsType == "" {
-		dynamicsType = s.Metadata.DynamicsType
-	}
-
-	switch dynamicsType {
-	case "", DynamicsTypeHK:
-		var dump model.SMPModelDumpData[float64, dynamics.HKParams]
-		if err := msgpack.Unmarshal(rawSnapshot.Data, &dump); err != nil {
-			log.Printf("Failed to unmarshal HK snapshot: %v", err)
-			return false
-		}
-		factories := GetFloat64RecsysFactoriesWithParams[dynamics.HKParams](s.Metadata.RecSysParams)
-		params := model.SMPModelParams[float64, dynamics.HKParams]{
-			SMPModelPureParams: s.Metadata.SMPModelPureParams,
-			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
-		}
-		s.Model = &Float64ModelWrapper[dynamics.HKParams]{
-			M: dump.Load(&params, &s.Metadata.HKParams, &dynamics.HK{}, &s.Metadata.CollectItemOptions, s.logEvent, s.RNG),
-		}
-	case DynamicsTypeDeffuant:
-		var dump model.SMPModelDumpData[float64, dynamics.DeffuantParams]
-		if err := msgpack.Unmarshal(rawSnapshot.Data, &dump); err != nil {
-			log.Printf("Failed to unmarshal Deffuant snapshot: %v", err)
-			return false
-		}
-		factories := GetFloat64RecsysFactoriesWithParams[dynamics.DeffuantParams](s.Metadata.RecSysParams)
-		params := model.SMPModelParams[float64, dynamics.DeffuantParams]{
-			SMPModelPureParams: s.Metadata.SMPModelPureParams,
-			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
-		}
-		s.Model = &Float64ModelWrapper[dynamics.DeffuantParams]{
-			M: dump.Load(&params, &s.Metadata.DeffuantParams, &dynamics.Deffuant{}, &s.Metadata.CollectItemOptions, s.logEvent, s.RNG),
-		}
-	case DynamicsTypeGalam:
-		var dump model.SMPModelDumpData[bool, dynamics.GalamParams]
-		if err := msgpack.Unmarshal(rawSnapshot.Data, &dump); err != nil {
-			log.Printf("Failed to unmarshal Galam snapshot: %v", err)
-			return false
-		}
-		factories := GetBoolRecsysFactoriesWithParams[dynamics.GalamParams](s.Metadata.RecSysParams)
-		params := model.SMPModelParams[bool, dynamics.GalamParams]{
-			SMPModelPureParams: s.Metadata.SMPModelPureParams,
-			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
-		}
-		s.Model = &BoolModelWrapper[dynamics.GalamParams]{
-			M: dump.Load(&params, &s.Metadata.GalamParams, &dynamics.Galam{}, &s.Metadata.CollectItemOptions, s.logEvent, s.RNG),
-		}
-	case DynamicsTypeVoter:
-		var dump model.SMPModelDumpData[bool, dynamics.VoterParams]
-		if err := msgpack.Unmarshal(rawSnapshot.Data, &dump); err != nil {
-			log.Printf("Failed to unmarshal Voter snapshot: %v", err)
-			return false
-		}
-		factories := GetBoolRecsysFactoriesWithParams[dynamics.VoterParams](s.Metadata.RecSysParams)
-		params := model.SMPModelParams[bool, dynamics.VoterParams]{
-			SMPModelPureParams: s.Metadata.SMPModelPureParams,
-			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
-		}
-		s.Model = &BoolModelWrapper[dynamics.VoterParams]{
-			M: dump.Load(&params, &s.Metadata.VoterParams, &dynamics.Voter{}, &s.Metadata.CollectItemOptions, s.logEvent, s.RNG),
-		}
-	default:
-		log.Printf("Unknown DynamicsType in snapshot: %q", dynamicsType)
+	loadedModel, restoreErr := RestoreRawModel(rawSnapshot, s.Metadata, s.RNG, s.logEvent, false)
+	if restoreErr != nil {
+		log.Printf("Failed to restore model snapshot: %v", restoreErr)
 		return false
 	}
+	s.Model = loadedModel
+	s.StableSteps = rawSnapshot.StableSteps
 
-	acc, err := s.Serializer.GetLatestAccumulativeState()
-	if err != nil {
-		log.Printf("Failed to load accumulative state: %v", err)
-		return false
+	trajectoryPath := filepath.Join(s.BaseDir, s.Metadata.UniqueName, "trajectory.json")
+	if _, statErr := os.Stat(trajectoryPath); statErr == nil {
+		trajectory, openErr := OpenTrajectory(filepath.Join(s.BaseDir, s.Metadata.UniqueName), s.Metadata.NodeCount, s.Metadata.TrajectoryPrecision)
+		if openErr != nil {
+			log.Printf("Failed to open trajectory: %v", openErr)
+			return false
+		}
+		if verifyErr := trajectory.VerifyIndex(); verifyErr != nil {
+			log.Printf("Invalid trajectory: %v", verifyErr)
+			return false
+		}
+		if truncateErr := trajectory.Truncate(s.Model.GetCurStep()); truncateErr != nil {
+			log.Printf("Failed to align trajectory: %v", truncateErr)
+			return false
+		}
+		s.Trajectory = trajectory
+		s.AccState = NewTrajectoryAccumulativeState(s.Metadata.NodeCount, s.Metadata.TrajectoryPrecision)
 	} else {
-		validated := s.Model.ValidateAcc(acc)
-		if !validated {
-			log.Printf("Accumulative state validation failed")
+		acc, loadErr := s.Serializer.GetLatestAccumulativeState()
+		if loadErr != nil || acc == nil || !s.Model.ValidateAcc(acc) {
+			log.Printf("Failed to load or validate legacy accumulative state: %v", loadErr)
 			return false
 		}
+		s.AccState = acc
 	}
-
-	s.AccState = acc
 
 	s.sanitize()
 
@@ -367,21 +334,44 @@ func (s *Scenario) Dump() {
 	if !s.EnableDumps || s.DB == nil || s.Serializer == nil || s.AccState == nil {
 		return
 	}
-	s.DB.Flush()
-	data, err := s.Model.RawDump()
+	if err := s.DB.Flush(); err != nil {
+		log.Printf("Failed to flush events: %v", err)
+		return
+	}
+	if s.Trajectory != nil {
+		if err := s.Trajectory.Flush(s.AccState.Packed); err != nil {
+			log.Printf("Failed to flush trajectory: %v", err)
+			return
+		}
+	}
+	snapshot, err := s.snapshotData()
 	if err != nil {
 		log.Printf("Failed to serialize model snapshot: %v", err)
 	} else {
-		s.Serializer.SaveRawSnapshot(s.Metadata.DynamicsType, data)
+		if err := s.Serializer.SaveRawSnapshot(snapshot); err != nil {
+			log.Printf("Failed to save model snapshot: %v", err)
+		}
 	}
-	s.Serializer.SaveAccumulativeState(s.AccState)
+	if s.Trajectory == nil {
+		s.Serializer.SaveAccumulativeState(s.AccState)
+	}
 }
 
 func (s *Scenario) Step() (int, float64) {
 	changedCount, maxOpinionChange := s.Model.StepModel()
+	if changedCount < NETWORK_CHANGE_THRESHOLD && maxOpinionChange < OPINION_CHANGE_THRESHOLD {
+		s.StableSteps++
+	} else {
+		s.StableSteps = 0
+	}
 
 	if s.EnableDumps && s.AccState != nil {
 		s.Model.Accumulate(s.AccState)
+		if s.Trajectory != nil && s.AccState.Len() >= trajectoryChunkSteps {
+			if err := s.Trajectory.Flush(s.AccState.Packed); err != nil {
+				panic(fmt.Errorf("flush trajectory: %w", err))
+			}
+		}
 		s.AccState.UnsafePostEvent += changedCount
 		if s.AccState.UnsafePostEvent > MAX_POST_EVENT_INTERVAL {
 			s.Serializer.SaveGraph(utils.SerializeGraph(s.Model.GetGraph()), s.Model.GetCurStep())
@@ -390,6 +380,11 @@ func (s *Scenario) Step() (int, float64) {
 	}
 
 	s.Model.SetCurStep(s.Model.GetCurStep() + 1)
+	if s.EnableDumps && s.checkpointRequested(s.Model.GetCurStep()-1) {
+		if err := s.SaveResearchCheckpoint(); err != nil {
+			panic(fmt.Errorf("save research checkpoint: %w", err))
+		}
+	}
 
 	return changedCount, maxOpinionChange
 }
@@ -455,7 +450,6 @@ func (s *Scenario) StepTillEndResult(ctx context.Context) RunResult {
 	}
 
 	lastSaveTime := time.Now()
-	successiveThresholdMet := 0
 
 	unitStep := func() (bool, bool) {
 
@@ -475,7 +469,7 @@ func (s *Scenario) StepTillEndResult(ctx context.Context) RunResult {
 			bar.Set(s.Model.GetCurStep())
 		}
 
-		nwChange, opChange := s.Step()
+		s.Step()
 		completedStep := s.Model.GetCurStep() - 1
 		if s.ProgressCallback != nil && s.ProgressStepInterval > 0 &&
 			completedStep%s.ProgressStepInterval == 0 {
@@ -485,14 +479,7 @@ func (s *Scenario) StepTillEndResult(ctx context.Context) RunResult {
 			})
 		}
 
-		thresholdMet := nwChange < NETWORK_CHANGE_THRESHOLD &&
-			opChange < OPINION_CHANGE_THRESHOLD
-		if thresholdMet {
-			successiveThresholdMet++
-		} else {
-			successiveThresholdMet = 0
-		}
-		if successiveThresholdMet > STOP_SIM_STEPS {
+		if s.StableSteps > STOP_SIM_STEPS {
 			return false, didDump
 		}
 

@@ -51,6 +51,7 @@ from smp_bindings.process import (
     terminate_process,
 )
 from smp_bindings.record import RawSimulationRecord
+from smp_bindings.trajectory import TrajectoryReader
 from smp_bindings.simulation import (
     is_simulation_finished,
     run_simulation,
@@ -95,6 +96,7 @@ __all__ = [
     "run_batch",
     "run_batch_parallel",
     "run_probe",
+    "TrajectoryReader",
     "run_simulation",
     "run_simulations",
     "terminate_process",

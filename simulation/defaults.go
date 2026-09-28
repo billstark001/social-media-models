@@ -18,10 +18,11 @@ func DefaultScenarioMetadata() *ScenarioMetadata {
 			RewiringEvent: true,
 			PostEvent:     true,
 		},
-		RecsysFactoryType: "Random",
-		NetworkType:       "Random",
-		NodeCount:         500,
-		NodeFollowCount:   15,
-		MaxSimulationStep: DefaultMaxSimulationStep,
+		RecsysFactoryType:   "Random",
+		NetworkType:         "Random",
+		NodeCount:           500,
+		NodeFollowCount:     15,
+		MaxSimulationStep:   DefaultMaxSimulationStep,
+		TrajectoryPrecision: TrajectoryPrecision{Opinions: "float32", OpinionSums: "float16"},
 	}
 }

@@ -67,7 +67,10 @@ def load_accumulative_model_state(
 def load_gonum_graph_dump(filename: str, check_sanity=True):
   # 读取 msgpack 文件
   with open(filename, "rb") as f:
-    nx_data = msgpack.unpack(f, raw=False, strict_map_key=False)
+    raw = f.read()
+  if filename.endswith('.lz4'):
+    raw = lz4.frame.decompress(raw)
+  nx_data = msgpack.unpackb(raw, raw=False, strict_map_key=False)
   assert isinstance(nx_data, dict)
 
   # 获取 adjacency 信息
@@ -112,6 +115,8 @@ def load_snapshot(path: str) -> dict[str, Any]:
   """
   with open(path, 'rb') as f:
     raw = f.read()
+  if path.endswith('.lz4'):
+    raw = lz4.frame.decompress(raw)
   envelope = msgpack.unpackb(raw, raw=False)
   dynamics_type: str = envelope['DynamicsType']
   inner_bytes: bytes = envelope['Data']

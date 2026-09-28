@@ -151,6 +151,7 @@ def inspect_problematic_simulations(
     problems: list[str] = []
     snapshots = _get_typed_files(sim_dir, "snapshot", ".msgpack")
     acc_states = _get_typed_files(sim_dir, "acc-state", ".lz4")
+    trajectory = sim_dir / "trajectory.json"
     finished_marks = _get_typed_files(sim_dir, "finished", ".msgpack")
 
     for p in [*snapshots, *acc_states]:
@@ -161,8 +162,8 @@ def inspect_problematic_simulations(
     if has_finished:
       if not snapshots:
         problems.append("finished mark exists but snapshot file is missing")
-      if not acc_states:
-        problems.append("finished mark exists but acc-state file is missing")
+      if not acc_states and not trajectory.is_file():
+        problems.append("finished mark exists but trajectory is missing")
       if snapshots and _is_empty_file(snapshots[-1]):
         problems.append(f"latest snapshot is empty: {snapshots[-1].name}")
       if acc_states and _is_empty_file(acc_states[-1]):
@@ -183,6 +184,14 @@ def inspect_problematic_simulations(
           problems.append(
               f"latest acc-state parse failed ({acc_states[-1].name}): {exc}"
           )
+      if trajectory.is_file():
+        try:
+          from smp_bindings.trajectory import TrajectoryReader
+          reader = TrajectoryReader(sim_dir)
+          if reader.steps:
+            reader.row("opinions", reader.steps - 1)
+        except Exception as exc:  # noqa: BLE001
+          problems.append(f"trajectory parse failed: {exc}")
 
     if problems:
       issues.append(SimulationIssue(
