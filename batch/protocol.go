@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sort"
 	"strings"
 
+	"smp/observables"
 	"smp/progress"
 	smprng "smp/rng"
 	"smp/simulation"
@@ -27,11 +29,43 @@ type Request struct {
 	RequestID     string          `json:"request_id"`
 	Metadata      json.RawMessage `json:"metadata"`
 	Output        OutputOptions   `json:"output"`
+	Experiment    *ExperimentSpec `json:"experiment,omitempty"`
+}
+
+type ExperimentSpec struct {
+	Checkpoint   string         `json:"checkpoint"`
+	Mode         string         `json:"mode"`
+	Replicates   int            `json:"replicates"`
+	ObserveAt    []int          `json:"observe_at"`
+	CheckpointAt map[int]string `json:"checkpoint_at,omitempty"`
+	StopOnHalt   bool           `json:"stop_on_halt,omitempty"`
 }
 
 type OutputOptions struct {
 	FinalOpinions bool             `json:"final_opinions"`
 	Terminal      *TerminalOptions `json:"terminal,omitempty"`
+	Energy        bool             `json:"energy,omitempty"`
+	Bins          []float64        `json:"bins,omitempty"`
+	FullState     bool             `json:"full_state,omitempty"`
+}
+
+type EdgePair [2]int64
+type Endpoint struct {
+	Step         int                      `json:"step"`
+	RelativeStep int                      `json:"relative_step"`
+	Energy       *observables.Energy      `json:"energy,omitempty"`
+	Binned       *observables.BinnedState `json:"binned,omitempty"`
+	Opinions     []float64                `json:"opinions,omitempty"`
+	Edges        []EdgePair               `json:"edges,omitempty"`
+	Checkpoint   string                   `json:"checkpoint,omitempty"`
+}
+type ReplicateResult struct {
+	Index      int              `json:"index"`
+	RNG        smprng.Spec      `json:"rng"`
+	Endpoints  []Endpoint       `json:"endpoints"`
+	Terminal   *terminal.Result `json:"terminal,omitempty"`
+	StopReason string           `json:"stop_reason"`
+	StoppedAt  int              `json:"stopped_at"`
 }
 
 type TerminalOptions struct {
@@ -49,13 +83,17 @@ type OpinionSummary struct {
 }
 
 type Result struct {
-	ProtocolSHA256 string           `json:"protocol_sha256"`
-	RNG            smprng.Spec      `json:"resolved_rng"`
-	Steps          int              `json:"steps"`
-	StopReason     string           `json:"stop_reason"`
-	Opinions       OpinionSummary   `json:"opinions"`
-	Terminal       *terminal.Result `json:"terminal,omitempty"`
-	FinalOpinions  []float64        `json:"final_opinions,omitempty"`
+	ProtocolSHA256 string                   `json:"protocol_sha256"`
+	RNG            smprng.Spec              `json:"resolved_rng"`
+	Steps          int                      `json:"steps"`
+	StopReason     string                   `json:"stop_reason"`
+	Opinions       *OpinionSummary          `json:"opinions,omitempty"`
+	Terminal       *terminal.Result         `json:"terminal,omitempty"`
+	FinalOpinions  []float64                `json:"final_opinions,omitempty"`
+	SourceSHA256   string                   `json:"source_sha256,omitempty"`
+	Replicates     []ReplicateResult        `json:"replicates,omitempty"`
+	Energy         *observables.Energy      `json:"energy,omitempty"`
+	Binned         *observables.BinnedState `json:"binned,omitempty"`
 }
 
 type ResponseError struct {
@@ -134,6 +172,16 @@ func decodeMetadata(raw json.RawMessage) (*simulation.ScenarioMetadata, error) {
 }
 
 func normalizeOutput(output OutputOptions) (OutputOptions, error) {
+	if len(output.Bins) > 0 {
+		if len(output.Bins) < 2 {
+			return output, errors.New("output.bins needs at least two boundaries")
+		}
+		for i, x := range output.Bins {
+			if !isFinite(x) || (i > 0 && x <= output.Bins[i-1]) {
+				return output, errors.New("output.bins must be finite and increasing")
+			}
+		}
+	}
 	if output.Terminal == nil {
 		return output, nil
 	}
@@ -167,12 +215,14 @@ func confidenceTolerance(metadata *simulation.ScenarioMetadata) (float64, error)
 	}
 }
 
-func protocolSHA256(metadata *simulation.ScenarioMetadata, output OutputOptions) (string, error) {
+func protocolSHA256(metadata *simulation.ScenarioMetadata, output OutputOptions, experiment *ExperimentSpec, sourceSHA string) (string, error) {
 	payload := struct {
 		SchemaVersion int                          `json:"schema_version"`
 		Metadata      *simulation.ScenarioMetadata `json:"metadata"`
 		Output        OutputOptions                `json:"output"`
-	}{SchemaVersion: SchemaVersion, Metadata: metadata, Output: output}
+		Experiment    *ExperimentSpec              `json:"experiment,omitempty"`
+		SourceSHA256  string                       `json:"source_sha256,omitempty"`
+	}{SchemaVersion: SchemaVersion, Metadata: metadata, Output: output, Experiment: experiment, SourceSHA256: sourceSHA}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
@@ -200,6 +250,49 @@ func summarizeOpinions(values []float64) OpinionSummary {
 	result.Mean = mean
 	result.Variance = m2 / float64(len(values))
 	return result
+}
+
+func endpoint(scenario *simulation.Scenario, relative int, output OutputOptions) (Endpoint, error) {
+	step := scenario.Model.GetCurStep() - 1
+	result := Endpoint{Step: step, RelativeStep: relative}
+	opinions := scenario.Model.GetOpinions()
+	graph := scenario.Model.GetGraph()
+	if output.Energy {
+		epsilon, err := confidenceTolerance(scenario.Metadata)
+		if err != nil {
+			return result, err
+		}
+		energy, err := observables.MeasureEnergy(opinions, graph, epsilon, 1)
+		if err != nil {
+			return result, err
+		}
+		result.Energy = &energy
+	}
+	if len(output.Bins) > 0 {
+		binned, err := observables.MeasureBinnedState(opinions, graph, output.Bins)
+		if err != nil {
+			return result, err
+		}
+		result.Binned = &binned
+	}
+	if output.FullState {
+		result.Opinions = opinions
+		nodes := graph.Nodes()
+		for nodes.Next() {
+			i := nodes.Node().ID()
+			neighbors := graph.From(i)
+			for neighbors.Next() {
+				result.Edges = append(result.Edges, EdgePair{i, neighbors.Node().ID()})
+			}
+		}
+		sort.Slice(result.Edges, func(i, j int) bool {
+			if result.Edges[i][0] != result.Edges[j][0] {
+				return result.Edges[i][0] < result.Edges[j][0]
+			}
+			return result.Edges[i][1] < result.Edges[j][1]
+		})
+	}
+	return result, nil
 }
 
 func emitProgress(writer io.Writer, mode string, event ProgressEvent) error {
@@ -239,6 +332,34 @@ func errorResponse(requestID, kind string, err error) Response {
 	}
 }
 
+func processRequest(ctx context.Context, line string, options Options) (Response, *ProgressEvent, error) {
+	request, err := decodeRequest(line)
+	if err != nil {
+		return errorResponse(request.RequestID, "invalid_request", err), nil, nil
+	}
+	metadata, err := decodeMetadata(request.Metadata)
+	if err != nil {
+		return errorResponse(request.RequestID, "invalid_metadata", err), nil, nil
+	}
+	request.Output, err = normalizeOutput(request.Output)
+	if err != nil {
+		return errorResponse(request.RequestID, "invalid_output", err), nil, nil
+	}
+	if request.Experiment == nil {
+		response, err := runNormal(ctx, metadata, request, options)
+		if err != nil || response.Result == nil {
+			return response, nil, err
+		}
+		done := &ProgressEvent{RequestID: request.RequestID, Type: progress.TypeDone, Step: response.Result.Steps, MaxStep: metadata.MaxSimulationStep, StopReason: response.Result.StopReason}
+		return response, done, nil
+	}
+	result, err := runExperiment(ctx, metadata, request)
+	if err != nil {
+		return errorResponse(request.RequestID, "experiment", err), nil, nil
+	}
+	return Response{SchemaVersion: SchemaVersion, RequestID: request.RequestID, Status: "ok", Result: result}, nil, nil
+}
+
 // Run reads JSONL requests and writes one response per non-empty input line.
 // Request failures are recoverable and do not stop later batch items.
 func Run(ctx context.Context, input io.Reader, output io.Writer, options Options) error {
@@ -251,15 +372,7 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, options Options
 	if options.ProgressStepInterval < 0 {
 		return errors.New("progress step interval must be non-negative")
 	}
-
 	writer := bufio.NewWriter(output)
-	writeResponse := func(response Response) error {
-		if err := json.NewEncoder(writer).Encode(response); err != nil {
-			return err
-		}
-		return writer.Flush()
-	}
-
 	scanner := bufio.NewScanner(input)
 	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
 	for scanner.Scan() {
@@ -267,115 +380,22 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, options Options
 		if line == "" {
 			continue
 		}
-		request, err := decodeRequest(line)
-		if err != nil {
-			if writeErr := writeResponse(errorResponse(request.RequestID, "invalid_request", err)); writeErr != nil {
-				return writeErr
-			}
-			continue
-		}
-		metadata, err := decodeMetadata(request.Metadata)
-		if err != nil {
-			if writeErr := writeResponse(errorResponse(request.RequestID, "invalid_metadata", err)); writeErr != nil {
-				return writeErr
-			}
-			continue
-		}
-		request.Output, err = normalizeOutput(request.Output)
-		if err != nil {
-			if writeErr := writeResponse(errorResponse(request.RequestID, "invalid_output", err)); writeErr != nil {
-				return writeErr
-			}
-			continue
-		}
-
-		if err := emitProgress(options.Progress, options.ProgressMode, ProgressEvent{
-			RequestID: request.RequestID,
-			Type:      progress.TypeStart,
-			MaxStep:   metadata.MaxSimulationStep,
-		}); err != nil {
-			return err
-		}
-		scenario := simulation.NewScenarioWithOptions("", metadata, simulation.ScenarioOptions{
-			EnableDumps:          false,
-			Quiet:                true,
-			ProgressStepInterval: options.ProgressStepInterval,
-			ProgressCallback: func(scenarioProgress simulation.ScenarioProgress) {
-				_ = emitProgress(options.Progress, options.ProgressMode, ProgressEvent{
-					RequestID: request.RequestID,
-					Type:      progress.TypeProgress,
-					Step:      scenarioProgress.Step,
-					MaxStep:   scenarioProgress.MaxStep,
-				})
-			},
-		})
-		if err := scenario.InitError(); err != nil {
-			if writeErr := writeResponse(errorResponse(request.RequestID, "initialization", err)); writeErr != nil {
-				return writeErr
-			}
-			continue
-		}
-		digest, err := protocolSHA256(metadata, request.Output)
+		response, done, err := processRequest(ctx, line, options)
 		if err != nil {
 			return err
 		}
-		run := scenario.StepTillEndResult(ctx)
-		opinions := scenario.Model.GetOpinions()
-		result := &Result{
-			ProtocolSHA256: digest,
-			RNG:            metadata.RNG,
-			Steps:          run.Step,
-			StopReason:     run.StopReason,
-			Opinions:       summarizeOpinions(opinions),
-		}
-		if request.Output.Terminal != nil {
-			epsilon, toleranceErr := confidenceTolerance(metadata)
-			if toleranceErr != nil {
-				if writeErr := writeResponse(errorResponse(request.RequestID, "terminal_classification", toleranceErr)); writeErr != nil {
-					return writeErr
-				}
-				continue
-			}
-			classification, classifyErr := terminal.ClassifyOpinions(
-				opinions,
-				epsilon,
-				request.Output.Terminal.MajorMass,
-				request.Output.Terminal.PositionResolution,
-				request.Output.Terminal.MassResolution,
-			)
-			if classifyErr != nil {
-				if writeErr := writeResponse(errorResponse(request.RequestID, "terminal_classification", classifyErr)); writeErr != nil {
-					return writeErr
-				}
-				continue
-			}
-			result.Terminal = &classification
-		}
-		if request.Output.FinalOpinions {
-			result.FinalOpinions = opinions
-		}
-		status := "ok"
-		if !run.Completed {
-			status = "cancelled"
-		}
-		if err := writeResponse(Response{
-			SchemaVersion: SchemaVersion,
-			RequestID:     request.RequestID,
-			Status:        status,
-			Result:        result,
-		}); err != nil {
+		if err := json.NewEncoder(writer).Encode(response); err != nil {
 			return err
 		}
-		if err := emitProgress(options.Progress, options.ProgressMode, ProgressEvent{
-			RequestID:  request.RequestID,
-			Type:       progress.TypeDone,
-			Step:       run.Step,
-			MaxStep:    metadata.MaxSimulationStep,
-			StopReason: run.StopReason,
-		}); err != nil {
+		if err := writer.Flush(); err != nil {
 			return err
 		}
-		if !run.Completed {
+		if done != nil {
+			if err := emitProgress(options.Progress, options.ProgressMode, *done); err != nil {
+				return err
+			}
+		}
+		if response.Status == "cancelled" {
 			return ctx.Err()
 		}
 	}
