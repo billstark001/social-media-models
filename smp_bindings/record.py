@@ -18,7 +18,7 @@ from smp_bindings.model_state import (
   load_gonum_graph_dump,
 )
 
-re_graph = re.compile(r'graph-(\d+).msgpack')
+re_graph = re.compile(r'graph-(\d+)\.msgpack(?:\.lz4)?$')
 
 
 def _last_less_than(arr: np.ndarray, val: int) -> int:
@@ -46,16 +46,18 @@ class RawSimulationRecord:
     # finished mark
     self.is_finished = any(x for x in file_list if x.startswith('finished'))
     has_events_db = 'events.db' in file_list
+    self.trajectory_path = os.path.join(full_path, 'trajectory.json')
+    self.has_trajectory = 'trajectory.json' in file_list
     acc_state_list = [x for x in file_list if x.startswith('acc-state-')]
-    graph_list = [x for x in file_list if x.startswith('graph-')]
+    graph_list = [x for x in file_list if re_graph.fullmatch(x)]
 
-    self.is_sanitized = has_events_db and len(
-        acc_state_list) > 0 and len(graph_list) > 0
+    self.is_sanitized = has_events_db and (self.has_trajectory or len(
+        acc_state_list) > 0) and len(graph_list) > 0
     if not self.is_finished or not self.is_sanitized:
       return
 
     self.events_db_path = os.path.join(full_path, 'events.db')
-    self.acc_state_path = os.path.join(full_path, acc_state_list[-1])
+    self.acc_state_path = os.path.join(full_path, acc_state_list[-1]) if acc_state_list else None
     self.graph_paths = {}
     for graph_name in graph_list:
       step_index = int(re_graph.match(graph_name).group(1))  # type: ignore
@@ -69,11 +71,22 @@ class RawSimulationRecord:
     return self.graphs_stored[step]
 
   def load(self):
-    acc_state = load_accumulative_model_state(
-      self.acc_state_path,
-      with_agent_numbers=True,
-      with_agent_opinion_sums=True,
-    )
+    if self.has_trajectory:
+      from smp_bindings.trajectory import TrajectoryReader
+      self.trajectory = TrajectoryReader(os.path.dirname(self.trajectory_path))
+      acc_state = {
+          'steps': self.trajectory.steps - 1,
+          'agents': self.trajectory.agents,
+          'opinions': self.trajectory.channel('opinions'),
+          'agent_numbers': self.trajectory.channel('agent_numbers'),
+          'agent_opinion_sums': self.trajectory.channel('agent_opinion_sums'),
+      }
+    else:
+      acc_state = load_accumulative_model_state(
+        self.acc_state_path,
+        with_agent_numbers=True,
+        with_agent_opinion_sums=True,
+      )
     events_db = load_events_db(self.events_db_path)
 
     self.acc_state = acc_state
@@ -158,6 +171,10 @@ class RawSimulationRecord:
       try:
         nearest_available_graph.remove_edge(e.agent_id, body.unfollow)
       except nx.NetworkXError:
+        if self.has_trajectory:
+          raise ValueError(
+              f"rewiring event {e.id} removes a missing edge"
+          ) from None
         # very occasional data corruption, attempt to remove inexistent edges
         # this essentially does not affect the collective pattern
         pass
@@ -186,6 +203,10 @@ class RawSimulationRecord:
       anchor_ids: Sequence[int] | None = None,
       rng: Mapping[str, str] | None = None,
       binary_path: str | None = None,
+      measurements: Sequence[str] | None = None,
+      energy_scale: float = 1.0,
+      energy_epsilon: float | None = None,
+      per_anchor: bool = False,
   ) -> dict[str, Any]:
     """Freeze selected steps and evaluate F_probe in the Go implementation."""
     from smp_bindings.probe import run_probe
@@ -200,4 +221,8 @@ class RawSimulationRecord:
         anchor_ids=anchor_ids,
         rng=rng,
         binary_path=binary_path,
+        measurements=measurements,
+        energy_scale=energy_scale,
+        energy_epsilon=energy_epsilon,
+        per_anchor=per_anchor,
     )

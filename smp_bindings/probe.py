@@ -1,7 +1,7 @@
 """Python bindings for the Go ``smp-probe`` counterfactual evaluator.
 
 Python reconstructs frozen network/opinion/post states from simulation output.
-All recommendation and force evaluation remains in Go.
+All recommendation and drift evaluation remains in Go.
 """
 
 from __future__ import annotations
@@ -34,10 +34,12 @@ class FrozenSimulationState:
   graph: nx.DiGraph
   opinions: Sequence[float]
   posts: Mapping[int, Sequence[PostRecord]]
+  precision: str = "history_f32"
 
   def to_wire(self) -> dict[str, Any]:
     return {
         "step": int(self.step),
+        "precision": self.precision,
         "graph": _graph_to_wire(self.graph),
         "opinions": [float(value) for value in self.opinions],
         "posts": {
@@ -162,6 +164,10 @@ def freeze_record(
   requested = set(requested_steps)
 
   def append_state(step: int) -> None:
+    precision = (
+        "history_" + record.trajectory.opinion_precision_at(step).replace("float", "f")
+        if getattr(record, "trajectory", None) is not None else "history_f32"
+    )
     states.append(FrozenSimulationState(
         step=step,
         graph=record.get_graph(step).copy(),
@@ -170,6 +176,7 @@ def freeze_record(
             agent_id: list(records)
             for agent_id, records in posts.items()
         },
+        precision=precision,
     ))
 
   if 0 in requested:
@@ -205,6 +212,10 @@ def run_probe(
     anchor_ids: Sequence[int] | None = None,
     rng: Mapping[str, str] | None = None,
     binary_path: str | None = None,
+    measurements: Sequence[str] | None = None,
+    energy_scale: float = 1.0,
+    energy_epsilon: float | None = None,
+    per_anchor: bool = False,
 ) -> dict[str, Any]:
   """Run the Go evaluator and return its decoded response."""
 
@@ -223,6 +234,7 @@ def run_probe(
     rng = metadata_rng if isinstance(metadata_rng, Mapping) else {}
 
   request = {
+      "version": 1,
       "rng": dict(rng),
       "dynamics_type": dynamics_type,
       "hk_params": (
@@ -251,7 +263,46 @@ def run_probe(
       "replicates": int(replicates),
       "anchor_ids": [int(agent_id) for agent_id in (anchor_ids or [])],
       "states": [state.to_wire() for state in states],
+      "measurements": list(measurements) if measurements is not None else [],
+      "energy_scale": float(energy_scale),
+      "energy_epsilon": energy_epsilon,
+      "per_anchor": per_anchor,
   }
+  return _send_probe_request(request, binary_path)
+
+
+def run_probe_checkpoints(
+    checkpoint_paths: Sequence[str],
+    *,
+    measurements: Sequence[str],
+    h: float = 0.02,
+    minimum: float = -1.0,
+    maximum: float = 1.0,
+    replicates: int = 1,
+    anchor_ids: Sequence[int] | None = None,
+    energy_scale: float = 1.0,
+    energy_epsilon: float | None = None,
+    per_anchor: bool = False,
+    binary_path: str | None = None,
+) -> dict[str, Any]:
+  """Measure exact float64 checkpoints directly in Go without Python state copies."""
+  if not checkpoint_paths:
+    raise ValueError("at least one checkpoint is required")
+  request = {
+      "version": 1,
+      "checkpoint_paths": [os.fspath(path) for path in checkpoint_paths],
+      "measurements": list(measurements),
+      "grid": {"min": minimum, "max": maximum, "step": h},
+      "replicates": replicates,
+      "anchor_ids": [int(value) for value in (anchor_ids or [])],
+      "energy_scale": energy_scale,
+      "energy_epsilon": energy_epsilon,
+      "per_anchor": per_anchor,
+  }
+  return _send_probe_request(request, binary_path)
+
+
+def _send_probe_request(request: Mapping[str, Any], binary_path: str | None) -> dict[str, Any]:
   encoded = msgpack.packb(request, use_bin_type=True)
 
   executable = (
@@ -281,4 +332,8 @@ def run_probe(
     raise RuntimeError("smp-probe returned invalid msgpack") from exc
   if not isinstance(response, dict):
     raise TypeError("smp-probe returned a non-object response")
+  if response.get("version") != 1:
+    raise RuntimeError(
+        f"smp-probe returned unsupported protocol version {response.get('version', 0)!r}"
+    )
   return response

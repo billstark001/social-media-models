@@ -72,7 +72,7 @@ func (m *ScenarioMetadata) PrepareForNewRun() error {
 		return err
 	}
 	m.TrajectoryPrecision = m.TrajectoryPrecision.resolved()
-	if m.DataVersion <= 1 {
+	if m.DataVersion == 0 || m.DataVersion == 1 {
 		m.DataVersion = CurrentDataVersion
 	}
 	resolved, err := smprng.Resolve(m.RNG)

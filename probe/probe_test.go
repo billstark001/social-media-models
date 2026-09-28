@@ -71,6 +71,9 @@ func TestEvaluateSupportsHKAndDeffuant(t *testing.T) {
 			if response.DynamicsType != dynamicsType {
 				t.Fatalf("dynamics type: got %q, want %q", response.DynamicsType, dynamicsType)
 			}
+			if response.Version != probe.ProtocolVersion {
+				t.Fatalf("protocol version: got %d, want %d", response.Version, probe.ProtocolVersion)
+			}
 			if len(response.Results) != 1 || len(response.Results[0].Points) != 3 {
 				t.Fatalf("unexpected result shape: %+v", response.Results)
 			}
@@ -94,6 +97,25 @@ func TestEvaluateSupportsHKAndDeffuant(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestEvaluateProtocolVersions(t *testing.T) {
+	for _, version := range []int{0, probe.ProtocolVersion} {
+		request := requestFor(simulation.DynamicsTypeHK)
+		request.Version = version
+		response, err := probe.Evaluate(request)
+		if err != nil {
+			t.Fatalf("version %d: %v", version, err)
+		}
+		if response.Version != probe.ProtocolVersion {
+			t.Fatalf("version %d returned %d", version, response.Version)
+		}
+	}
+	request := requestFor(simulation.DynamicsTypeHK)
+	request.Version = probe.ProtocolVersion + 1
+	if _, err := probe.Evaluate(request); err == nil {
+		t.Fatal("future protocol version was accepted")
 	}
 }
 

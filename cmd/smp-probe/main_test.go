@@ -59,4 +59,7 @@ func TestRunMsgpackProtocol(t *testing.T) {
 	if len(response.Results) != 1 || len(response.Results[0].Points) != 3 {
 		t.Fatalf("unexpected response: %+v", response)
 	}
+	if response.Version != probe.ProtocolVersion {
+		t.Fatalf("protocol version: got %d", response.Version)
+	}
 }

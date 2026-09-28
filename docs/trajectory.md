@@ -1,6 +1,7 @@
 # Trajectory storage and precision
 
 Persistent runs write a `trajectory.json` manifest and numbered `.smpc` blocks.
+Their metadata uses `DataVersion: 2`; versions 0 and 1 remain readable.
 `RawSimulationRecord` and `TrajectoryReader` are the Python readers. Existing
 version-2 blocks and legacy `acc-state-*.lz4` files remain readable.
 

@@ -7,11 +7,11 @@ A Go implementation of agent-based social media simulation models with pluggable
 ```
 ├── cmd/smp/        Persistent simulator command
 ├── cmd/smp-batch/  No-file JSONL batch simulator
-├── cmd/smp-probe/  Frozen-state counterfactual force evaluator
+├── cmd/smp-probe/  Frozen-state counterfactual drift evaluator
 ├── model/          Core types and interfaces (generic over opinion type O and params type P)
 ├── dynamics/       Opinion dynamics: HK (Hegselmann-Krause) and Deffuant
 ├── recsys/         Recommendation systems (random, opinion, structure, and hybrids)
-├── probe/          Go probe protocol and HK/Deffuant force measurement
+├── probe/          Go probe protocol and HK/Deffuant drift measurement
 ├── rng/            Reproducible named random streams and snapshot state
 ├── simulation/     Scenario runner, serialization (msgpack + LZ4), SQLite event log
 ├── utils/          Graph utilities (ER, small-world, serialize/deserialize)
@@ -102,13 +102,18 @@ Each agent per step:
 
 ## Serialization
 
-Snapshots are stored as **msgpack** files; accumulative time-series data uses a compact **binary + LZ4** format. Events (posts, rewirings, view-posts) are optionally logged to **SQLite**.
+Recovery snapshots are stored as **msgpack** files. New accumulated time-series
+data uses bounded binary blocks with channel-specific LZ4 or Zstd compression.
+Events (posts, rewirings, view-posts) are optionally logged to **SQLite**.
 
-The current on-disk data format is `DataVersion: 1`; metadata without
-`DataVersion` is interpreted as legacy version 0. Version 1 stores the resolved
-root RNG specification in `metadata.json` and in the `finished-*.msgpack`
-marker. Model snapshots store the current states of the named RNG streams, so a
-resumed run produces the same continuation as an uninterrupted run.
+The current on-disk data format is `DataVersion: 2`; metadata without
+`DataVersion` is interpreted as legacy version 0. Version 1 remains readable
+and introduced the resolved root RNG specification in `metadata.json` and the
+`finished-*.msgpack` marker. Version 2 adds bounded trajectory blocks,
+independent opinion and opinion-sum precision, and exact research checkpoints.
+New runs use version 2, including when given version 1 metadata. Model
+snapshots store the current states of the named RNG streams, so a resumed run
+produces the same continuation as an uninterrupted run.
 
 See [`docs/architecture.md`](docs/architecture.md) for the full file layout.
 
@@ -181,14 +186,28 @@ The short wire keys expand to `version`, `request_id`, `type`, `step`,
 `rng`, `start`, `progress`, and `done`. The Python codec exposes descriptive
 field names; callers do not need to interpret the short keys directly.
 
-The `smp` command always enables graph, snapshot, event, and accumulative-state
-persistence. Library callers that only need an in-memory run can use
+The `smp` command persists graph checkpoints, events, recovery snapshots, and
+the three accumulated per-agent channels. New runs write bounded time chunks
+instead of rewriting the full history at every save. Each channel keeps its
+selected stored precision (default `float32` opinions, `float16` opinion sums,
+and exact `int16` counts). Set `TrajectoryPrecision` in metadata to choose
+`float16`, `float32`, or `float64` independently for opinions and sums.
+Chunks select a lossless LZ4 codec or byte/bit shuffle with Zstd per channel;
+graph checkpoints are compressed too. The format is described in
+[docs/trajectory.md](docs/trajectory.md), including measured space use in two
+slow-convergence runs.
+
+`CheckpointSteps` in scenario metadata requests exact, named `float64` research
+checkpoints at completed steps, including step zero. They retain the graph,
+posts, recommender state, RNG streams, and halt counter. Historical rows are
+for analysis; they are not exact branch starting points. Library callers that
+only need an in-memory run can use
 `NewScenarioWithOptions(..., ScenarioOptions{EnableDumps: false})`. In that
 mode the scenario performs no filesystem I/O, creates no serializer/event
 database, and does not allocate or update `AccumulativeModelState`. It is not
 resumable; callers must retain the returned summaries themselves.
 
-## No-file batch simulations
+## No-file batch simulations and checkpoint experiments
 
 `smp-batch` keeps one Go process alive for a JSONL stream and runs every item
 entirely in memory. Each non-empty input line has this shape:
@@ -273,7 +292,39 @@ progress decoder and versioned batch request/response codecs.
 `smp_bindings.process` exposes executable validation, process-group creation,
 and safe termination helpers used by both built-in runners.
 
-## Counterfactual probe
+For repeated continuations of one exact research checkpoint, include an
+`experiment` object. `mode: "resume"` reuses its saved RNG and requires one
+replicate. `mode: "branch"` derives stable independent future streams from the
+explicit base RNG, checkpoint hash, and replicate index. `observe_at` values
+are relative steps and may include zero. A branch advances only once to its
+largest requested time. For example, the following fields can be added to a
+normal batch request with matching complete physical metadata:
+
+```json
+{
+  "experiment": {
+    "checkpoint": "run/pilot/checkpoint-000000004.msgpack.lz4",
+    "mode": "branch",
+    "replicates": 64,
+    "observe_at": [0, 1, 4, 16]
+  },
+  "output": {
+    "energy": true,
+    "bins": [-1, -0.5, 0, 0.5, 1]
+  }
+}
+```
+
+Each replicate returns its own observations, stop reason, and completed step.
+Binned population masses sum to one; the row-major directed-edge matrix sums
+to the observed mean out-degree. Retain per-replicate vectors for joint drift
+and covariance estimates. `full_state` adds exact opinions and edges at each
+endpoint. `checkpoint_at` optionally writes complete endpoint checkpoints;
+for multiple replicates its paths need a `{replicate}` placeholder. Otherwise
+checkpoint experiments write no output files. `stop_on_halt` can stop long
+branches early and leaves later requested observations absent.
+
+## Frozen-state probe
 
 `smp-probe` evaluates the recommender for a hypothetical agent opinion
 `x ∈ [-1, 1]` on one or more frozen simulation steps. It does not resume the
@@ -297,13 +348,34 @@ The result contains, for each step and grid point:
   analysis;
 - sample count, active count, and population variance.
 
+The `measurements` list can select `force`, `energy`, `landscape`, and
+`counterfactual_neighbor_energy`; an omitted list retains the original `force`
+measurement. Energy uses the truncated quadratic kernel and actual directed
+edge count. The landscape reports population energy and negative gradient,
+concordant mass, and edge energy conditioned on current source-opinion bins,
+with counts and validity masks. Counterfactual neighbor energy fixes one
+anchor's neighbors while changing its query opinion; it is separate from the
+current source-conditioned edge landscape. The `force` output reports opinion
+drift and includes the update second moment, total update variance, and
+zero-update probability. Set
+`per_anchor` to get each anchor's statistics across recommendation replicates.
+
+`run_probe_checkpoints([...], measurements=[...])` reads exact `float64`
+research checkpoints directly in Go. Measurements from reconstructed
+`RawSimulationRecord` steps are marked `history_f16`, `history_f32`, or
+`history_f64` according to the stored opinion row. Static energy requests
+do not initialize the recommender or consume an RNG stream.
+
 For HK, `f_probe` is its deterministic bounded-confidence drift. For Deffuant,
 it is the exact conditional expectation of uniformly selecting one concordant
 post and applying `Influence × Δ`. The command intentionally rejects
 boolean-opinion Galam/Voter states.
 
-The binary protocol is msgpack on stdin/stdout. Most users should call it
-through the Python binding:
+The binary protocol is msgpack on stdin/stdout. Its current version is 1.
+Requests without `version` are treated as version 0 and remain accepted;
+new clients send `version: 1`. Responses always include `version: 1`, which
+the Python binding checks before interpreting measurements. Most users should
+call it through the Python binding:
 
 ```python
 from smp_bindings import RawSimulationRecord
@@ -410,7 +482,7 @@ export interface RNGSpec {
 }
 
 interface ScenarioMetadataBase {
-    DataVersion?: 1; // generated as 1 when omitted; absent stored data means v0
+    DataVersion?: 2; // generated as 2 when omitted; absent stored data means v0
     RNG?: RNGSpec;   // generated, emitted, and persisted when omitted
     UniqueName: string;
     DynamicsType: DynamicsType;
@@ -423,6 +495,8 @@ interface ScenarioMetadataBase {
     CollectItemOptions?: CollectItemOptions;
     AgentNumber?: boolean;
     OpinionSum?: boolean;
+    TrajectoryPrecision?: { opinions?: "float16" | "float32" | "float64";
+                            opinion_sums?: "float16" | "float32" | "float64" };
     RewiringEvent?: boolean;
     ViewPostsEvent?: boolean;
     PostEvent?: boolean;
@@ -523,7 +597,7 @@ These configurations ensure that Pylance correctly discovers and analyzes the `s
 
 ```python
 from smp_bindings import (
-    load_accumulative_model_state,
+    TrajectoryReader,
     load_gonum_graph_dump,
     load_snapshot,
     load_events_db,
@@ -532,17 +606,18 @@ from smp_bindings import (
     get_events_by_step_range,
 )
 
-# --- Accumulative time-series state (LZ4 binary) ---
-acc = load_accumulative_model_state("run/my-sim/acc-state-1000.lz4")
-print(acc["opinions"].shape)       # (steps+1, agents)
-print(acc["agent_numbers"].shape)  # (steps+1, agents, 4)
+# --- Lazy accumulated time-series channels ---
+trajectory = TrajectoryReader("run/my-sim")
+print(trajectory.channel("opinions").shape)       # (steps+1, agents)
+print(trajectory.channel("agent_numbers").shape)  # (steps+1, agents, 4)
+print(trajectory.row("opinions", 1000))
 
 # --- Graph dump (msgpack) ---
 import networkx as nx
-g: nx.DiGraph = load_gonum_graph_dump("run/my-sim/graph-0.msgpack")
+g: nx.DiGraph = load_gonum_graph_dump("run/my-sim/graph-0.msgpack.lz4")
 
-# --- Model snapshot (v2 msgpack envelope) ---
-snap = load_snapshot("run/my-sim/snapshot-1000.msgpack")
+# --- Named exact checkpoint, when requested by CheckpointSteps ---
+snap = load_snapshot("run/my-sim/checkpoint-000001000.msgpack.lz4")
 print(snap["dynamics_type"])   # e.g. "HK"
 print(snap["data"].keys())
 

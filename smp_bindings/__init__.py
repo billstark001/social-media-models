@@ -44,6 +44,7 @@ from smp_bindings.probe import (
     FrozenSimulationState,
     freeze_record,
     run_probe,
+    run_probe_checkpoints,
 )
 from smp_bindings.process import (
     executable_path,
@@ -96,6 +97,7 @@ __all__ = [
     "run_batch",
     "run_batch_parallel",
     "run_probe",
+    "run_probe_checkpoints",
     "TrajectoryReader",
     "run_simulation",
     "run_simulations",

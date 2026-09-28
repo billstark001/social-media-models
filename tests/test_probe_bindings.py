@@ -103,8 +103,8 @@ class ProbeBindingsTest(unittest.TestCase):
       self.assertEqual(record.metadata["RNG"]["Seed1"], "0x1")
 
   @unittest.skipUnless(
-      os.path.isfile("./smp-probe"),
-      "build ./smp-probe to run the binding integration test",
+      os.path.isfile(os.environ.get("SMP_PROBE_TEST_BINARY", "")),
+      "set SMP_PROBE_TEST_BINARY to run the binding integration test",
   )
   def test_go_probe_round_trip_for_hk_and_deffuant(self):
     for dynamics_type in ("HK", "Deffuant"):
@@ -114,8 +114,9 @@ class ProbeBindingsTest(unittest.TestCase):
           states,
           record.metadata,
           h=1.0,
-          binary_path="./smp-probe",
+          binary_path=os.environ["SMP_PROBE_TEST_BINARY"],
       )
+      self.assertEqual(response["version"], 1)
       self.assertEqual(response["dynamics_type"], dynamics_type)
       self.assertEqual(len(response["results"]), 1)
       self.assertEqual(len(response["results"][0]["points"]), 3)
