@@ -44,8 +44,10 @@ smp_bindings.egg-info
 /smp
 /smp_*
 /smp-probe
+/smp-batch
 /smp.exe
 /smp-probe.exe
+/smp-batch.exe
 !/smp_bindings
 /main
 !/main.go
