@@ -34,6 +34,8 @@ func MeasureBinnedState(opinions []float64, graph *simple.DirectedGraph, boundar
 	bins := len(boundaries) - 1
 	out.Population = make([]float64, bins)
 	out.Edge = make([]float64, bins*bins)
+	populationCounts := make([]int, bins)
+	edgeCounts := make([]int, bins*bins)
 	out.Nodes = n
 	indices := make([]int, n)
 	for i, x := range opinions {
@@ -42,7 +44,7 @@ func MeasureBinnedState(opinions []float64, graph *simple.DirectedGraph, boundar
 		}
 		j := sort.Search(bins, func(k int) bool { return x < boundaries[k+1] || k == bins-1 })
 		indices[i] = j
-		out.Population[j] += 1 / float64(n)
+		populationCounts[j]++
 	}
 	if graph != nil {
 		nodes := graph.Nodes()
@@ -57,10 +59,18 @@ func MeasureBinnedState(opinions []float64, graph *simple.DirectedGraph, boundar
 				if j < 0 || int(j) >= n {
 					return BinnedState{}, fmt.Errorf("graph target out of range")
 				}
-				out.Edge[indices[i]*bins+indices[j]] += 1 / float64(n)
+				edgeCounts[indices[i]*bins+indices[j]]++
 				out.Edges++
 			}
 		}
+	}
+	// Normalize once per bin. Repeated additions of 1/N accumulate rounding
+	// error when a concentrated state puts thousands of edges in one bin.
+	for i, count := range populationCounts {
+		out.Population[i] = float64(count) / float64(n)
+	}
+	for i, count := range edgeCounts {
+		out.Edge[i] = float64(count) / float64(n)
 	}
 	return out, nil
 }
