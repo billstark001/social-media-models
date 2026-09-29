@@ -22,6 +22,13 @@ func SerializeGraph(g *simple.DirectedGraph) *NetworkXGraph {
 		Graph:     make(map[string]any),
 	}
 
+	// An edge-only traversal loses isolated agents in model checkpoints.
+	nodes := g.Nodes()
+	for nodes.Next() {
+		id := nodes.Node().ID()
+		nxGraph.Nodes[id] = make(map[string]any)
+		nxGraph.Adjacency[id] = make(map[int64]any)
+	}
 	edges := g.Edges()
 	for edges.Next() {
 		edge := edges.Edge()

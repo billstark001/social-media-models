@@ -13,6 +13,29 @@ func testRNG() *rand.Rand {
 	return rand.New(rand.NewPCG(1, 2))
 }
 
+func TestGraphRoundTripPreservesIsolatedNodes(t *testing.T) {
+	for _, withEdge := range []bool{false, true} {
+		g := simple.NewDirectedGraph()
+		for _, id := range []int64{0, 1, 4, 39} {
+			g.AddNode(simple.Node(id))
+		}
+		if withEdge {
+			g.SetEdge(g.NewEdge(g.Node(0), g.Node(1)))
+		}
+		file := path.Join(t.TempDir(), "isolates.msgpack")
+		if err := SaveGraphToFile(g, file); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := LoadGraphFromFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !CompareGraphs(g, loaded) || loaded.Node(39) == nil {
+			t.Fatalf("isolated nodes lost (withEdge=%v)", withEdge)
+		}
+	}
+}
+
 // Test case for SerializeGraph and DeserializeGraph
 func TestSerializeAndDeserializeGraph(t *testing.T) {
 	// Create a random graph
