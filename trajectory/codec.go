@@ -1,4 +1,4 @@
-package simulation
+package trajectory
 
 import (
 	"bytes"
@@ -132,14 +132,14 @@ func decodeChannel(encoded []byte, codec byte, wordSize, wordsPerRow, rows int) 
 	return raw, nil
 }
 
-func EncodeTrajectoryChunk(buffer *TrajectoryBuffer) ([]byte, error) {
+func EncodeChunk(buffer *Buffer) ([]byte, error) {
 	if buffer == nil || buffer.Steps == 0 {
 		return nil, fmt.Errorf("empty trajectory chunk")
 	}
-	if err := buffer.Precision.validate(); err != nil {
+	if err := buffer.Precision.Validate(); err != nil {
 		return nil, err
 	}
-	precision := buffer.Precision.resolved()
+	precision := buffer.Precision.Resolved()
 	opinionSize, sumSize := precisionCode(precision.Opinions), precisionCode(precision.OpinionSums)
 	steps, agents := buffer.Steps, buffer.Agents
 	if steps > math.MaxUint32 || agents > math.MaxUint32 {
@@ -197,7 +197,7 @@ func EncodeTrajectoryChunk(buffer *TrajectoryBuffer) ([]byte, error) {
 	return output.Bytes(), nil
 }
 
-func LoadTrajectoryChunk(path string) (*AccumulativeModelState, error) {
+func LoadChunk(path string) (*Block, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -272,7 +272,7 @@ func LoadTrajectoryChunk(path string) (*AccumulativeModelState, error) {
 	if reader.Len() != 0 {
 		return nil, fmt.Errorf("trailing trajectory bytes")
 	}
-	state := NewAccumulativeModelState()
+	state := &Block{}
 	for t := 0; t < int(steps); t++ {
 		opinions := make([]float64, agents)
 		numbers := make([][4]int16, agents)

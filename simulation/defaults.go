@@ -1,6 +1,9 @@
 package simulation
 
-import "smp/model"
+import (
+	"smp/model"
+	"smp/trajectory"
+)
 
 const DefaultMaxSimulationStep = 15000
 
@@ -23,6 +26,6 @@ func DefaultScenarioMetadata() *ScenarioMetadata {
 		NodeCount:           500,
 		NodeFollowCount:     15,
 		MaxSimulationStep:   DefaultMaxSimulationStep,
-		TrajectoryPrecision: TrajectoryPrecision{Opinions: "float32", OpinionSums: "float16"},
+		TrajectoryPrecision: trajectory.Precision{Opinions: "float32", OpinionSums: "float16"},
 	}
 }

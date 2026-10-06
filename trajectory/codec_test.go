@@ -1,4 +1,4 @@
-package simulation
+package trajectory
 
 import (
 	"math"
@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-func TestTrajectoryChunkRoundTripAndCompression(t *testing.T) {
-	state := NewAccumulativeModelState()
+func TestChunkRoundTripAndCompression(t *testing.T) {
+	state := newTestBlock()
 	for step := 0; step < 128; step++ {
 		opinions := make([]float64, 20)
 		numbers := make([][4]int16, 20)
@@ -25,8 +25,8 @@ func TestTrajectoryChunkRoundTripAndCompression(t *testing.T) {
 		state.AgentOpinionSums = append(state.AgentOpinionSums, sums)
 	}
 	path := filepath.Join(t.TempDir(), "chunk.smpc")
-	saveTestTrajectoryChunk(t, path, state, TrajectoryPrecision{Opinions: "float64", OpinionSums: "float64"})
-	decoded, err := LoadTrajectoryChunk(path)
+	saveTestChunk(t, path, state, Precision{Opinions: "float64", OpinionSums: "float64"})
+	decoded, err := LoadChunk(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestTrajectoryChunkRoundTripAndCompression(t *testing.T) {
 }
 
 func TestTrajectoryBooleanAndZeroChannels(t *testing.T) {
-	state := NewAccumulativeModelState()
+	state := newTestBlock()
 	for step := 0; step < 17; step++ {
 		ops := make([]float64, 19)
 		for agent := range ops {
@@ -58,8 +58,8 @@ func TestTrajectoryBooleanAndZeroChannels(t *testing.T) {
 		state.AgentOpinionSums = append(state.AgentOpinionSums, make([][4]float64, 19))
 	}
 	path := filepath.Join(t.TempDir(), "bool.smpc")
-	saveTestTrajectoryChunk(t, path, state, TrajectoryPrecision{})
-	decoded, err := LoadTrajectoryChunk(path)
+	saveTestChunk(t, path, state, Precision{})
+	decoded, err := LoadChunk(path)
 	if err != nil {
 		t.Fatal(err)
 	}

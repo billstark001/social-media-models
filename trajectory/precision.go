@@ -1,4 +1,4 @@
-package simulation
+package trajectory
 
 import (
 	"encoding/binary"
@@ -6,14 +6,14 @@ import (
 	"math"
 )
 
-// TrajectoryPrecision controls only historical trajectory storage. Model and
+// Precision controls only historical trajectory storage. Model and
 // research checkpoint arithmetic remain float64.
-type TrajectoryPrecision struct {
+type Precision struct {
 	Opinions    string `json:"opinions"`
 	OpinionSums string `json:"opinion_sums"`
 }
 
-func (p TrajectoryPrecision) resolved() TrajectoryPrecision {
+func (p Precision) Resolved() Precision {
 	if p.Opinions == "" {
 		p.Opinions = "float32"
 	}
@@ -23,7 +23,7 @@ func (p TrajectoryPrecision) resolved() TrajectoryPrecision {
 	return p
 }
 
-func (p TrajectoryPrecision) validate() error {
+func (p Precision) Validate() error {
 	for name, value := range map[string]string{"opinions": p.Opinions, "opinion_sums": p.OpinionSums} {
 		if value != "" && value != "float16" && value != "float32" && value != "float64" {
 			return fmt.Errorf("trajectory %s precision %q must be float16, float32, or float64", name, value)

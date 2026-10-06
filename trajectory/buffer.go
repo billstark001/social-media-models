@@ -1,4 +1,4 @@
-package simulation
+package trajectory
 
 import (
 	"encoding/binary"
@@ -7,25 +7,28 @@ import (
 	"smp/model"
 )
 
-// TrajectoryBuffer converts each sample once, directly into the on-disk word
+// Buffer converts each sample once, directly into the on-disk word
 // widths. Its backing arrays are reused after every flush.
-type TrajectoryBuffer struct {
+type Buffer struct {
 	Agents    int
 	Steps     int
-	Precision TrajectoryPrecision
+	Precision Precision
 	Channels  [3][]byte
 }
 
-func newTrajectoryBuffer(agents int, precision TrajectoryPrecision) *TrajectoryBuffer {
-	b := &TrajectoryBuffer{Agents: agents, Precision: precision}
+// NewBuffer allocates one reusable block for a positive agent count and valid
+// precision. Empty precision fields use the default storage widths.
+func NewBuffer(agents int, precision Precision) *Buffer {
+	precision = precision.Resolved()
+	b := &Buffer{Agents: agents, Precision: precision}
 	sizes := [3]int{int(precisionCode(precision.Opinions)), 8, 4 * int(precisionCode(precision.OpinionSums))}
 	for i, size := range sizes {
-		b.Channels[i] = make([]byte, 0, trajectoryChunkSteps*agents*size)
+		b.Channels[i] = make([]byte, 0, ChunkSteps*agents*size)
 	}
 	return b
 }
 
-func (b *TrajectoryBuffer) Append(opinions []float64, counts []model.AgentNumberRecord, sums []model.AgentOpinionSumRecord) error {
+func (b *Buffer) Append(opinions []float64, counts []model.AgentNumberRecord, sums []model.AgentOpinionSumRecord) error {
 	if len(opinions) != b.Agents || len(counts) != b.Agents || len(sums) != b.Agents {
 		return fmt.Errorf("trajectory sample agent count mismatch")
 	}
@@ -55,7 +58,7 @@ func (b *TrajectoryBuffer) Append(opinions []float64, counts []model.AgentNumber
 	return nil
 }
 
-func (b *TrajectoryBuffer) Reset() {
+func (b *Buffer) Reset() {
 	b.Steps = 0
 	for i := range b.Channels {
 		b.Channels[i] = b.Channels[i][:0]

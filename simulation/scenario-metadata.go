@@ -10,6 +10,7 @@ import (
 	"smp/model"
 	"smp/recsys"
 	smprng "smp/rng"
+	"smp/trajectory"
 	"sort"
 	"strings"
 )
@@ -48,7 +49,7 @@ type ScenarioMetadata struct {
 
 	MaxSimulationStep   int
 	CheckpointSteps     []int
-	TrajectoryPrecision TrajectoryPrecision
+	TrajectoryPrecision trajectory.Precision
 	RecsysFactoryType   string
 	NetworkType         string
 	NodeCount           int
@@ -68,10 +69,10 @@ type ScenarioMetadata struct {
 
 // PrepareForNewRun resolves defaults that must be persisted before sampling.
 func (m *ScenarioMetadata) PrepareForNewRun() error {
-	if err := m.TrajectoryPrecision.validate(); err != nil {
+	if err := m.TrajectoryPrecision.Validate(); err != nil {
 		return err
 	}
-	m.TrajectoryPrecision = m.TrajectoryPrecision.resolved()
+	m.TrajectoryPrecision = m.TrajectoryPrecision.Resolved()
 	if m.DataVersion == 0 || m.DataVersion == 1 {
 		m.DataVersion = CurrentDataVersion
 	}
@@ -102,7 +103,7 @@ func (m *ScenarioMetadata) Validate() error {
 			return err
 		}
 	}
-	if err := m.TrajectoryPrecision.validate(); err != nil {
+	if err := m.TrajectoryPrecision.Validate(); err != nil {
 		return err
 	}
 

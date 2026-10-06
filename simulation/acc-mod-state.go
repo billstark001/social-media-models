@@ -1,6 +1,9 @@
 package simulation
 
-import "smp/model"
+import (
+	"smp/model"
+	"smp/trajectory"
+)
 
 type AccumulativeModelState struct {
 	// Decoded rows are used by the legacy accumulated-state format. New
@@ -11,13 +14,13 @@ type AccumulativeModelState struct {
 	AgentNumbers [][][4]int16
 	// (step, agent, type)
 	AgentOpinionSums [][][4]float64
-	Packed           *TrajectoryBuffer
+	Packed           *trajectory.Buffer
 
 	UnsafePostEvent int
 }
 
-func NewTrajectoryAccumulativeState(agents int, precision TrajectoryPrecision) *AccumulativeModelState {
-	return &AccumulativeModelState{Packed: newTrajectoryBuffer(agents, precision.resolved())}
+func NewTrajectoryAccumulativeState(agents int, precision trajectory.Precision) *AccumulativeModelState {
+	return &AccumulativeModelState{Packed: trajectory.NewBuffer(agents, precision.Resolved())}
 }
 
 func (s *AccumulativeModelState) Len() int {

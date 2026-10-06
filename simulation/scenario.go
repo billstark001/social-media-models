@@ -10,6 +10,7 @@ import (
 	"smp/model"
 	"smp/progress"
 	smprng "smp/rng"
+	"smp/trajectory"
 	"smp/utils"
 	"time"
 
@@ -21,7 +22,7 @@ type Scenario struct {
 	Metadata    *ScenarioMetadata
 	Model       IModel
 	AccState    *AccumulativeModelState
-	Trajectory  *TrajectoryWriter
+	Trajectory  *trajectory.Writer
 	Serializer  *SimulationSerializer
 	DB          *EventDB
 	RNG         *smprng.Pool
@@ -186,7 +187,7 @@ func (s *Scenario) InitError() error {
 			return fmt.Errorf("create scenario dump folder: %w", err)
 		}
 
-		trajectory, trajectoryErr := OpenTrajectory(filepath.Join(s.BaseDir, s.Metadata.UniqueName), nodeCount, s.Metadata.TrajectoryPrecision)
+		trajectory, trajectoryErr := trajectory.Open(filepath.Join(s.BaseDir, s.Metadata.UniqueName), nodeCount, s.Metadata.TrajectoryPrecision)
 		if trajectoryErr != nil {
 			return fmt.Errorf("open trajectory: %w", trajectoryErr)
 		}
@@ -231,7 +232,7 @@ func (s *Scenario) Load() bool {
 	if storedMetadata != nil {
 		s.Metadata.DataVersion = storedMetadata.DataVersion
 		s.Metadata.RNG = storedMetadata.RNG
-		if storedMetadata.TrajectoryPrecision != (TrajectoryPrecision{}) {
+		if storedMetadata.TrajectoryPrecision != (trajectory.Precision{}) {
 			s.Metadata.TrajectoryPrecision = storedMetadata.TrajectoryPrecision
 		}
 	}
@@ -293,7 +294,7 @@ func (s *Scenario) Load() bool {
 
 	trajectoryPath := filepath.Join(s.BaseDir, s.Metadata.UniqueName, "trajectory.json")
 	if _, statErr := os.Stat(trajectoryPath); statErr == nil {
-		trajectory, openErr := OpenTrajectory(filepath.Join(s.BaseDir, s.Metadata.UniqueName), s.Metadata.NodeCount, s.Metadata.TrajectoryPrecision)
+		trajectory, openErr := trajectory.Open(filepath.Join(s.BaseDir, s.Metadata.UniqueName), s.Metadata.NodeCount, s.Metadata.TrajectoryPrecision)
 		if openErr != nil {
 			log.Printf("Failed to open trajectory: %v", openErr)
 			return false
@@ -367,7 +368,7 @@ func (s *Scenario) Step() (int, float64) {
 
 	if s.EnableDumps && s.AccState != nil {
 		s.Model.Accumulate(s.AccState)
-		if s.Trajectory != nil && s.AccState.Len() >= trajectoryChunkSteps {
+		if s.Trajectory != nil && s.AccState.Len() >= trajectory.ChunkSteps {
 			if err := s.Trajectory.Flush(s.AccState.Packed); err != nil {
 				panic(fmt.Errorf("flush trajectory: %w", err))
 			}

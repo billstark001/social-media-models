@@ -1,4 +1,4 @@
-package simulation
+package trajectory
 
 import (
 	"math"
@@ -9,17 +9,21 @@ import (
 	"smp/model"
 )
 
-func TestTrajectoryPrecisionCombinationsAndPackedBuffer(t *testing.T) {
+func newTestBlock() *Block {
+	return &Block{}
+}
+
+func TestPrecisionCombinationsAndPackedBuffer(t *testing.T) {
 	levels := []string{"float16", "float32", "float64"}
 	for _, opinionLevel := range levels {
 		for _, sumLevel := range levels {
-			precision := TrajectoryPrecision{Opinions: opinionLevel, OpinionSums: sumLevel}
+			precision := Precision{Opinions: opinionLevel, OpinionSums: sumLevel}
 			t.Run(opinionLevel+"_"+sumLevel, func(t *testing.T) {
-				state := NewAccumulativeModelState()
+				state := newTestBlock()
 				state.Opinions = [][]float64{{1.0 / 3, -0.75}, {1.0/3 + 1e-5, -0.5}}
 				state.AgentNumbers = [][][4]int16{{{1, 2, 3, 4}, {5, 6, 7, 8}}, {{2, 3, 4, 5}, {6, 7, 8, 9}}}
 				state.AgentOpinionSums = [][][4]float64{{{1.0 / 3, -1.0 / 7, 0, 2}, {4, 5, 6, 7}}, {{1.0/3 + 1e-5, -1.0 / 7, 0, 2}, {4, 5, 6, 7}}}
-				buffer := newTrajectoryBuffer(2, precision)
+				buffer := NewBuffer(2, precision)
 				for step := range state.Opinions {
 					counts := make([]model.AgentNumberRecord, 2)
 					sums := make([]model.AgentOpinionSumRecord, 2)
@@ -33,7 +37,7 @@ func TestTrajectoryPrecisionCombinationsAndPackedBuffer(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				packed, err := EncodeTrajectoryChunk(buffer)
+				packed, err := EncodeChunk(buffer)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -41,7 +45,7 @@ func TestTrajectoryPrecisionCombinationsAndPackedBuffer(t *testing.T) {
 				if err := os.WriteFile(path, packed, 0644); err != nil {
 					t.Fatal(err)
 				}
-				decoded, err := LoadTrajectoryChunk(path)
+				decoded, err := LoadChunk(path)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -98,11 +102,11 @@ func TestFloat16EdgesAndV2Compatibility(t *testing.T) {
 	if _, err := float16Bits(65505); err == nil {
 		t.Fatal("float16 overflow not rejected")
 	}
-	state := NewAccumulativeModelState()
+	state := newTestBlock()
 	state.Opinions = [][]float64{{0.25}}
 	state.AgentNumbers = [][][4]int16{{{1, 2, 3, 4}}}
 	state.AgentOpinionSums = [][][4]float64{{{0.5, 0, 0, 0}}}
-	newChunk, err := EncodeTrajectoryChunk(testBufferFromState(t, state, TrajectoryPrecision{Opinions: "float32", OpinionSums: "float32"}))
+	newChunk, err := EncodeChunk(testBufferFromState(t, state, Precision{Opinions: "float32", OpinionSums: "float32"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,15 +116,15 @@ func TestFloat16EdgesAndV2Compatibility(t *testing.T) {
 	if err := os.WriteFile(path, oldChunk, 0644); err != nil {
 		t.Fatal(err)
 	}
-	decoded, err := LoadTrajectoryChunk(path)
+	decoded, err := LoadChunk(path)
 	if err != nil || decoded.Opinions[0][0] != 0.25 || decoded.AgentOpinionSums[0][0][0] != 0.5 {
 		t.Fatalf("version-2 block unreadable: %v", err)
 	}
 }
 
-func testBufferFromState(t *testing.T, state *AccumulativeModelState, precision TrajectoryPrecision) *TrajectoryBuffer {
+func testBufferFromState(t *testing.T, state *Block, precision Precision) *Buffer {
 	t.Helper()
-	buffer := newTrajectoryBuffer(len(state.Opinions[0]), precision.resolved())
+	buffer := NewBuffer(len(state.Opinions[0]), precision.Resolved())
 	for step := range state.Opinions {
 		counts := make([]model.AgentNumberRecord, len(state.Opinions[step]))
 		sums := make([]model.AgentOpinionSumRecord, len(counts))
@@ -137,9 +141,9 @@ func testBufferFromState(t *testing.T, state *AccumulativeModelState, precision 
 	return buffer
 }
 
-func saveTestTrajectoryChunk(t *testing.T, path string, state *AccumulativeModelState, precision TrajectoryPrecision) {
+func saveTestChunk(t *testing.T, path string, state *Block, precision Precision) {
 	t.Helper()
-	data, err := EncodeTrajectoryChunk(testBufferFromState(t, state, precision))
+	data, err := EncodeChunk(testBufferFromState(t, state, precision))
 	if err != nil {
 		t.Fatal(err)
 	}
