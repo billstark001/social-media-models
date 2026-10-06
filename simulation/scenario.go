@@ -301,7 +301,7 @@ func (s *Scenario) Dump() {
 			return
 		}
 	}
-	snapshot, err := s.snapshotData()
+	snapshot, err := s.Snapshot()
 	if err != nil {
 		log.Printf("Failed to serialize model snapshot: %v", err)
 	} else {

@@ -1,7 +1,9 @@
 package recsys
 
 import (
+	"fmt"
 	"log"
+	"maps"
 	"math/rand/v2"
 	"sort"
 
@@ -80,19 +82,7 @@ func NewStructure[O any, P any](
 // PostInit implements model.SMPModelRecommendationSystem.
 // When dumpData is provided the cache is restored from the snapshot.
 func (s *Structure[O, P]) PostInit(dumpData []byte) {
-	s.NumNodes = s.Model.Graph.Nodes().Len()
-	s.AllIndices = make([]int, s.NumNodes)
-	for i := range s.NumNodes {
-		s.AllIndices[i] = i
-	}
-	s.AgentMap = make(map[int64]*model.SMPAgent[O, P], s.NumNodes)
-	for _, a := range s.Model.Schedule.Agents {
-		s.AgentMap[a.ID] = a
-	}
-	s.neighborSeen = make([]uint32, s.NumNodes)
-	s.candidateSeen = make([]uint32, s.NumNodes)
-	s.rawCounts = make([]float64, s.NumNodes)
-
+	s.initWorkspace()
 	if s.useCache {
 		if dumpData != nil {
 			var dump StructureDump
@@ -106,6 +96,54 @@ func (s *Structure[O, P]) PostInit(dumpData []byte) {
 		s.candidateCache = make(map[int64][]int64, s.NumNodes)
 		s.rawScoreCache = make(map[int64]map[int64]float64, s.NumNodes)
 		s.cacheValid = make(map[int64]bool, s.NumNodes)
+	}
+}
+
+func (s *Structure[O, P]) initWorkspace() {
+	s.NumNodes = s.Model.Graph.Nodes().Len()
+	s.AllIndices = make([]int, s.NumNodes)
+	for i := range s.NumNodes {
+		s.AllIndices[i] = i
+	}
+	s.AgentMap = make(map[int64]*model.SMPAgent[O, P], s.NumNodes)
+	for _, a := range s.Model.Schedule.Agents {
+		s.AgentMap[a.ID] = a
+	}
+	s.neighborSeen = make([]uint32, s.NumNodes)
+	s.candidateSeen = make([]uint32, s.NumNodes)
+	s.rawCounts = make([]float64, s.NumNodes)
+
+}
+
+type preparedStructureState struct{ dump StructureDump }
+
+// PrepareState decodes once. Cached rows are immutable: recommendation only
+// reads them, and a cache miss replaces a whole row rather than changing it.
+func (s *Structure[O, P]) PrepareState(data []byte) (model.PreparedRecommendationState, error) {
+	var dump StructureDump
+	if err := msgpack.Unmarshal(data, &dump); err != nil {
+		return nil, err
+	}
+	return &preparedStructureState{dump: dump}, nil
+}
+
+func (p *preparedStructureState) Restore(recommender any) error {
+	consumer, ok := recommender.(interface{ restoreStructureCache(StructureDump) })
+	if !ok {
+		return fmt.Errorf("structure state requires a structure recommender")
+	}
+	consumer.restoreStructureCache(p.dump)
+	return nil
+}
+
+func (s *Structure[O, P]) restoreStructureCache(dump StructureDump) {
+	s.initWorkspace()
+	if s.useCache {
+		// The outer indexes and validity flags are private to each branch; immutable
+		// score/candidate rows may be shared until recomputation replaces them.
+		s.candidateCache = maps.Clone(dump.CandidateCache)
+		s.rawScoreCache = maps.Clone(dump.RawScoreCache)
+		s.cacheValid = maps.Clone(dump.CacheValid)
 	}
 }
 

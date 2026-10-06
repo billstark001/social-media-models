@@ -44,6 +44,21 @@ func (d *SMPModelDumpData[O, P]) Load(
 	eventLogger func(*EventRecord),
 	rngPool *smprng.Pool,
 ) *SMPModel[O, P] {
+	return d.LoadWithRecommenderState(modelParams, agentParams, dynamics, collectItems, eventLogger, rngPool, nil)
+}
+
+// LoadWithRecommenderState uses the same full-state loader as Load, with optional
+// reusable decoding of a recommender snapshot. It never shares mutable agents,
+// graph, posts or RNG with the source checkpoint.
+func (d *SMPModelDumpData[O, P]) LoadWithRecommenderState(
+	modelParams *SMPModelParams[O, P],
+	agentParams *P,
+	dynamics Dynamics[O, P],
+	collectItems *CollectItemOptions,
+	eventLogger func(*EventRecord),
+	rngPool *smprng.Pool,
+	prepare func(SMPModelRecommendationSystem[O, P]) PreparedRecommendationState,
+) *SMPModel[O, P] {
 	m := NewSMPModel(
 		utils.DeserializeGraph(&d.Graph),
 		&d.Opinions,
@@ -74,7 +89,17 @@ func (d *SMPModelDumpData[O, P]) Load(
 	m.SetAgentCurPosts()
 
 	if m.Recsys != nil {
-		m.Recsys.PostInit(d.RecsysDumpData)
+		var state PreparedRecommendationState
+		if prepare != nil {
+			state = prepare(m.Recsys)
+		}
+		if state != nil {
+			if err := state.Restore(m.Recsys); err != nil {
+				panic(err)
+			}
+		} else {
+			m.Recsys.PostInit(d.RecsysDumpData)
+		}
 	}
 	// Constructors and PostInit may derive temporary state. Restore last so the
 	// next simulated action starts at exactly the snapshotted RNG position.

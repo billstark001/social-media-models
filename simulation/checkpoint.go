@@ -45,15 +45,23 @@ func ReadCheckpoint(path string) (*RawSnapshotData, string, error) {
 	return &snapshot, hex.EncodeToString(sum[:]), nil
 }
 
-func (s *Scenario) snapshotData() (*RawSnapshotData, error) {
+// Snapshot captures full microscopic state without filesystem I/O or advancing RNG.
+// The returned bytes and metadata maps/slices are independent of the scenario.
+func (s *Scenario) Snapshot() (*RawSnapshotData, error) {
+	if s.Model == nil || s.Metadata == nil {
+		return nil, fmt.Errorf("scenario is not initialized")
+	}
 	data, err := s.Model.RawDump()
 	if err != nil {
 		return nil, err
 	}
+	metadata := *s.Metadata
+	metadata.RecSysParams = maps.Clone(s.Metadata.RecSysParams)
+	metadata.CheckpointSteps = append([]int(nil), s.Metadata.CheckpointSteps...)
 	return &RawSnapshotData{
 		DynamicsType:  s.Metadata.DynamicsType,
 		Data:          data,
-		Metadata:      s.Metadata,
+		Metadata:      &metadata,
 		CompletedStep: s.Model.GetCurStep() - 1,
 		StableSteps:   s.StableSteps,
 	}, nil
@@ -114,7 +122,7 @@ func InspectFloat64Checkpoint(snapshot *RawSnapshotData) (Float64CheckpointState
 }
 
 func (s *Scenario) SaveCheckpointTo(path string) error {
-	snapshot, err := s.snapshotData()
+	snapshot, err := s.Snapshot()
 	if err != nil {
 		return err
 	}
@@ -153,8 +161,24 @@ func (s *Scenario) checkpointRequested(step int) bool {
 }
 
 func (s *Scenario) InitFromCheckpoint(snapshot *RawSnapshotData, branch bool) error {
+	prepared, err := PrepareCheckpoint(snapshot)
+	if err != nil {
+		return err
+	}
+	return s.InitFromPreparedCheckpoint(prepared, branch)
+}
+
+// InitFromPreparedCheckpoint reuses a single decoded checkpoint for multiple
+// independent branches. Every restored model owns its mutable microscopic state.
+func (s *Scenario) InitFromPreparedCheckpoint(snapshot *PreparedCheckpoint, branch bool) error {
+	if snapshot == nil {
+		return fmt.Errorf("nil checkpoint")
+	}
 	if s.EnableDumps {
 		return fmt.Errorf("batch checkpoint initialization must be in-memory")
+	}
+	if s.Metadata == nil {
+		return fmt.Errorf("metadata is nil")
 	}
 	if err := s.Metadata.PrepareForNewRun(); err != nil {
 		return err
@@ -162,23 +186,21 @@ func (s *Scenario) InitFromCheckpoint(snapshot *RawSnapshotData, branch bool) er
 	if err := s.Metadata.Validate(); err != nil {
 		return err
 	}
-	if err := ValidateCheckpointMetadata(snapshot.Metadata, s.Metadata); err != nil {
+	if err := ValidateCheckpointMetadata(snapshot.metadata, s.Metadata); err != nil {
 		return err
 	}
 	pool, err := smprng.NewPool(s.Metadata.RNG)
 	if err != nil {
 		return err
 	}
-	loaded, err := RestoreRawModel(snapshot, s.Metadata, pool, nil, branch)
+	loaded, err := snapshot.restore(s.Metadata, pool, nil, branch)
 	if err != nil {
 		return err
 	}
-	s.RNG = pool
-	s.Model = loaded
-	s.StableSteps = snapshot.StableSteps
-	if snapshot.CompletedStep != s.Model.GetCurStep()-1 {
+	if snapshot.completedStep != loaded.GetCurStep()-1 {
 		return fmt.Errorf("checkpoint completed step does not match model state")
 	}
+	s.RNG, s.Model, s.StableSteps = pool, loaded, snapshot.stableSteps
 	return nil
 }
 
@@ -217,78 +239,19 @@ func ValidateCheckpointMetadata(saved, requested *ScenarioMetadata) error {
 	return nil
 }
 
-// RestoreRawModel is the single typed snapshot loader used by smp and batch.
-// branch=true discards saved RNG positions and restores the caller's fresh
-// stream positions after constructors and recommender initialization.
+// RestoreRawModel restores a serialized microscopic checkpoint. For repeated
+// branches, PrepareCheckpoint decodes it once and uses the same typed loader.
 func RestoreRawModel(snapshot *RawSnapshotData, metadata *ScenarioMetadata, pool *smprng.Pool, logger func(*model.EventRecord), branch bool) (IModel, error) {
 	if snapshot == nil {
 		return nil, fmt.Errorf("nil checkpoint")
 	}
-	dynamicsType := snapshot.DynamicsType
-	if dynamicsType == "" {
-		dynamicsType = metadata.DynamicsType
+	tagged := *snapshot
+	if tagged.DynamicsType == "" {
+		tagged.DynamicsType = metadata.DynamicsType
 	}
-	if dynamicsType != metadata.DynamicsType {
-		return nil, fmt.Errorf("checkpoint dynamics %q differs from request %q", dynamicsType, metadata.DynamicsType)
-	}
-	initialStates, err := pool.Snapshot()
+	prepared, err := PrepareCheckpoint(&tagged)
 	if err != nil {
 		return nil, err
 	}
-	finish := func(w IModel) (IModel, error) {
-		if branch {
-			if err := pool.Restore(initialStates); err != nil {
-				return nil, err
-			}
-		}
-		return w, nil
-	}
-	switch dynamicsType {
-	case DynamicsTypeHK:
-		var dump model.SMPModelDumpData[float64, dynamics.HKParams]
-		if err := msgpack.Unmarshal(snapshot.Data, &dump); err != nil {
-			return nil, err
-		}
-		if branch {
-			dump.RNGStates = nil
-		}
-		factory := GetFloat64RecsysFactoriesWithParams[dynamics.HKParams](metadata.RecSysParams)[metadata.RecsysFactoryType]
-		params := model.SMPModelParams[float64, dynamics.HKParams]{SMPModelPureParams: metadata.SMPModelPureParams, RecsysFactory: factory}
-		return finish(&Float64ModelWrapper[dynamics.HKParams]{M: dump.Load(&params, &metadata.HKParams, &dynamics.HK{}, &metadata.CollectItemOptions, logger, pool)})
-	case DynamicsTypeDeffuant:
-		var dump model.SMPModelDumpData[float64, dynamics.DeffuantParams]
-		if err := msgpack.Unmarshal(snapshot.Data, &dump); err != nil {
-			return nil, err
-		}
-		if branch {
-			dump.RNGStates = nil
-		}
-		factory := GetFloat64RecsysFactoriesWithParams[dynamics.DeffuantParams](metadata.RecSysParams)[metadata.RecsysFactoryType]
-		params := model.SMPModelParams[float64, dynamics.DeffuantParams]{SMPModelPureParams: metadata.SMPModelPureParams, RecsysFactory: factory}
-		return finish(&Float64ModelWrapper[dynamics.DeffuantParams]{M: dump.Load(&params, &metadata.DeffuantParams, &dynamics.Deffuant{}, &metadata.CollectItemOptions, logger, pool)})
-	case DynamicsTypeGalam:
-		var dump model.SMPModelDumpData[bool, dynamics.GalamParams]
-		if err := msgpack.Unmarshal(snapshot.Data, &dump); err != nil {
-			return nil, err
-		}
-		if branch {
-			dump.RNGStates = nil
-		}
-		factory := GetBoolRecsysFactoriesWithParams[dynamics.GalamParams](metadata.RecSysParams)[metadata.RecsysFactoryType]
-		params := model.SMPModelParams[bool, dynamics.GalamParams]{SMPModelPureParams: metadata.SMPModelPureParams, RecsysFactory: factory}
-		return finish(&BoolModelWrapper[dynamics.GalamParams]{M: dump.Load(&params, &metadata.GalamParams, &dynamics.Galam{}, &metadata.CollectItemOptions, logger, pool)})
-	case DynamicsTypeVoter:
-		var dump model.SMPModelDumpData[bool, dynamics.VoterParams]
-		if err := msgpack.Unmarshal(snapshot.Data, &dump); err != nil {
-			return nil, err
-		}
-		if branch {
-			dump.RNGStates = nil
-		}
-		factory := GetBoolRecsysFactoriesWithParams[dynamics.VoterParams](metadata.RecSysParams)[metadata.RecsysFactoryType]
-		params := model.SMPModelParams[bool, dynamics.VoterParams]{SMPModelPureParams: metadata.SMPModelPureParams, RecsysFactory: factory}
-		return finish(&BoolModelWrapper[dynamics.VoterParams]{M: dump.Load(&params, &metadata.VoterParams, &dynamics.Voter{}, &metadata.CollectItemOptions, logger, pool)})
-	default:
-		return nil, fmt.Errorf("unknown checkpoint dynamics %q", dynamicsType)
-	}
+	return prepared.restore(metadata, pool, logger, branch)
 }

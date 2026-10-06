@@ -12,6 +12,18 @@ type SMPModelRecommendationSystem[O any, P any] interface {
 	Dump() []byte
 }
 
+// PreparedRecommendationState is an immutable decoded recommender snapshot.
+// Restore initializes a fresh recommender with independently mutable cache indexes.
+type PreparedRecommendationState interface {
+	Restore(recommender any) error
+}
+
+// RecommendationStatePreparer is optional; existing recommendation systems keep
+// their PostInit/Dump contract and use serialized restoration when absent.
+type RecommendationStatePreparer interface {
+	PrepareState(data []byte) (PreparedRecommendationState, error)
+}
+
 // SMPModelRecommendationAtSystem is the optional counterfactual recommendation
 // interface. It evaluates the same recommender for an existing anchor agent at
 // a hypothetical opinion without mutating model state. The caller owns rng so
