@@ -147,8 +147,8 @@ func (m *ScenarioMetadata) Validate() error {
 	}
 
 	networkType := strings.TrimSpace(m.NetworkType)
-	if networkType != "Random" {
-		return fmt.Errorf("unsupported NetworkType %q (only \"Random\" is supported)", m.NetworkType)
+	if networkType != "Random" && networkType != "Explicit" {
+		return fmt.Errorf("unsupported NetworkType %q (expected Random or Explicit)", m.NetworkType)
 	}
 
 	dynamicsType := strings.TrimSpace(m.DynamicsType)

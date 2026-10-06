@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"smp/dynamics"
 	"smp/model"
 	"smp/progress"
 	smprng "smp/rng"
@@ -94,6 +93,16 @@ func (s *Scenario) Init() {
 // persistence errors. With EnableDumps false it performs no filesystem I/O and
 // does not allocate an accumulative history.
 func (s *Scenario) InitError() error {
+	return s.InitFromState(nil)
+}
+
+// InitFromState shares standard scenario initialization while accepting an
+// explicit microscopic graph/opinions. Persistence and step numbering are
+// identical to InitError; with dumps disabled it performs no filesystem I/O.
+func (s *Scenario) InitFromState(initial *InitialState) error {
+	if s.Metadata == nil {
+		return fmt.Errorf("metadata is nil")
+	}
 	if err := s.Metadata.PrepareForNewRun(); err != nil {
 		return fmt.Errorf("resolve scenario RNG: %w", err)
 	}
@@ -119,64 +128,11 @@ func (s *Scenario) InitError() error {
 		eventLogger = s.logEvent
 	}
 
-	nodeCount := max(s.Metadata.NodeCount, 1)
-	edgeCount := max(s.Metadata.NodeFollowCount, 1)
-	graph := utils.CreateRandomNetwork(
-		nodeCount,
-		float64(edgeCount)/(float64(nodeCount)-1),
-		s.RNG.Stream(smprng.StreamNetwork),
-	)
-
-	switch s.Metadata.DynamicsType {
-	case "", DynamicsTypeHK:
-		factories := GetFloat64RecsysFactoriesWithParams[dynamics.HKParams](s.Metadata.RecSysParams)
-		params := model.SMPModelParams[float64, dynamics.HKParams]{
-			SMPModelPureParams: s.Metadata.SMPModelPureParams,
-			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
-		}
-		m := model.NewSMPModelFloat64(graph, nil, &params, &s.Metadata.HKParams, &dynamics.HK{}, &s.Metadata.CollectItemOptions, eventLogger, s.RNG)
-		s.Model = &Float64ModelWrapper[dynamics.HKParams]{M: m}
-	case DynamicsTypeDeffuant:
-		factories := GetFloat64RecsysFactoriesWithParams[dynamics.DeffuantParams](s.Metadata.RecSysParams)
-		params := model.SMPModelParams[float64, dynamics.DeffuantParams]{
-			SMPModelPureParams: s.Metadata.SMPModelPureParams,
-			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
-		}
-		m := model.NewSMPModelFloat64(graph, nil, &params, &s.Metadata.DeffuantParams, &dynamics.Deffuant{}, &s.Metadata.CollectItemOptions, eventLogger, s.RNG)
-		s.Model = &Float64ModelWrapper[dynamics.DeffuantParams]{M: m}
-	case DynamicsTypeGalam:
-		factories := GetBoolRecsysFactoriesWithParams[dynamics.GalamParams](s.Metadata.RecSysParams)
-		params := model.SMPModelParams[bool, dynamics.GalamParams]{
-			SMPModelPureParams: s.Metadata.SMPModelPureParams,
-			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
-		}
-		n := graph.Nodes().Len()
-		ops := make([]bool, n)
-		opinionRNG := s.RNG.Stream(smprng.StreamOpinion)
-		for i := range ops {
-			ops[i] = opinionRNG.IntN(2) == 1
-		}
-		m := model.NewSMPModel(graph, &ops, &params, &s.Metadata.GalamParams, &dynamics.Galam{}, &s.Metadata.CollectItemOptions, eventLogger, s.RNG)
-		s.Model = &BoolModelWrapper[dynamics.GalamParams]{M: m}
-	case DynamicsTypeVoter:
-		factories := GetBoolRecsysFactoriesWithParams[dynamics.VoterParams](s.Metadata.RecSysParams)
-		params := model.SMPModelParams[bool, dynamics.VoterParams]{
-			SMPModelPureParams: s.Metadata.SMPModelPureParams,
-			RecsysFactory:      factories[s.Metadata.RecsysFactoryType],
-		}
-		n := graph.Nodes().Len()
-		ops := make([]bool, n)
-		opinionRNG := s.RNG.Stream(smprng.StreamOpinion)
-		for i := range ops {
-			ops[i] = opinionRNG.IntN(2) == 1
-		}
-		m := model.NewSMPModel(graph, &ops, &params, &s.Metadata.VoterParams, &dynamics.Voter{}, &s.Metadata.CollectItemOptions, eventLogger, s.RNG)
-		s.Model = &BoolModelWrapper[dynamics.VoterParams]{M: m}
-	default:
-		return fmt.Errorf("unknown DynamicsType: %q", s.Metadata.DynamicsType)
+	nodeCount := s.Metadata.NodeCount
+	s.Model, err = NewModel(s.Metadata, initial, s.RNG, eventLogger)
+	if err != nil {
+		return fmt.Errorf("initialize model: %w", err)
 	}
-
-	s.Model.InitPosts()
 
 	if s.EnableDumps {
 		err = os.MkdirAll(
