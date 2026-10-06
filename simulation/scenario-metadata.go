@@ -64,6 +64,7 @@ type ScenarioMetadata struct {
 	//   "Steepness"        float64 – score sharpening for OpinionRandom / StructureRandom (default 1.0)
 	//   "RandomRatio"      float64 – uniform-random fraction for OpinionRandom / StructureRandom (default 0.0)
 	//   "MixRate"          float64 – RecSys1 fraction in Mix variants (OpinionM9, StructureM9) (default 0.1)
+	//   "LogRecommendations" bool – Structure diagnostics on stderr (default true)
 	RecSysParams map[string]any
 }
 
@@ -345,6 +346,10 @@ func GetFloat64RecsysFactoriesWithParams[P any](params map[string]any) map[strin
 	steepness := getParam(params, "Steepness", 1.0)
 	randomRatio := getParam(params, "RandomRatio", 0.0)
 	mixRate := getParam(params, "MixRate", 0.1)
+	var recommendationLogger func(string)
+	if getParam(params, "LogRecommendations", true) {
+		recommendationLogger = func(s string) { fmt.Fprintln(os.Stderr, s) }
+	}
 
 	ret := map[string]model.RecsysFactory[float64, P]{
 		"Random": func(h *model.SMPModel[float64, P]) model.SMPModelRecommendationSystem[float64, P] {
@@ -354,17 +359,13 @@ func GetFloat64RecsysFactoriesWithParams[P any](params map[string]any) map[strin
 			return recsys.NewOpinion(h, noiseStd, nil)
 		},
 		"Structure": func(h *model.SMPModel[float64, P]) model.SMPModelRecommendationSystem[float64, P] {
-			return recsys.NewStructure(h, noiseStd, nil, useCache, func(s string) {
-				fmt.Fprintln(os.Stderr, s)
-			})
+			return recsys.NewStructure(h, noiseStd, nil, useCache, recommendationLogger)
 		},
 		"OpinionRandom": func(h *model.SMPModel[float64, P]) model.SMPModelRecommendationSystem[float64, P] {
 			return recsys.NewOpinionRandom(h, nil, tolerance, steepness, opRandNoiseStd, randomRatio)
 		},
 		"StructureRandom": func(h *model.SMPModel[float64, P]) model.SMPModelRecommendationSystem[float64, P] {
-			return recsys.NewStructureRandom(h, nil, steepness, noiseStd, randomRatio, useCache, func(s string) {
-				fmt.Fprintln(os.Stderr, s)
-			})
+			return recsys.NewStructureRandom(h, nil, steepness, noiseStd, randomRatio, useCache, recommendationLogger)
 		},
 	}
 

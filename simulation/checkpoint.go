@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -189,6 +190,11 @@ func ValidateCheckpointMetadata(saved, requested *ScenarioMetadata) error {
 		return fmt.Errorf("checkpoint has no metadata; exact branch validation is unavailable")
 	}
 	physical := func(m *ScenarioMetadata) any {
+		recsParams := maps.Clone(m.RecSysParams)
+		delete(recsParams, "LogRecommendations")
+		if len(recsParams) == 0 {
+			recsParams = nil
+		}
 		return struct {
 			DynamicsType string
 			HK           dynamics.HKParams
@@ -201,7 +207,7 @@ func ValidateCheckpointMetadata(saved, requested *ScenarioMetadata) error {
 			Network      string
 			Nodes        int
 			Follows      int
-		}{m.DynamicsType, m.HKParams, m.DeffuantParams, m.GalamParams, m.VoterParams, m.SMPModelPureParams, m.RecsysFactoryType, m.RecSysParams, m.NetworkType, m.NodeCount, m.NodeFollowCount}
+		}{m.DynamicsType, m.HKParams, m.DeffuantParams, m.GalamParams, m.VoterParams, m.SMPModelPureParams, m.RecsysFactoryType, recsParams, m.NetworkType, m.NodeCount, m.NodeFollowCount}
 	}
 	left, _ := json.Marshal(physical(saved))
 	right, _ := json.Marshal(physical(requested))
