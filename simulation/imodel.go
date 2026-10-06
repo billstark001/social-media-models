@@ -1,6 +1,7 @@
 package simulation
 
 import (
+	"fmt"
 	model "smp/model"
 
 	"github.com/vmihailenco/msgpack/v5"
@@ -25,6 +26,22 @@ type IModel interface {
 	// RawDump serializes the model state to msgpack bytes for snapshotting.
 	RawDump() ([]byte, error)
 	GetOpinions() []float64
+}
+
+// AgentNumberObserver is an optional read-only extension. IModel retains its
+// existing contract so custom model wrappers continue to compile unchanged.
+type AgentNumberObserver interface {
+	GetAgentNumbers() []model.AgentNumberRecord
+}
+
+// ObserveAgentNumbers reads a detached observation without consuming RNG.
+// All built-in wrappers implement it; other wrappers may opt into the interface.
+func ObserveAgentNumbers(m IModel) ([]model.AgentNumberRecord, error) {
+	observer, ok := m.(AgentNumberObserver)
+	if !ok {
+		return nil, fmt.Errorf("model does not provide agent-number observations")
+	}
+	return observer.GetAgentNumbers(), nil
 }
 
 // ---- Float64ModelWrapper ----
@@ -63,6 +80,10 @@ func (w *Float64ModelWrapper[P]) RawDump() ([]byte, error) {
 
 func (w *Float64ModelWrapper[P]) GetOpinions() []float64 {
 	return w.M.CollectOpinions()
+}
+
+func (w *Float64ModelWrapper[P]) GetAgentNumbers() []model.AgentNumberRecord {
+	return w.M.CollectAgentNumbers()
 }
 
 // ---- BoolModelWrapper ----
@@ -118,4 +139,8 @@ func (w *BoolModelWrapper[P]) GetOpinions() []float64 {
 		}
 	}
 	return ret
+}
+
+func (w *BoolModelWrapper[P]) GetAgentNumbers() []model.AgentNumberRecord {
+	return w.M.CollectAgentNumbers()
 }
