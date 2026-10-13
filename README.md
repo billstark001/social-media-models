@@ -73,32 +73,32 @@ Each agent per step:
 
 ### Opinion Dynamics
 
-| Dynamics | Update Rule | Params |
-|----------|-------------|--------|
-| **HK** (Hegselmann-Krause) | Move to weighted mean of concordant opinions × `Influence` | `HKParams` |
-| **Deffuant** | Pick one concordant opinion at random; move by `Influence × Δ` | `DeffuantParams` |
+| Dynamics                   | Update Rule                                                    | Params           |
+| -------------------------- | -------------------------------------------------------------- | ---------------- |
+| **HK** (Hegselmann-Krause) | Move to weighted mean of concordant opinions × `Influence`     | `HKParams`       |
+| **Deffuant**               | Pick one concordant opinion at random; move by `Influence × Δ` | `DeffuantParams` |
 
 ### Recommendation Systems
 
-| Name | Strategy |
-|------|----------|
-| `Random` | Uniformly random |
-| `Opinion` | Nearest in opinion space |
-| `Structure` | Common-neighbor count |
-| `OpinionRandom` | Opinion-distance weighted random |
+| Name              | Strategy                             |
+| ----------------- | ------------------------------------ |
+| `Random`          | Uniformly random                     |
+| `Opinion`         | Nearest in opinion space             |
+| `Structure`       | Common-neighbor count                |
+| `OpinionRandom`   | Opinion-distance weighted random     |
 | `StructureRandom` | Structure-similarity weighted random |
-| `Mix` | Blend of two systems |
+| `Mix`             | Blend of two systems                 |
 
 ### Key Parameters
 
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `Tolerance` | Concordance threshold | 0.25 |
-| `Influence` | Opinion influence rate (HK only) | 1.0 |
-| `RepostRate` | Probability of reposting vs. new post | 0.3 |
-| `RewiringRate` | Probability of rewiring per step | 0.1 |
-| `PostRetainCount` | Post history depth per agent | 3 |
-| `RecsysCount` | Recommendations per agent per step | 10 |
+| Parameter         | Description                           | Default |
+| ----------------- | ------------------------------------- | ------- |
+| `Tolerance`       | Concordance threshold                 | 0.25    |
+| `Influence`       | Opinion influence rate (HK only)      | 1.0     |
+| `RepostRate`      | Probability of reposting vs. new post | 0.3     |
+| `RewiringRate`    | Probability of rewiring per step      | 0.1     |
+| `PostRetainCount` | Post history depth per agent          | 3       |
+| `RecsysCount`     | Recommendations per agent per step    | 10      |
 
 ## Serialization
 
@@ -116,6 +116,44 @@ snapshots store the current states of the named RNG streams, so a resumed run
 produces the same continuation as an uninterrupted run.
 
 See [`docs/architecture.md`](docs/architecture.md) for the full file layout.
+
+## Extended-HK experiment integration
+
+This repository owns the microscopic Go dynamics/recommenders, the `smp`,
+`smp-batch` and `smp-probe` commands, and the `smp_bindings` reader/launcher.
+The theory experiment adapters link its public Go packages directly; reading
+legacy microscopic records uses its Python binding.
+
+[extended-hk-model](https://github.com/billstark001/extended-hk-model) owns the
+paper's parameter designs, generation orchestration, fitting, analysis and
+figures. Its complementary runtime is
+[social-media-mesoscopic-models](https://github.com/billstark001/social-media-mesoscopic-models).
+Keep all three checkouts separate. Neither runtime needs to import the model
+experiment repository or the paper checkout to build.
+
+For sibling checkouts, run from `extended-hk-model`:
+
+```sh
+python -m pip install -e . -e ../social-media-models -e ../social-media-mesoscopic-models
+```
+
+Use the command-build instructions below for the executables. Configure
+`EHK_MICRO_SOURCE_DIR`, `EHK_MESO_SOURCE_DIR` and `EHK_KINETIC_BINARY` in the model
+repository's ignored `.env`; `SMP_BINARY_PATH` and `SMP_PROBE_BINARY` select the
+microscopic command products. The model's experiment build commands create
+Go module replacements and binaries in its ignored `outputs/` tree, linking
+the actual runtime sources without copying solvers. The model uses one shared
+experiment adapter for validation, conditional ensembles and matched population
+studies. Its active `python -m experiments.paper_theory run` command builds
+verified executables and runs the main/main_smoke plan; `resume` restores the
+original bound executables. Study orchestration remains in the model repository;
+this runtime remains independent.
+
+See the model's [complete installation and output/data-link guide](https://github.com/billstark001/extended-hk-model/blob/main/docs/runtime-dependencies.md)
+and [paper-code migration guide](https://github.com/billstark001/extended-hk-model/blob/main/experiments/paper_theory/MIGRATION.md).
+Large raw datasets remain external and generated products remain ignored. CAS
+2026 is a literature citation in the theory workflow, not an input dataset or
+a required replay of the conference simulation.
 
 ## Build
 
@@ -149,11 +187,11 @@ The compiled binary (`smp`) accepts the following positional arguments:
 smp <base_path> <metadata_json> [json_progress]
 ```
 
-| Argument | Required | Description |
-|----------|----------|-------------|
-| `base_path` | Yes | Root output directory for simulation runs |
-| `metadata_json` | Yes | JSON string of `ScenarioMetadata` fields |
-| `json_progress` | No | Enable compact JSONL progress on stdout (`1`, `true`, `yes`, `ok`). Default: `false` |
+| Argument        | Required | Description                                                                          |
+| --------------- | -------- | ------------------------------------------------------------------------------------ |
+| `base_path`     | Yes      | Root output directory for simulation runs                                            |
+| `metadata_json` | Yes      | JSON string of `ScenarioMetadata` fields                                             |
+| `json_progress` | No       | Enable compact JSONL progress on stdout (`1`, `true`, `yes`, `ok`). Default: `false` |
 
 Example:
 
@@ -172,13 +210,13 @@ persistent command rate-limits step events to at most four per second, so
 encoding cost does not grow with simulation step rate. A progress line is:
 
 ```json
-{"v":1,"id":"run-001","t":"progress","s":1200,"m":5000}
+{ "v": 1, "id": "run-001", "t": "progress", "s": 1200, "m": 5000 }
 ```
 
 The resolved RNG parameters are also emitted once at startup:
 
 ```json
-{"v":1,"id":"run-001","t":"rng","a":"pcg64-dxsm-v1","x":"<seed1>","y":"<seed2>"}
+{ "v": 1, "id": "run-001", "t": "rng", "a": "pcg64-dxsm-v1", "x": "<seed1>", "y": "<seed2>" }
 ```
 
 The short wire keys expand to `version`, `request_id`, `type`, `step`,
@@ -409,121 +447,119 @@ export type DynamicsType = "HK" | "Deffuant" | "Galam" | "Voter";
 export type NetworkType = "Random";
 
 export type RecsysFactoryTypeFloat64 =
-    | "Random"
-    | "Opinion"
-    | "Structure"
-    | "OpinionRandom"
-    | "StructureRandom"
-    | "OpinionM9"
-    | "StructureM9";
+  | "Random"
+  | "Opinion"
+  | "Structure"
+  | "OpinionRandom"
+  | "StructureRandom"
+  | "OpinionM9"
+  | "StructureM9";
 
-export type RecsysFactoryTypeBool =
-    | "Random"
-    | "Structure"
-    | "StructureRandom"
-    | "StructureM9";
+export type RecsysFactoryTypeBool = "Random" | "Structure" | "StructureRandom" | "StructureM9";
 
 export interface HKParams {
-    Tolerance: number;
-    Influence: number;   // [0, 1]
-    RewiringRate: number; // [0, 1]
-    RepostRate: number;   // [0, 1]
+  Tolerance: number;
+  Influence: number; // [0, 1]
+  RewiringRate: number; // [0, 1]
+  RepostRate: number; // [0, 1]
 }
 
 export interface DeffuantParams {
-    Tolerance: number;
-    Influence: number;   // [0, 1]
-    RewiringRate: number; // [0, 1]
-    RepostRate: number;   // [0, 1]
+  Tolerance: number;
+  Influence: number; // [0, 1]
+  RewiringRate: number; // [0, 1]
+  RepostRate: number; // [0, 1]
 }
 
 export interface GalamParams {
-    Influence: number;   // [0, 1]
-    RewiringRate: number; // [0, 1]
-    RepostRate: number;   // [0, 1]
+  Influence: number; // [0, 1]
+  RewiringRate: number; // [0, 1]
+  RepostRate: number; // [0, 1]
 }
 
 export interface VoterParams {
-    Influence: number;   // [0, 1]
-    RewiringRate: number; // [0, 1]
-    RepostRate: number;   // [0, 1]
+  Influence: number; // [0, 1]
+  RewiringRate: number; // [0, 1]
+  RepostRate: number; // [0, 1]
 }
 
 export interface CollectItemOptions {
-    AgentNumber: boolean;
-    OpinionSum: boolean;
-    RewiringEvent: boolean;
-    ViewPostsEvent: boolean;
-    PostEvent: boolean;
+  AgentNumber: boolean;
+  OpinionSum: boolean;
+  RewiringEvent: boolean;
+  ViewPostsEvent: boolean;
+  PostEvent: boolean;
 }
 
 export interface RecSysParams {
-    // For float64 recsys path (HK/Deffuant)
-    NoiseStd?: number;
-    OpRandomNoiseStd?: number;
-    UseCache?: boolean;
-    Tolerance?: number;
-    Steepness?: number;
-    RandomRatio?: number;
-    MixRate?: number;
+  // For float64 recsys path (HK/Deffuant)
+  NoiseStd?: number;
+  OpRandomNoiseStd?: number;
+  UseCache?: boolean;
+  Tolerance?: number;
+  Steepness?: number;
+  RandomRatio?: number;
+  MixRate?: number;
 
-    // For bool recsys path (Galam/Voter)
-    NoiseStd?: number;
-    UseCache?: boolean;
-    Steepness?: number;
-    RandomRatio?: number;
-    MixRate?: number;
+  // For bool recsys path (Galam/Voter)
+  NoiseStd?: number;
+  UseCache?: boolean;
+  Steepness?: number;
+  RandomRatio?: number;
+  MixRate?: number;
 }
 
 export interface RNGSpec {
-    Algorithm: "pcg64-dxsm-v1";
-    Seed1: string; // hexadecimal uint64, e.g. "0x0000000000000001"
-    Seed2: string;
+  Algorithm: "pcg64-dxsm-v1";
+  Seed1: string; // hexadecimal uint64, e.g. "0x0000000000000001"
+  Seed2: string;
 }
 
 interface ScenarioMetadataBase {
-    DataVersion?: 2; // generated as 2 when omitted; absent stored data means v0
-    RNG?: RNGSpec;   // generated, emitted, and persisted when omitted
-    UniqueName: string;
-    DynamicsType: DynamicsType;
-    MaxSimulationStep: number;
-    NetworkType: NetworkType;
-    NodeCount: number;
-    NodeFollowCount: number;
-    RecsysCount: number;
-    PostRetainCount: number;
-    CollectItemOptions?: CollectItemOptions;
-    AgentNumber?: boolean;
-    OpinionSum?: boolean;
-    TrajectoryPrecision?: { opinions?: "float16" | "float32" | "float64";
-                            opinion_sums?: "float16" | "float32" | "float64" };
-    RewiringEvent?: boolean;
-    ViewPostsEvent?: boolean;
-    PostEvent?: boolean;
-    RecSysParams?: RecSysParams;
+  DataVersion?: 2; // generated as 2 when omitted; absent stored data means v0
+  RNG?: RNGSpec; // generated, emitted, and persisted when omitted
+  UniqueName: string;
+  DynamicsType: DynamicsType;
+  MaxSimulationStep: number;
+  NetworkType: NetworkType;
+  NodeCount: number;
+  NodeFollowCount: number;
+  RecsysCount: number;
+  PostRetainCount: number;
+  CollectItemOptions?: CollectItemOptions;
+  AgentNumber?: boolean;
+  OpinionSum?: boolean;
+  TrajectoryPrecision?: {
+    opinions?: "float16" | "float32" | "float64";
+    opinion_sums?: "float16" | "float32" | "float64";
+  };
+  RewiringEvent?: boolean;
+  ViewPostsEvent?: boolean;
+  PostEvent?: boolean;
+  RecSysParams?: RecSysParams;
 }
 
 export type ScenarioMetadata =
-    | (ScenarioMetadataBase & {
-            DynamicsType: "HK";
-            HKParams: HKParams;
-            RecsysFactoryType: RecsysFactoryTypeFloat64;
-        })
-    | (ScenarioMetadataBase & {
-            DynamicsType: "Deffuant";
-            DeffuantParams: DeffuantParams;
-            RecsysFactoryType: RecsysFactoryTypeFloat64;
-        })
-    | (ScenarioMetadataBase & {
-            DynamicsType: "Galam";
-            GalamParams: GalamParams;
-            RecsysFactoryType: RecsysFactoryTypeBool;
-        })
-    | (ScenarioMetadataBase & {
-            DynamicsType: "Voter";
-            VoterParams: VoterParams;
-            RecsysFactoryType: RecsysFactoryTypeBool;
-        });
+  | (ScenarioMetadataBase & {
+      DynamicsType: "HK";
+      HKParams: HKParams;
+      RecsysFactoryType: RecsysFactoryTypeFloat64;
+    })
+  | (ScenarioMetadataBase & {
+      DynamicsType: "Deffuant";
+      DeffuantParams: DeffuantParams;
+      RecsysFactoryType: RecsysFactoryTypeFloat64;
+    })
+  | (ScenarioMetadataBase & {
+      DynamicsType: "Galam";
+      GalamParams: GalamParams;
+      RecsysFactoryType: RecsysFactoryTypeBool;
+    })
+  | (ScenarioMetadataBase & {
+      DynamicsType: "Voter";
+      VoterParams: VoterParams;
+      RecsysFactoryType: RecsysFactoryTypeBool;
+    });
 ```
 
 Validation rules currently enforced by the Go runtime:
