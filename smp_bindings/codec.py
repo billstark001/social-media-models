@@ -82,7 +82,10 @@ def encode_batch_request(request: Mapping[str, Any]) -> str:
   request_id = value.get("request_id")
   if not isinstance(request_id, str) or not request_id.strip():
     raise ProtocolError("batch request_id must be a non-empty string")
-  if not isinstance(value.get("metadata"), Mapping):
+  if "measure_pathway" in value:
+    if not isinstance(value["measure_pathway"], Mapping):
+      raise ProtocolError("batch measure_pathway must be an object")
+  elif not isinstance(value.get("metadata"), Mapping):
     raise ProtocolError("batch metadata must be an object")
   output = value.setdefault("output", {})
   if not isinstance(output, Mapping):

@@ -120,5 +120,5 @@ def load_snapshot(path: str) -> dict[str, Any]:
   envelope = msgpack.unpackb(raw, raw=False)
   dynamics_type: str = envelope['DynamicsType']
   inner_bytes: bytes = envelope['Data']
-  data = msgpack.unpackb(inner_bytes, raw=False)
+  data = msgpack.unpackb(inner_bytes, raw=False, strict_map_key=False)
   return {'dynamics_type': dynamics_type, 'data': data}

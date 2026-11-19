@@ -362,6 +362,12 @@ for multiple replicates its paths need a `{replicate}` placeholder. Otherwise
 checkpoint experiments write no output files. `stop_on_halt` can stop long
 branches early and leaves later requested observations absent.
 
+For offline pathway measurements, send `measure_pathway` with `epsilon`,
+`opinions` and a directed `edges` list. Each request returns `result.pathway`
+from the online measurement kernel. The Python binding
+`smp_bindings.pathway.measure_pathways` streams observations through one
+worker.
+
 ## Frozen-state probe
 
 `smp-probe` evaluates the recommender for a hypothetical agent opinion

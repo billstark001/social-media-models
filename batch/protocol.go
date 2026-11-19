@@ -25,11 +25,12 @@ import (
 const SchemaVersion = 1
 
 type Request struct {
-	SchemaVersion int             `json:"schema_version"`
-	RequestID     string          `json:"request_id"`
-	Metadata      json.RawMessage `json:"metadata"`
-	Output        OutputOptions   `json:"output"`
-	Experiment    *ExperimentSpec `json:"experiment,omitempty"`
+	SchemaVersion  int             `json:"schema_version"`
+	RequestID      string          `json:"request_id"`
+	Metadata       json.RawMessage `json:"metadata"`
+	Output         OutputOptions   `json:"output"`
+	Experiment     *ExperimentSpec `json:"experiment,omitempty"`
+	MeasurePathway *PathwayInput   `json:"measure_pathway,omitempty"`
 }
 
 type ExperimentSpec struct {
@@ -47,6 +48,10 @@ type OutputOptions struct {
 	Energy        bool             `json:"energy,omitempty"`
 	Bins          []float64        `json:"bins,omitempty"`
 	FullState     bool             `json:"full_state,omitempty"`
+}
+
+func (output OutputOptions) empty() bool {
+	return !output.FinalOpinions && output.Terminal == nil && len(output.Bins) == 0 && !output.Energy && !output.FullState
 }
 
 type EdgePair [2]int64
@@ -83,17 +88,18 @@ type OpinionSummary struct {
 }
 
 type Result struct {
-	ProtocolSHA256 string                   `json:"protocol_sha256"`
-	RNG            smprng.Spec              `json:"resolved_rng"`
-	Steps          int                      `json:"steps"`
-	StopReason     string                   `json:"stop_reason"`
-	Opinions       *OpinionSummary          `json:"opinions,omitempty"`
-	Terminal       *terminal.Result         `json:"terminal,omitempty"`
-	FinalOpinions  []float64                `json:"final_opinions,omitempty"`
-	SourceSHA256   string                   `json:"source_sha256,omitempty"`
-	Replicates     []ReplicateResult        `json:"replicates,omitempty"`
-	Energy         *observables.Energy      `json:"energy,omitempty"`
-	Binned         *observables.BinnedState `json:"binned,omitempty"`
+	ProtocolSHA256 string                    `json:"protocol_sha256"`
+	RNG            smprng.Spec               `json:"resolved_rng"`
+	Steps          int                       `json:"steps"`
+	StopReason     string                    `json:"stop_reason"`
+	Opinions       *OpinionSummary           `json:"opinions,omitempty"`
+	Terminal       *terminal.Result          `json:"terminal,omitempty"`
+	FinalOpinions  []float64                 `json:"final_opinions,omitempty"`
+	SourceSHA256   string                    `json:"source_sha256,omitempty"`
+	Replicates     []ReplicateResult         `json:"replicates,omitempty"`
+	Energy         *observables.Energy       `json:"energy,omitempty"`
+	Binned         *observables.BinnedState  `json:"binned,omitempty"`
+	Pathway        *observables.PathwayState `json:"pathway,omitempty"`
 }
 
 type ResponseError struct {
@@ -141,7 +147,7 @@ func decodeRequest(line string) (Request, error) {
 			SchemaVersion,
 		)
 	}
-	if len(request.Metadata) == 0 || string(request.Metadata) == "null" {
+	if request.MeasurePathway == nil && (len(request.Metadata) == 0 || string(request.Metadata) == "null") {
 		return request, errors.New("metadata must be a JSON object")
 	}
 	return request, nil
@@ -337,6 +343,16 @@ func processRequest(ctx context.Context, line string, options Options) (Response
 	request, err := decodeRequest(line)
 	if err != nil {
 		return errorResponse(request.RequestID, "invalid_request", err), nil, nil
+	}
+	if request.MeasurePathway != nil {
+		if request.Experiment != nil || len(request.Metadata) > 0 || !request.Output.empty() {
+			return errorResponse(request.RequestID, "invalid_request", errors.New("measure_pathway accepts only a frozen state")), nil, nil
+		}
+		state, err := request.MeasurePathway.measure()
+		if err != nil {
+			return errorResponse(request.RequestID, "measurement", err), nil, nil
+		}
+		return Response{SchemaVersion: SchemaVersion, RequestID: request.RequestID, Status: "ok", Result: &Result{Pathway: &state}}, nil, nil
 	}
 	metadata, err := decodeMetadata(request.Metadata)
 	if err != nil {
