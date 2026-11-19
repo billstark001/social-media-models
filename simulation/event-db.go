@@ -2,7 +2,10 @@ package simulation
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"net/url"
+	"path/filepath"
 	model "smp/model"
 	"sync"
 
@@ -22,9 +25,22 @@ type EventDB struct {
 	viewPostsStmt *sql.Stmt
 }
 
-// OpenEventDB opens a database from a file and specifies the batch write size.
+// OpenEventDB uses WAL to keep event writes independent of rollback-journal
+// file-identity checks on removable filesystems. SQLite locks and full commit
+// synchronization remain enabled, and connection-local settings apply to the
+// entire pool, including nested event reads.
 func OpenEventDB(filename string, batchSize int) (*EventDB, error) {
-	db, err := sql.Open("sqlite3", filename)
+	path, err := filepath.Abs(filename)
+	if err != nil {
+		return nil, fmt.Errorf("resolve event database path: %w", err)
+	}
+	uri := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
+	uri.RawQuery = url.Values{
+		"_journal_mode": {"WAL"},
+		"_foreign_keys": {"on"},
+		"_synchronous":  {"FULL"},
+	}.Encode()
+	db, err := sql.Open("sqlite3", uri.String())
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -83,12 +99,6 @@ func OpenEventDB(filename string, batchSize int) (*EventDB, error) {
 		return nil, fmt.Errorf("failed to create view_posts_events table: %w", err)
 	}
 
-	_, err = db.Exec("PRAGMA foreign_keys = ON")
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
-	}
-
 	eventStmt, err := db.Prepare("INSERT INTO events (type, agent_id, step) VALUES (?, ?, ?)")
 	if err != nil {
 		db.Close()
@@ -131,14 +141,11 @@ func OpenEventDB(filename string, batchSize int) (*EventDB, error) {
 }
 
 func (edb *EventDB) Close() error {
-	edb.Flush()
 	edb.mu.Lock()
 	defer edb.mu.Unlock()
-	edb.eventStmt.Close()
-	edb.rewiringStmt.Close()
-	edb.postStmt.Close()
-	edb.viewPostsStmt.Close()
-	return edb.db.Close()
+	flushErr := edb.flushLocked()
+	return errors.Join(flushErr, edb.eventStmt.Close(), edb.rewiringStmt.Close(),
+		edb.postStmt.Close(), edb.viewPostsStmt.Close(), edb.db.Close())
 }
 
 func (edb *EventDB) StoreEvent(event *model.EventRecord) error {
@@ -263,9 +270,11 @@ func (edb *EventDB) flushLocked() error {
 }
 
 func (edb *EventDB) DeleteEventsAfterStep(step int) error {
-	edb.Flush()
 	edb.mu.Lock()
 	defer edb.mu.Unlock()
+	if err := edb.flushLocked(); err != nil {
+		return err
+	}
 	_, err := edb.db.Exec("DELETE FROM events WHERE step >= ?", step)
 	if err != nil {
 		return fmt.Errorf("failed to delete events: %w", err)

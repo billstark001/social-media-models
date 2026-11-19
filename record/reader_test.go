@@ -128,6 +128,11 @@ func fingerprints(t *testing.T, dir string) map[string]string {
 		if err != nil {
 			return err
 		}
+		// Read-only WAL connections may maintain locking sidecars or create an
+		// empty WAL. Every nonempty WAL remains part of persisted history.
+		if entry.Name() == "events.db-shm" || (entry.Name() == "events.db-wal" && len(data) == 0) {
+			return nil
+		}
 		sum := sha256.Sum256(data)
 		relative, _ := filepath.Rel(dir, path)
 		files[relative] = hex.EncodeToString(sum[:])
@@ -485,10 +490,6 @@ func TestReaderIncludesCommittedWALWithoutChangingHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	after := fingerprints(t, dir)
-	// SQLite may create or update shared-memory lock sidecars for read-only
-	// WAL transactions. The database, WAL and persisted history stay unchanged.
-	delete(before, "events.db-shm")
-	delete(after, "events.db-shm")
 	if !reflect.DeepEqual(before, after) {
 		t.Fatalf("read changed persisted history: before=%v after=%v", before, after)
 	}

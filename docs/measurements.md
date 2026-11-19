@@ -17,6 +17,12 @@ Event connections use SQLite read-only mode. SQLite may maintain its transient
 WAL shared-memory/locking sidecars; recorded database contents and simulation
 histories are unchanged. The reader does not copy entire databases to observe them.
 
+The simulator opens event databases in WAL mode with full commit synchronization
+and foreign keys enabled on every connection. This also avoids false
+`SQLITE_READONLY_DBMOVED` errors from rollback-journal file-identity checks on
+ExFAT/FSKit volumes. Keep the database together with any `-wal` and `-shm`
+sidecars while it is open; close the simulator before archiving its output.
+
 ## Go API
 
 ```go
