@@ -11,6 +11,26 @@ from smp_bindings.events_db import iter_view_posts
 from smp_bindings.migrate import migrate_events_db, migrate_metadata, migrate_snapshot
 
 
+def test_explicit_legacy_integer_override_migration_preserves_model_bytes(tmp_path):
+  path = tmp_path / "checkpoint.msgpack"
+  data = msgpack.packb({"CurStep": 3, "RNGStates": b"opaque_rng", "RecsysDumpData": b"opaque_cache"})
+  envelope = {
+      "DynamicsType": "HK", "Data": data,
+      "Metadata": {"RecSysParams": {"NoiseStd": 0, "MixRate": 1, "Steepness": 2.0, "UseCache": True, "LogRecommendations": 0}},
+  }
+  original = msgpack.packb(envelope)
+  path.write_bytes(original)
+  migrate_snapshot(str(path))
+  assert path.read_bytes() == original
+  migrate_snapshot(str(path), drop_legacy_integer_overrides=True)
+  migrated = msgpack.unpackb(path.read_bytes(), raw=False)
+  assert migrated["Data"] == data
+  assert migrated["Metadata"]["RecSysParams"] == {"Steepness": 2.0, "UseCache": True}
+  canonical = path.read_bytes()
+  migrate_snapshot(str(path), drop_legacy_integer_overrides=True)
+  assert path.read_bytes() == canonical
+
+
 def test_metadata_migration_preserves_rng_and_rejects_conflicting_aliases(tmp_path):
   path = tmp_path / "metadata.json"
   data = {

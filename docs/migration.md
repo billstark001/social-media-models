@@ -116,6 +116,25 @@ Both commands are idempotent; conflicting aliases leave the file unchanged.
 The unused Go alias `GetDefaultRecsysFactoryDefs()` has been removed; use
 `GetFloat64RecsysFactories[dynamics.HKParams]()` in callers.
 
+### Historical integer overrides
+
+Numeric recommendation parameters now interpret equivalent integer and floating
+values identically across Go, JSON and MsgPack. The old Go factory accepted only
+`float64` (or `bool`) overrides; integer overrides used its defaults instead. Ordinary JSON
+simulation requests decoded their numbers as `float64` and are unaffected.
+
+For a checkpoint produced by the old Go API with ignored integer overrides,
+explicitly remove those overrides to preserve its historical continuation:
+
+```bash
+smp-migrate snapshot ./old.msgpack.lz4 --drop-legacy-integer-overrides
+```
+
+This option is only for those old producers. It leaves floating parameters,
+physical model bytes and RNG states unchanged. It rewrites metadata and changes
+the file SHA-256 and hash-derived branch seeds. No runtime fallback selects the
+old rule. Metadata-only migrations preserve the opaque model bytes.
+
 ---
 
 ## Migrating Go Code

@@ -66,7 +66,12 @@ def migrate_metadata(path: str) -> None:
     print(f"[skip] metadata parameter names already canonical: {target}")
 
 
-def migrate_snapshot(path: str, dynamics_type: str = "HK") -> None:
+def migrate_snapshot(
+    path: str,
+    dynamics_type: str = "HK",
+    *,
+    drop_legacy_integer_overrides: bool = False,
+) -> None:
   """Wrap legacy model dumps and normalize embedded metadata and Posts names.
 
   Supports uncompressed msgpack and .lz4 checkpoints. Physical state, RNG
@@ -88,19 +93,33 @@ def migrate_snapshot(path: str, dynamics_type: str = "HK") -> None:
   if not isinstance(model, dict):
     raise ValueError(f"snapshot model must be a map: {target}")
   changed = not enveloped
+  model_changed = False
   for old, new in (("Tweets", "Posts"), (b"Tweets", b"Posts")):
     if old in model:
       if new in model and model[new] != model[old]:
         raise ValueError("snapshot has conflicting Tweets and Posts")
       model[new] = model.pop(old)
       changed = True
+      model_changed = True
   metadata = envelope.get("Metadata")
   if isinstance(metadata, dict):
     changed = _canonical_metadata(metadata) or changed
+    if drop_legacy_integer_overrides:
+      params = metadata.get("RecSysParams")
+      if isinstance(params, dict):
+        # Older Go factories accepted only float64 or bool overrides. Integer
+        # values fell back to defaults; removing them preserves that rule.
+        for name in _RECSYS_NAMES.values():
+          if type(params.get(name)) is int:
+            del params[name]
+            changed = True
   if not changed:
     print(f"[skip] snapshot already canonical: {target}")
     return
-  envelope["Data"] = msgpack.packb(model, use_bin_type=True)
+  if model_changed:
+    envelope["Data"] = msgpack.packb(model, use_bin_type=True)
+  elif not enveloped:
+    envelope["Data"] = payload
   output = msgpack.packb(envelope, use_bin_type=True)
   _atomic_replace(target, lz4.frame.compress(output) if compressed else output)
   print(f"[migrated] snapshot in {target}")
@@ -194,6 +213,7 @@ def _usage() -> None:
       "Usage:\n"
       "  smp-migrate metadata <metadata.json> [<metadata2.json> ...]\n"
       "  smp-migrate snapshot <snapshot.msgpack[.lz4]> [...] [--dynamics HK|Deffuant|Galam|Voter]\n"
+      "    [--drop-legacy-integer-overrides]\n"
       "  smp-migrate events <events.db> [<events2.db> ...]\n"
   )
 
@@ -204,6 +224,9 @@ def main(argv: list[str] | None = None) -> None:
     _usage()
     sys.exit(1)
   command, *files = args
+  drop_legacy_integer_overrides = command == "snapshot" and "--drop-legacy-integer-overrides" in files
+  if drop_legacy_integer_overrides:
+    files.remove("--drop-legacy-integer-overrides")
   dynamics_type = "HK"
   if command == "snapshot" and "--dynamics" in files:
     index = files.index("--dynamics")
@@ -217,7 +240,7 @@ def main(argv: list[str] | None = None) -> None:
     if command == "metadata":
       migrate_metadata(path)
     elif command == "snapshot":
-      migrate_snapshot(path, dynamics_type=dynamics_type)
+      migrate_snapshot(path, dynamics_type=dynamics_type, drop_legacy_integer_overrides=drop_legacy_integer_overrides)
     elif command == "events":
       migrate_events_db(path)
     else:

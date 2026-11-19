@@ -1,6 +1,7 @@
 package simulation
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -164,7 +165,7 @@ func (m *ScenarioMetadata) Validate() error {
 	if strings.TrimSpace(m.RecsysFactoryType) == "" {
 		return errors.New("RecsysFactoryType must not be empty")
 	}
-	if err := validateRecsysParamNames(m.RecSysParams); err != nil {
+	if err := ValidateRecsysParams(m.RecSysParams); err != nil {
 		return err
 	}
 	if err := m.validateRecsysFactoryType(dynamicsType); err != nil {
@@ -292,7 +293,8 @@ func (m *ScenarioMetadata) validateRecsysFactoryType(dynamicsType string) error 
 	return nil
 }
 
-// getParam reads key from params with a type assertion, returning defaultVal on any miss or type mismatch.
+// getParam reads validated parameters. Numeric wire representations share the
+// same float64 value regardless of JSON or MsgPack integer encoding.
 func getParam[T any](params map[string]any, key string, defaultVal T) T {
 	if params == nil {
 		return defaultVal
@@ -301,6 +303,11 @@ func getParam[T any](params map[string]any, key string, defaultVal T) T {
 	if !ok {
 		return defaultVal
 	}
+	if _, numeric := any(defaultVal).(float64); numeric {
+		if value, ok := numericParam(v); ok {
+			return any(value).(T)
+		}
+	}
 	typed, ok := v.(T)
 	if !ok {
 		return defaultVal
@@ -308,16 +315,98 @@ func getParam[T any](params map[string]any, key string, defaultVal T) T {
 	return typed
 }
 
-// Legacy parameter spellings belong to the explicit metadata/checkpoint migration.
-func validateRecsysParamNames(params map[string]any) error {
+type recsysParamSpec struct {
+	name        string
+	boolean     bool
+	nonnegative bool
+	ratio       bool
+}
+
+var recsysParamSpecs = [...]recsysParamSpec{
+	{name: "NoiseStd", nonnegative: true},
+	{name: "OpRandomNoiseStd", nonnegative: true},
+	{name: "UseCache", boolean: true},
+	{name: "Tolerance", nonnegative: true},
+	{name: "Steepness"},
+	{name: "RandomRatio", ratio: true},
+	{name: "MixRate", ratio: true},
+	{name: "LogRecommendations", boolean: true},
+}
+
+func numericParam(value any) (float64, bool) {
+	switch v := value.(type) {
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int8:
+		return float64(v), true
+	case int16:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case uint:
+		return float64(v), true
+	case uint8:
+		return float64(v), true
+	case uint16:
+		return float64(v), true
+	case uint32:
+		return float64(v), true
+	case uint64:
+		return float64(v), true
+	case json.Number:
+		n, err := v.Float64()
+		return n, err == nil
+	default:
+		return 0, false
+	}
+}
+
+// ValidateRecsysParamNames rejects obsolete spellings without requiring a full
+// runnable scenario. Conversion belongs to explicit metadata/checkpoint migration.
+func ValidateRecsysParamNames(params map[string]any) error {
 	for name := range params {
-		for _, canonical := range [...]string{
-			"NoiseStd", "OpRandomNoiseStd", "UseCache", "Tolerance",
-			"Steepness", "RandomRatio", "MixRate", "LogRecommendations",
-		} {
+		for _, spec := range recsysParamSpecs {
+			canonical := spec.name
 			if name != canonical && strings.EqualFold(name, canonical) {
 				return fmt.Errorf("obsolete RecSysParams key %q; migrate metadata or checkpoints to %q with smp-migrate", name, canonical)
 			}
+		}
+	}
+	return nil
+}
+
+// ValidateRecsysParams validates executable parameter values without requiring
+// a model, so simulation and counterfactual evaluation use the same rules.
+func ValidateRecsysParams(params map[string]any) error {
+	if err := ValidateRecsysParamNames(params); err != nil {
+		return err
+	}
+	for _, spec := range recsysParamSpecs {
+		value, exists := params[spec.name]
+		if !exists {
+			continue
+		}
+		if spec.boolean {
+			if _, ok := value.(bool); !ok {
+				return fmt.Errorf("RecSysParams.%s must be boolean", spec.name)
+			}
+			continue
+		}
+		n, ok := numericParam(value)
+		if !ok || math.IsNaN(n) || math.IsInf(n, 0) {
+			return fmt.Errorf("RecSysParams.%s must be a finite number", spec.name)
+		}
+		if spec.ratio && (n < 0 || n > 1) {
+			return fmt.Errorf("RecSysParams.%s must be in [0, 1]", spec.name)
+		}
+		if spec.nonnegative && n < 0 {
+			return fmt.Errorf("RecSysParams.%s must be nonnegative", spec.name)
 		}
 	}
 	return nil
