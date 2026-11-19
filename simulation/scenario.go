@@ -17,15 +17,18 @@ import (
 )
 
 type Scenario struct {
-	BaseDir     string
-	Metadata    *ScenarioMetadata
-	Model       IModel
-	AccState    *AccumulativeModelState
-	Trajectory  *trajectory.Writer
-	Serializer  *SimulationSerializer
-	DB          *EventDB
-	RNG         *smprng.Pool
-	StableSteps int
+	BaseDir         string
+	Metadata        *ScenarioMetadata
+	Model           IModel
+	AccState        *AccumulativeModelState
+	Trajectory      *trajectory.Writer
+	Serializer      *SimulationSerializer
+	DB              *EventDB
+	RNG             *smprng.Pool
+	StableSteps     int
+	FixedHorizon    bool
+	ResearchOptions *ResearchOptions
+	research        *researchObserver
 
 	OutputJSONProgress   bool
 	EnableDumps          bool
@@ -48,6 +51,8 @@ type RunResult struct {
 // ScenarioOptions controls runner behavior that is not part of the simulated
 // model. The zero value is useful for lightweight tests.
 type ScenarioOptions struct {
+	FixedHorizon         bool
+	Research             *ResearchOptions
 	OutputJSONProgress   bool
 	EnableDumps          bool
 	Quiet                bool
@@ -67,6 +72,8 @@ func NewScenario(dir string, metadata *ScenarioMetadata, outputJSONProgress bool
 func NewScenarioWithOptions(dir string, metadata *ScenarioMetadata, options ScenarioOptions) *Scenario {
 	scenario := &Scenario{
 		BaseDir:              dir,
+		FixedHorizon:         options.FixedHorizon,
+		ResearchOptions:      options.Research,
 		Metadata:             metadata,
 		OutputJSONProgress:   options.OutputJSONProgress,
 		EnableDumps:          options.EnableDumps,
@@ -103,6 +110,12 @@ func (s *Scenario) InitFromState(initial *InitialState) error {
 	if s.Metadata == nil {
 		return fmt.Errorf("metadata is nil")
 	}
+	if s.ResearchOptions != nil {
+		if s.Metadata.DataVersion < 0 || s.Metadata.DataVersion > CurrentDataVersion {
+			return fmt.Errorf("unsupported research DataVersion %d", s.Metadata.DataVersion)
+		}
+		s.Metadata.DataVersion = CurrentDataVersion
+	}
 	if err := s.Metadata.PrepareForNewRun(); err != nil {
 		return fmt.Errorf("resolve scenario RNG: %w", err)
 	}
@@ -128,6 +141,9 @@ func (s *Scenario) InitFromState(initial *InitialState) error {
 		eventLogger = s.logEvent
 	}
 
+	if err := validateResearch(s.ResearchOptions, s.Metadata); err != nil {
+		return err
+	}
 	nodeCount := s.Metadata.NodeCount
 	s.Model, err = NewModel(s.Metadata, initial, s.RNG, eventLogger)
 	if err != nil {
@@ -164,6 +180,9 @@ func (s *Scenario) InitFromState(initial *InitialState) error {
 		s.Model.Accumulate(s.AccState)
 	}
 	s.Model.SetCurStep(1)
+	if err := s.attachResearch(nil); err != nil {
+		return err
+	}
 	if s.EnableDumps && s.checkpointRequested(0) {
 		if err := s.SaveResearchCheckpoint(); err != nil {
 			return fmt.Errorf("save step-zero checkpoint: %w", err)
@@ -240,13 +259,23 @@ func (s *Scenario) Load() bool {
 		return false
 	}
 
-	loadedModel, restoreErr := RestoreRawModel(rawSnapshot, s.Metadata, s.RNG, s.logEvent, false)
+	restoreMetadata := *s.Metadata
+	if rawSnapshot.Research != nil {
+		restoreMetadata.RecsysFactoryType = rawSnapshot.Research.Policy
+	}
+	physicalSnapshot := *rawSnapshot
+	physicalSnapshot.Research = nil
+	loadedModel, restoreErr := RestoreRawModel(&physicalSnapshot, &restoreMetadata, s.RNG, s.logEvent, false)
 	if restoreErr != nil {
 		log.Printf("Failed to restore model snapshot: %v", restoreErr)
 		return false
 	}
 	s.Model = loadedModel
 	s.StableSteps = rawSnapshot.StableSteps
+	if err := s.attachResearch(rawSnapshot.Research); err != nil {
+		log.Printf("Failed to restore research state: %v", err)
+		return false
+	}
 
 	trajectoryPath := filepath.Join(s.BaseDir, s.Metadata.UniqueName, "trajectory.json")
 	if _, statErr := os.Stat(trajectoryPath); statErr == nil {
@@ -288,33 +317,45 @@ func (s *Scenario) sanitize() {
 }
 
 func (s *Scenario) Dump() {
-	if !s.EnableDumps || s.DB == nil || s.Serializer == nil || s.AccState == nil {
-		return
+	if err := s.DumpError(); err != nil {
+		log.Printf("Failed to save scenario: %v", err)
+	}
+}
+
+// DumpError commits the event log, trajectory and recovery snapshot in that
+// order. A failed snapshot leaves the previous recovery point usable.
+func (s *Scenario) DumpError() error {
+	if !s.EnableDumps {
+		return nil
+	}
+	if s.DB == nil || s.Serializer == nil || s.AccState == nil {
+		return fmt.Errorf("scenario persistence is not initialized")
 	}
 	if err := s.DB.Flush(); err != nil {
-		log.Printf("Failed to flush events: %v", err)
-		return
+		return fmt.Errorf("flush events: %w", err)
 	}
 	if s.Trajectory != nil {
 		if err := s.Trajectory.Flush(s.AccState.Packed); err != nil {
-			log.Printf("Failed to flush trajectory: %v", err)
-			return
+			return fmt.Errorf("flush trajectory: %w", err)
 		}
 	}
 	snapshot, err := s.Snapshot()
 	if err != nil {
-		log.Printf("Failed to serialize model snapshot: %v", err)
-	} else {
-		if err := s.Serializer.SaveRawSnapshot(snapshot); err != nil {
-			log.Printf("Failed to save model snapshot: %v", err)
-		}
+		return fmt.Errorf("serialize model snapshot: %w", err)
+	}
+	if err := s.Serializer.SaveRawSnapshot(snapshot); err != nil {
+		return fmt.Errorf("save model snapshot: %w", err)
 	}
 	if s.Trajectory == nil {
-		s.Serializer.SaveAccumulativeState(s.AccState)
+		return s.Serializer.SaveAccumulativeState(s.AccState)
 	}
+	return nil
 }
 
 func (s *Scenario) Step() (int, float64) {
+	if err := s.prepareResearchStep(); err != nil {
+		panic(err)
+	}
 	changedCount, maxOpinionChange := s.Model.StepModel()
 	if changedCount < NETWORK_CHANGE_THRESHOLD && maxOpinionChange < OPINION_CHANGE_THRESHOLD {
 		s.StableSteps++
@@ -337,6 +378,15 @@ func (s *Scenario) Step() (int, float64) {
 	}
 
 	s.Model.SetCurStep(s.Model.GetCurStep() + 1)
+	if s.research != nil {
+		s.research.state.Window.Rewires += changedCount
+		if s.research.trace != nil && s.research.trace.err != nil {
+			panic(s.research.trace.err)
+		}
+		if err := s.observeResearch(); err != nil {
+			panic(err)
+		}
+	}
 	if s.EnableDumps && s.checkpointRequested(s.Model.GetCurStep()-1) {
 		if err := s.SaveResearchCheckpoint(); err != nil {
 			panic(fmt.Errorf("save research checkpoint: %w", err))
@@ -407,6 +457,7 @@ func (s *Scenario) StepTillEndResult(ctx context.Context) RunResult {
 	}
 
 	lastSaveTime := time.Now()
+	var persistenceError error
 
 	unitStep := func() (bool, bool) {
 
@@ -436,14 +487,17 @@ func (s *Scenario) StepTillEndResult(ctx context.Context) RunResult {
 			})
 		}
 
-		if s.StableSteps > STOP_SIM_STEPS {
+		if !s.FixedHorizon && s.StableSteps > STOP_SIM_STEPS {
 			return false, didDump
 		}
 
 		timeInterval := time.Since(lastSaveTime)
 		if s.EnableDumps && timeInterval.Seconds() >= SAVE_INTERVAL {
 			lastSaveTime = time.Now()
-			s.Dump()
+			persistenceError = s.DumpError()
+			if persistenceError != nil {
+				return false, false
+			}
 			didDump = true
 		}
 
@@ -480,11 +534,15 @@ iterLoop:
 	}
 
 	if s.EnableDumps && !didDump {
-		s.Dump()
+		persistenceError = s.DumpError()
 	}
 
 	st := s.Model.GetCurStep() - 1
 	stopReason := "horizon"
+	if persistenceError != nil {
+		log.Printf("Failed to persist run: %v", persistenceError)
+		return RunResult{Step: st, StopReason: "persistence_error", Completed: false}
+	}
 
 	if isCtxDone {
 		stopReason = "cancelled"
@@ -527,10 +585,13 @@ iterLoop:
 			}
 		}
 		if s.EnableDumps && s.Serializer != nil {
-			s.Serializer.MarkFinished(FinishMark{
+			if err := s.Serializer.MarkFinished(FinishMark{
 				DataVersion: s.Metadata.DataVersion,
 				RNG:         s.Metadata.RNG,
-			})
+			}); err != nil {
+				log.Printf("Failed to mark run finished: %v", err)
+				return RunResult{Step: st, StopReason: "persistence_error", Completed: false}
+			}
 			s.Serializer.SaveGraph(utils.SerializeGraph(s.Model.GetGraph()), st)
 		}
 	}
@@ -572,4 +633,19 @@ func (s *Scenario) logEvent(event *model.EventRecord) {
 
 	}
 
+}
+
+// Close releases owned resources after the last dump. An unfinished feed trace
+// retains its checkpointed prefix for the next invocation.
+func (s *Scenario) Close() error {
+	var first error
+	if s.research != nil && s.research.trace != nil {
+		first = s.research.trace.Close()
+	}
+	if s.DB != nil {
+		if err := s.DB.Close(); first == nil {
+			first = err
+		}
+	}
+	return first
 }

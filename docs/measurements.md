@@ -158,3 +158,64 @@ Pass `metadata=...` to `run_probe_run` only for archived directories lacking
 the Python `freeze_record` and `RawSimulationRecord.freeze` APIs have been removed.
 Offline pathway callers use `run_probe_run`, `run_probe_checkpoints`, or
 `run_probe_jobs`; batch accepts simulation requests only.
+
+## Persistent online studies without Python
+
+Use `smp --job /absolute/path/job.json` to retain the normal trajectory channels,
+repost and rewiring logs, graph dumps, and model recovery snapshots. The job file
+has this shape; `metadata` uses the same fields as the positional SMP CLI.
+
+```json
+{
+  "base_path": "/data/run",
+  "metadata": {
+    "UniqueName": "paired-switch",
+    "RNG": {"Algorithm": "pcg64-dxsm-v1", "Seed1": "0x1", "Seed2": "0x2"},
+    "DynamicsType": "HK",
+    "HKParams": {"Tolerance": 0.45, "Influence": 0.05, "RewiringRate": 0.05, "RepostRate": 0.1},
+    "RecsysFactoryType": "OpinionM9",
+    "RecSysParams": {"LogRecommendations": false},
+    "MaxSimulationStep": 640
+  },
+  "fixed_horizon": true,
+  "observe_at": [128, 144, 640],
+  "policy_change": {"recommender": "StructureM9", "at": 128},
+  "summary_path": "/data/run/paired-switch/observations.json",
+  "exposure_trace": "/data/run/paired-switch/feed.jsonl.gz",
+  "trace_start": 128
+}
+```
+
+Use the RNG algorithm spelling returned by the ordinary CLI's RNG progress event;
+explicit seeds are required for jobs. Observation steps and policy triggers are
+absolute completed steps. The first observation has zero exposure and relative
+step zero; later exposures cover the preceding observation interval. The run
+retains every raw step starting at zero, including the reference-policy prefix.
+For paired interventions, reuse the initial seed and reference metadata, observe
+at the shared switch step, and apply the policy immediately after that observation.
+No shortened history is presented as a complete trajectory.
+
+The final `observations.json` includes pathway endpoints, window exposure counts,
+terminal classification, final opinions, and the realized switch step/fallback.
+Set `fixed_horizon` to continue through the requested horizon after stability.
+`policy_change` accepts either `at` or `excess_at_least` with `latest`, an optional
+`duration` pulse, and optional `bridge`/`hide_reposts` interventions. Optional
+`exposure_trace` collects raw ordered feeds only after `trace_start`; ordinary
+trajectory counts and online exposure summaries do not require full SQLite
+`ViewPostsDetails` events.
+
+SIGINT or SIGTERM saves an unfinished recovery snapshot and exits with status
+130. Repeating the same job resumes its microscopic RNG, active recommender/cache,
+policy trigger, partial observation window, and completed endpoints. Gzip traces
+seal one member per checkpoint and save a byte offset; recovery discards any tail
+written after that snapshot. Repeating a finished job can rebuild a missing
+summary. The native runner freezes its resolved job and takes an exclusive run
+lock, independently of any Python scheduler.
+
+Research runs use `DataVersion=3`, which older SMP CLIs reject. Ordinary runs
+continue to default to version 2. Static offline measurements support both.
+Batch resume rejects checkpoints carrying research recovery state; resume those
+with the same persistent job instead. Force reconstruction from version-3 run
+directories or intervention checkpoints
+requires explicit frozen states and an explicitly chosen recommender; it does
+not silently substitute the reference policy for an active intervention.

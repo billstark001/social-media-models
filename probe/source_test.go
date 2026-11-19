@@ -196,3 +196,43 @@ func TestCheckpointRejectsInvalidMetadataAndBoolState(t *testing.T) {
 		})
 	}
 }
+
+func TestInterventionSourcesKeepStaticMeasurementsAndRejectImplicitForce(t *testing.T) {
+	directory := t.TempDir()
+	metadata := simulation.DefaultScenarioMetadata()
+	metadata.UniqueName = "intervention"
+	metadata.DynamicsType = "HK"
+	metadata.HKParams = dynamics.HKParams{Tolerance: .45, Influence: .1, RewiringRate: .1}
+	metadata.RNG = smprng.FixedSpec(3, 7)
+	metadata.NodeCount, metadata.NodeFollowCount, metadata.MaxSimulationStep = 12, 3, 3
+	at := 1
+	scenario := simulation.NewScenarioWithOptions(directory, metadata, simulation.ScenarioOptions{
+		EnableDumps: true, Quiet: true, FixedHorizon: true,
+		Research: &simulation.ResearchOptions{ObserveAt: []int{0, 3}, PolicyChange: &simulation.PolicyChange{Recommender: "OpinionM9", At: &at}},
+	})
+	if err := scenario.InitError(); err != nil {
+		t.Fatal(err)
+	}
+	scenario.StepTillEnd(context.Background())
+	checkpoint := filepath.Join(directory, "checkpoint.msgpack.lz4")
+	if err := scenario.SaveCheckpointTo(checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := scenario.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, request := range []*probe.Request{
+		{RunDirectory: filepath.Join(directory, metadata.UniqueName)},
+		{CheckpointPaths: []string{checkpoint}},
+	} {
+		request.Measurements = []string{"pathway", "terminal"}
+		if _, err := probe.Evaluate(request); err != nil {
+			t.Fatalf("static intervention measurement failed: %v", err)
+		}
+		request.Measurements = []string{"force"}
+		request.Grid = probe.Grid{Min: 0, Max: 0, Step: 1}
+		if _, err := probe.Evaluate(request); err == nil || !strings.Contains(err.Error(), "explicit frozen states") {
+			t.Fatalf("implicitly used original policy for intervention force: %v", err)
+		}
+	}
+}

@@ -16,6 +16,15 @@ func usage(program string) {
 }
 
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == "--job" {
+		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		code, err := runJob(ctx, os.Args[2])
+		cancel()
+		if err != nil {
+			log.Printf("Persistent run failed: %v", err)
+		}
+		os.Exit(code)
+	}
 	metadata := simulation.DefaultScenarioMetadata()
 
 	args := os.Args
@@ -55,8 +64,9 @@ func main() {
 		},
 	)
 
-	if !scenario.Load() {
-		scenario.Init()
+	defer scenario.Close()
+	if _, err := initializeScenario(scenario); err != nil {
+		log.Fatalf("Failed to initialize scenario: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -306,13 +306,16 @@ func loadSources(request *Request, selected map[string]bool) error {
 		if len(request.Steps) > 0 {
 			return errors.New("steps are supported only with run_directory")
 		}
-		return loadCheckpointStates(request)
+		return loadCheckpointStates(request, selected)
 	}
 	run, err := record.OpenRun(request.RunDirectory, request.RunMetadata)
 	if err != nil {
 		return err
 	}
 	defer run.Close()
+	if selected["force"] && run.Metadata.DataVersion >= 3 {
+		return errors.New("force reconstruction from research runs requires explicit frozen states and an explicitly chosen recommender; static measurements remain available")
+	}
 	if request.DynamicsType != "" && request.DynamicsType != run.Metadata.DynamicsType {
 		return errors.New("run dynamics differ from request")
 	}
@@ -350,7 +353,7 @@ func selectMeasurements(names []string) (map[string]bool, error) {
 	return selected, nil
 }
 
-func loadCheckpointStates(request *Request) error {
+func loadCheckpointStates(request *Request, selected map[string]bool) error {
 	if len(request.CheckpointPaths) == 0 {
 		return nil
 	}
@@ -365,6 +368,9 @@ func loadCheckpointStates(request *Request) error {
 		}
 		if snapshot.Metadata.DataVersion < 0 || snapshot.Metadata.DataVersion > simulation.CurrentDataVersion {
 			return fmt.Errorf("unsupported checkpoint DataVersion %d", snapshot.Metadata.DataVersion)
+		}
+		if selected["force"] && snapshot.Research != nil && snapshot.Research.Options.PolicyChange != nil {
+			return errors.New("force reconstruction from intervention checkpoints requires explicit frozen states and an explicitly chosen recommender; static measurements remain available")
 		}
 		if snapshot.DynamicsType != snapshot.Metadata.DynamicsType {
 			return errors.New("checkpoint dynamics differ from its metadata")

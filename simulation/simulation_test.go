@@ -257,8 +257,8 @@ func TestScenarioPersistsResolvedVersionAndRNG(t *testing.T) {
 		}
 	})
 
-	if meta.DataVersion != simulation.CurrentDataVersion {
-		t.Fatalf("resolved DataVersion: got %d, want %d", meta.DataVersion, simulation.CurrentDataVersion)
+	if meta.DataVersion != simulation.DefaultDataVersion {
+		t.Fatalf("resolved DataVersion: got %d, want %d", meta.DataVersion, simulation.DefaultDataVersion)
 	}
 	if meta.RNG.IsZero() {
 		t.Fatal("scenario did not resolve RNG parameters")
@@ -268,7 +268,7 @@ func TestScenarioPersistsResolvedVersionAndRNG(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored == nil || stored.DataVersion != simulation.CurrentDataVersion || stored.RNG != meta.RNG {
+	if stored == nil || stored.DataVersion != simulation.DefaultDataVersion || stored.RNG != meta.RNG {
 		t.Fatalf("stored metadata does not contain resolved version/RNG: %+v", stored)
 	}
 
@@ -277,7 +277,7 @@ func TestScenarioPersistsResolvedVersionAndRNG(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mark == nil || mark.DataVersion != simulation.CurrentDataVersion || mark.RNG != meta.RNG {
+	if mark == nil || mark.DataVersion != simulation.DefaultDataVersion || mark.RNG != meta.RNG {
 		t.Fatalf("finish mark does not contain resolved version/RNG: %+v", mark)
 	}
 

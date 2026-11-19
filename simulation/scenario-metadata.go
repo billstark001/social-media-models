@@ -18,9 +18,13 @@ import (
 
 // DynamicsType constants for the four supported opinion dynamics.
 const (
-	// CurrentDataVersion is the on-disk simulation data format version.
-	// Metadata without this field is legacy version 0.
-	CurrentDataVersion = 2
+	// CurrentDataVersion is the newest supported simulation format. Version 3
+	// adds recovery state for persistent research observations and interventions.
+	CurrentDataVersion = 3
+
+	// DefaultDataVersion preserves ordinary-run output when no research state is
+	// requested. Existing version-2 readers can continue reading those records.
+	DefaultDataVersion = 2
 
 	DynamicsTypeHK       = "HK"
 	DynamicsTypeDeffuant = "Deffuant"
@@ -76,7 +80,7 @@ func (m *ScenarioMetadata) PrepareForNewRun() error {
 	}
 	m.TrajectoryPrecision = m.TrajectoryPrecision.Resolved()
 	if m.DataVersion == 0 || m.DataVersion == 1 {
-		m.DataVersion = CurrentDataVersion
+		m.DataVersion = DefaultDataVersion
 	}
 	resolved, err := smprng.Resolve(m.RNG)
 	if err != nil {

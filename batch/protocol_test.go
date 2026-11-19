@@ -15,7 +15,7 @@ import (
 
 func testMetadata(name string) *simulation.ScenarioMetadata {
 	return &simulation.ScenarioMetadata{
-		DataVersion:       simulation.CurrentDataVersion,
+		DataVersion:       simulation.DefaultDataVersion,
 		RNG:               smprng.FixedSpec(1, 2),
 		UniqueName:        name,
 		DynamicsType:      simulation.DynamicsTypeHK,

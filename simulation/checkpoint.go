@@ -45,7 +45,8 @@ func ReadCheckpoint(path string) (*RawSnapshotData, string, error) {
 	return &snapshot, hex.EncodeToString(sum[:]), nil
 }
 
-// Snapshot captures full microscopic state without filesystem I/O or advancing RNG.
+// Snapshot captures full microscopic state without advancing RNG. An enabled
+// feed trace first seals its current compressed member for consistent recovery.
 // The returned bytes and metadata maps/slices are independent of the scenario.
 func (s *Scenario) Snapshot() (*RawSnapshotData, error) {
 	if s.Model == nil || s.Metadata == nil {
@@ -55,11 +56,16 @@ func (s *Scenario) Snapshot() (*RawSnapshotData, error) {
 	if err != nil {
 		return nil, err
 	}
+	research, err := s.researchSnapshot()
+	if err != nil {
+		return nil, err
+	}
 	metadata := *s.Metadata
 	metadata.RecSysParams = maps.Clone(s.Metadata.RecSysParams)
 	metadata.CheckpointSteps = append([]int(nil), s.Metadata.CheckpointSteps...)
 	return &RawSnapshotData{
 		DynamicsType:  s.Metadata.DynamicsType,
+		Research:      research,
 		Data:          data,
 		Metadata:      &metadata,
 		CompletedStep: s.Model.GetCurStep() - 1,

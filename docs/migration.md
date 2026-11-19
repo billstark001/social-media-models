@@ -287,3 +287,18 @@ func (d *MyDynamics) Step(my float64, cN, cR, dN, dR []float64, p *MyParams) (fl
     return my, model.AgentOpinionSumRecord{}
 }
 ```
+
+## Persistent research checkpoints (DataVersion 3)
+
+Persistent online research jobs now save policy and observation recovery state
+alongside the microscopic snapshot. These jobs use `DataVersion=3`; their
+`metadata.json` continues to identify the reference recommender, while the
+snapshot records the currently active policy. Use a version-3-capable SMP binary
+to resume them. Do not remove the version marker or rewrite their recommender
+field to make an older binary accept them. Ordinary simulations still default to
+`DataVersion=2` and preserve their existing encoding.
+
+Go callers now use `simulation.PolicyChange`, `simulation.Exposure`, and
+`simulation.SlotCounts` directly instead of the former batch-local types.
+`batch.ExperimentSpec` and endpoint wire field names are unchanged. There are no
+forwarding aliases for those moved Go types.

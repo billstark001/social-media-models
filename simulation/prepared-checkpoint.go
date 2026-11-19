@@ -67,6 +67,9 @@ func PrepareCheckpoint(snapshot *RawSnapshotData) (*PreparedCheckpoint, error) {
 	if snapshot == nil {
 		return nil, fmt.Errorf("nil checkpoint")
 	}
+	if snapshot.Research != nil {
+		return nil, fmt.Errorf("research checkpoints require the persistent runner to restore policy and observation state; batch resume is unsupported")
+	}
 	switch snapshot.DynamicsType {
 	case DynamicsTypeHK:
 		return prepareTyped(snapshot, func(d *model.SMPModelDumpData[float64, dynamics.HKParams], m *ScenarioMetadata, pool *smprng.Pool, logger func(*model.EventRecord), prepare func(model.SMPModelRecommendationSystem[float64, dynamics.HKParams]) model.PreparedRecommendationState) IModel {
