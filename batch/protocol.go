@@ -33,13 +33,13 @@ type Request struct {
 }
 
 type ExperimentSpec struct {
-	Checkpoint   string         `json:"checkpoint"`
-	Mode         string         `json:"mode"`
-	Replicates   int            `json:"replicates"`
-	ObserveAt    []int          `json:"observe_at"`
-	CheckpointAt map[int]string `json:"checkpoint_at,omitempty"`
-	StopOnHalt   bool           `json:"stop_on_halt,omitempty"`
-	PolicyChange *PolicyChange  `json:"policy_change,omitempty"`
+	Checkpoint   string                   `json:"checkpoint"`
+	Mode         string                   `json:"mode"`
+	Replicates   int                      `json:"replicates"`
+	ObserveAt    []int                    `json:"observe_at"`
+	CheckpointAt map[int]string           `json:"checkpoint_at,omitempty"`
+	StopOnHalt   bool                     `json:"stop_on_halt,omitempty"`
+	PolicyChange *simulation.PolicyChange `json:"policy_change,omitempty"`
 }
 
 type OutputOptions struct {
@@ -62,7 +62,7 @@ type Endpoint struct {
 	Edges        []EdgePair                `json:"edges,omitempty"`
 	Checkpoint   string                    `json:"checkpoint,omitempty"`
 	Pathway      *observables.PathwayState `json:"pathway,omitempty"`
-	Exposure     *Exposure                 `json:"exposure,omitempty"`
+	Exposure     *simulation.Exposure      `json:"exposure,omitempty"`
 }
 type ReplicateResult struct {
 	Index          int              `json:"index"`

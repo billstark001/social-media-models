@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"smp/dynamics"
+	"smp/model"
 	"smp/observables"
 	smprng "smp/rng"
 	"smp/simulation"
@@ -67,7 +68,7 @@ func validateExperiment(spec *ExperimentSpec, metadata *simulation.ScenarioMetad
 	if spec.PolicyChange != nil && (spec.StopOnHalt || len(spec.CheckpointAt) > 0) {
 		return errors.New("policy_change requires a fixed window without intermediate checkpoints")
 	}
-	if err := spec.PolicyChange.validate(metadata, last); err != nil {
+	if err := spec.PolicyChange.Validate(metadata, last); err != nil {
 		return err
 	}
 	if spec.Mode == "branch" && metadata.RNG.IsZero() {
@@ -237,8 +238,8 @@ func observeReplicate(ctx context.Context, scenario *simulation.Scenario, spec *
 	baseStep := scenario.Model.GetCurStep() - 1
 	change := spec.PolicyChange
 	policy := scenario.Metadata.RecsysFactoryType
-	var m *hkModel
-	var exposure Exposure
+	var m *model.SMPModel[float64, dynamics.HKParams]
+	var exposure simulation.Exposure
 	observer, err := newEndpointObserver(scenario.Metadata, output)
 	if err != nil {
 		return err
@@ -281,13 +282,13 @@ func observeReplicate(ctx context.Context, scenario *simulation.Scenario, spec *
 					if trigger {
 						step := baseStep + elapsed
 						rep.SwitchStep = &step
-						if err := setPolicy(m, scenario.Metadata, policy, change.Recommender, change.Bridge, change.HideReposts); err != nil {
+						if err := simulation.SetHKPolicy(m, scenario.Metadata, policy, change.Recommender, change.Bridge, change.HideReposts); err != nil {
 							return err
 						}
 						policy = change.Recommender
 					}
 				} else if change.Duration > 0 && baseStep+elapsed == *rep.SwitchStep+change.Duration {
-					if err := setPolicy(m, scenario.Metadata, policy, scenario.Metadata.RecsysFactoryType, false, false); err != nil {
+					if err := simulation.SetHKPolicy(m, scenario.Metadata, policy, scenario.Metadata.RecsysFactoryType, false, false); err != nil {
 						return err
 					}
 				}
@@ -314,7 +315,7 @@ func observeReplicate(ctx context.Context, scenario *simulation.Scenario, spec *
 		if output.Pathway {
 			counts := exposure
 			point.Exposure = &counts
-			exposure = Exposure{}
+			exposure = simulation.Exposure{}
 		}
 		rep.Endpoints = append(rep.Endpoints, point)
 	}

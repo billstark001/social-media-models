@@ -74,7 +74,7 @@ func TestPairedPolicyChangeRestoresCheckpointAndMeasuresDisplayedFeed(t *testing
 		t.Fatal(err)
 	}
 	start := 0
-	spec.PolicyChange = &PolicyChange{Recommender: "StructureM9", At: &start}
+	spec.PolicyChange = &simulation.PolicyChange{Recommender: "StructureM9", At: &start}
 	switched, err := runExperiment(ctx, metadata, Request{Experiment: &spec, Output: output})
 	if err != nil {
 		t.Fatal(err)
@@ -100,7 +100,7 @@ func TestPairedPolicyChangeRestoresCheckpointAndMeasuresDisplayedFeed(t *testing
 	}
 
 	threshold := 1.0
-	spec.PolicyChange = &PolicyChange{Recommender: "StructureM9", ExcessAtLeast: &threshold, Latest: 1, Duration: 1}
+	spec.PolicyChange = &simulation.PolicyChange{Recommender: "StructureM9", ExcessAtLeast: &threshold, Latest: 1, Duration: 1}
 	timed, err := runExperiment(ctx, metadata, Request{Experiment: &spec, Output: output})
 	if err != nil {
 		t.Fatal(err)
@@ -175,7 +175,7 @@ func TestResumeKeepsStructureCacheOnSamePolicyAndUsesSavedRoot(t *testing.T) {
 		t.Fatal("resume did not report the checkpoint RNG root")
 	}
 	at := 0
-	spec.PolicyChange = &PolicyChange{Recommender: "StructureM9", At: &at, Duration: 1}
+	spec.PolicyChange = &simulation.PolicyChange{Recommender: "StructureM9", At: &at, Duration: 1}
 	same, err := runExperiment(ctx, &requested, request)
 	if err != nil {
 		t.Fatal(err)
