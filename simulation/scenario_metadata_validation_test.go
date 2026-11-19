@@ -98,3 +98,18 @@ func TestScenarioMetadataValidateRejectsInvalidRecsysForDynamics(t *testing.T) {
 		t.Fatal("expected error for invalid recsys_factory_type, got nil")
 	}
 }
+
+func TestScenarioMetadataRejectsObsoleteRecommendationParameterNames(t *testing.T) {
+	for _, dynamicsType := range []string{simulation.DynamicsTypeHK, simulation.DynamicsTypeVoter} {
+		meta := makeValidMetadata()
+		meta.DynamicsType = dynamicsType
+		meta.RecSysParams = map[string]any{"mixRate": 0.25}
+		if err := meta.Validate(); err == nil {
+			t.Fatalf("%s accepted obsolete mixRate", dynamicsType)
+		}
+		meta.RecSysParams = map[string]any{"MixRate": 0.25}
+		if err := meta.Validate(); err != nil {
+			t.Fatalf("%s rejected canonical MixRate: %v", dynamicsType, err)
+		}
+	}
+}

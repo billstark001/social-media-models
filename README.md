@@ -776,6 +776,13 @@ python -m smp_bindings.migrate snapshot ./run/my-sim/snapshot-*.msgpack
 python -m smp_bindings.migrate events   ./run/my-sim/events.db
 ```
 
+Historical recommendation parameter names such as `mixRate` require explicit
+conversion with `smp-migrate metadata <metadata.json>`. Use
+`smp-migrate snapshot <snapshot.msgpack[.lz4]>` to convert embedded metadata
+and old post field names. Conflicting aliases stop migration without replacing
+the input. Rewriting checkpoint bytes changes their file hash and therefore
+the branch seeds derived from that hash.
+
 ---
 
 ## Further Documentation

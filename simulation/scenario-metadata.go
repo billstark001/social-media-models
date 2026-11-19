@@ -164,6 +164,9 @@ func (m *ScenarioMetadata) Validate() error {
 	if strings.TrimSpace(m.RecsysFactoryType) == "" {
 		return errors.New("RecsysFactoryType must not be empty")
 	}
+	if err := validateRecsysParamNames(m.RecSysParams); err != nil {
+		return err
+	}
 	if err := m.validateRecsysFactoryType(dynamicsType); err != nil {
 		return err
 	}
@@ -305,34 +308,26 @@ func getParam[T any](params map[string]any, key string, defaultVal T) T {
 	return typed
 }
 
-func getParamOK[T any](params map[string]any, key string) (T, bool) {
-	var zero T
-	if params == nil {
-		return zero, false
-	}
-	v, ok := params[key]
-	if !ok {
-		return zero, false
-	}
-	typed, ok := v.(T)
-	if !ok {
-		return zero, false
-	}
-	return typed, true
-}
-
-func getParamWithFallback[T any](params map[string]any, key string, fallbackKeys []string, defaultVal T) T {
-	v, ok := getParamOK[T](params, key)
-	if ok {
-		return v
-	}
-	for _, k := range fallbackKeys {
-		v, ok = getParamOK[T](params, k)
-		if ok {
-			return v
+// Legacy parameter spellings belong to the explicit metadata/checkpoint migration.
+func validateRecsysParamNames(params map[string]any) error {
+	for name := range params {
+		for _, canonical := range [...]string{
+			"NoiseStd", "OpRandomNoiseStd", "UseCache", "Tolerance",
+			"Steepness", "RandomRatio", "MixRate", "LogRecommendations",
+		} {
+			if name != canonical && strings.EqualFold(name, canonical) {
+				return fmt.Errorf("obsolete RecSysParams key %q; migrate metadata or checkpoints to %q with smp-migrate", name, canonical)
+			}
 		}
 	}
-	return defaultVal
+	return nil
+}
+
+func recommendationLogger(params map[string]any) func(string) {
+	if !getParam(params, "LogRecommendations", true) {
+		return nil
+	}
+	return func(message string) { fmt.Fprintln(os.Stderr, message) }
 }
 
 // GetFloat64RecsysFactoriesWithParams returns the full set of recsys factories for
@@ -346,10 +341,7 @@ func GetFloat64RecsysFactoriesWithParams[P any](params map[string]any) map[strin
 	steepness := getParam(params, "Steepness", 1.0)
 	randomRatio := getParam(params, "RandomRatio", 0.0)
 	mixRate := getParam(params, "MixRate", 0.1)
-	var recommendationLogger func(string)
-	if getParam(params, "LogRecommendations", true) {
-		recommendationLogger = func(s string) { fmt.Fprintln(os.Stderr, s) }
-	}
+	logRecommendations := recommendationLogger(params)
 
 	ret := map[string]model.RecsysFactory[float64, P]{
 		"Random": func(h *model.SMPModel[float64, P]) model.SMPModelRecommendationSystem[float64, P] {
@@ -359,13 +351,13 @@ func GetFloat64RecsysFactoriesWithParams[P any](params map[string]any) map[strin
 			return recsys.NewOpinion(h, noiseStd, nil)
 		},
 		"Structure": func(h *model.SMPModel[float64, P]) model.SMPModelRecommendationSystem[float64, P] {
-			return recsys.NewStructure(h, noiseStd, nil, useCache, recommendationLogger)
+			return recsys.NewStructure(h, noiseStd, nil, useCache, logRecommendations)
 		},
 		"OpinionRandom": func(h *model.SMPModel[float64, P]) model.SMPModelRecommendationSystem[float64, P] {
 			return recsys.NewOpinionRandom(h, nil, tolerance, steepness, opRandNoiseStd, randomRatio)
 		},
 		"StructureRandom": func(h *model.SMPModel[float64, P]) model.SMPModelRecommendationSystem[float64, P] {
-			return recsys.NewStructureRandom(h, nil, steepness, noiseStd, randomRatio, useCache, recommendationLogger)
+			return recsys.NewStructureRandom(h, nil, steepness, noiseStd, randomRatio, useCache, logRecommendations)
 		},
 	}
 
@@ -400,13 +392,14 @@ func GetFloat64RecsysFactories[P any]() map[string]model.RecsysFactory[float64, 
 // models with params type P (used by Galam and Voter),
 // reading configuration from the provided params map (nil uses all defaults).
 func GetBoolRecsysFactoriesWithParams[P any](params map[string]any) map[string]model.RecsysFactory[bool, P] {
-	noiseStd := getParamWithFallback(params, "NoiseStd", []string{"noiseStd"}, 0.1)
-	opRandNoiseStd := getParamWithFallback(params, "OpRandomNoiseStd", []string{"opRandomNoiseStd"}, 2.0)
-	useCache := getParamWithFallback(params, "UseCache", []string{"useCache"}, true)
-	tolerance := getParamWithFallback(params, "Tolerance", []string{"tolerance"}, 0.4)
-	steepness := getParamWithFallback(params, "Steepness", []string{"steepness"}, 1.0)
-	randomRatio := getParamWithFallback(params, "RandomRatio", []string{"randomRatio"}, 0.0)
-	mixRate := getParamWithFallback(params, "MixRate", []string{"mixRate"}, 0.1)
+	noiseStd := getParam(params, "NoiseStd", 0.1)
+	opRandNoiseStd := getParam(params, "OpRandomNoiseStd", 2.0)
+	useCache := getParam(params, "UseCache", true)
+	tolerance := getParam(params, "Tolerance", 0.4)
+	steepness := getParam(params, "Steepness", 1.0)
+	randomRatio := getParam(params, "RandomRatio", 0.0)
+	mixRate := getParam(params, "MixRate", 0.1)
+	logRecommendations := recommendationLogger(params)
 
 	ret := map[string]model.RecsysFactory[bool, P]{
 		"Random": func(h *model.SMPModel[bool, P]) model.SMPModelRecommendationSystem[bool, P] {
@@ -416,17 +409,13 @@ func GetBoolRecsysFactoriesWithParams[P any](params map[string]any) map[string]m
 			return recsys.NewOpinion(h, noiseStd, nil)
 		},
 		"Structure": func(h *model.SMPModel[bool, P]) model.SMPModelRecommendationSystem[bool, P] {
-			return recsys.NewStructure(h, noiseStd, nil, useCache, func(s string) {
-				fmt.Fprintln(os.Stderr, s)
-			})
+			return recsys.NewStructure(h, noiseStd, nil, useCache, logRecommendations)
 		},
 		"OpinionRandom": func(h *model.SMPModel[bool, P]) model.SMPModelRecommendationSystem[bool, P] {
 			return recsys.NewOpinionRandom(h, nil, tolerance, steepness, opRandNoiseStd, randomRatio)
 		},
 		"StructureRandom": func(h *model.SMPModel[bool, P]) model.SMPModelRecommendationSystem[bool, P] {
-			return recsys.NewStructureRandom(h, nil, steepness, noiseStd, randomRatio, useCache, func(s string) {
-				fmt.Fprintln(os.Stderr, s)
-			})
+			return recsys.NewStructureRandom(h, nil, steepness, noiseStd, randomRatio, useCache, logRecommendations)
 		},
 	}
 
@@ -455,9 +444,4 @@ func GetBoolRecsysFactoriesWithParams[P any](params map[string]any) map[string]m
 // models with params type P (used by Galam and Voter).
 func GetBoolRecsysFactories[P any]() map[string]model.RecsysFactory[bool, P] {
 	return GetBoolRecsysFactoriesWithParams[P](nil)
-}
-
-// GetDefaultRecsysFactoryDefs returns the HK recsys factories for backward compatibility.
-func GetDefaultRecsysFactoryDefs() map[string]model.RecsysFactory[float64, dynamics.HKParams] {
-	return GetFloat64RecsysFactories[dynamics.HKParams]()
 }

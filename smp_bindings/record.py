@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from bisect import bisect_left, bisect_right
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
@@ -8,23 +9,13 @@ import networkx as nx
 import numpy as np
 from numpy.typing import NDArray
 
-from smp_bindings.events_db import (
-  get_events_by_step_range,
-  get_rewiring_event_body,
-  load_events_db,
-)
+from smp_bindings.events_db import iter_rewiring_events, iter_view_posts, load_events_db
 from smp_bindings.model_state import (
   load_accumulative_model_state,
   load_gonum_graph_dump,
 )
 
 re_graph = re.compile(r'graph-(\d+)\.msgpack(?:\.lz4)?$')
-
-
-def _last_less_than(arr: np.ndarray, val: int) -> int:
-  """返回 arr 中最后一个严格小于 val 的元素的下标，未找到返回 -1。"""
-  idx = np.searchsorted(arr, val, side='left') - 1
-  return int(idx)
 
 
 class RawSimulationRecord:
@@ -103,6 +94,7 @@ class RawSimulationRecord:
     self.agent_opinion_sums: NDArray = self.acc_state['agent_opinion_sums']
     self.agents = int(self.acc_state['agents'])
     self.max_step = int(acc_state['steps'])
+    self._count_channel_available = self.metadata.get('AgentNumber')
 
     g0 = self._get_stored_graph(0)
     follow_counts = [len(g0.out_edges(x)) for x in range(self.agents)]
@@ -144,8 +136,7 @@ class RawSimulationRecord:
       return self._get_stored_graph(step)
 
     # get graph
-    nearest_available_step_idx = _last_less_than(
-        np.array(self.graph_steps), step)
+    nearest_available_step_idx = bisect_left(self.graph_steps, step) - 1
     if nearest_available_step_idx < 0:
       raise ValueError('bad dump data (graph)')
     nearest_available_step = self.graph_steps[nearest_available_step_idx]
@@ -155,30 +146,7 @@ class RawSimulationRecord:
         self.graphs[nearest_available_step]
     ).copy()  # type: ignore
 
-    # get events
-    # since we want all events till the step ends, so step + 1
-    rewiring_events = get_events_by_step_range(
-        self.events_db, nearest_available_step + 1, step + 1, "Rewiring"
-    )
-    # this assures the events to be sequential
-    rewiring_events.sort(key=lambda x: x.step)
-
-    # apply events
-    for e in rewiring_events:
-      body = get_rewiring_event_body(self.events_db, e.id)
-      if body is None:
-        raise ValueError("bad dump data (event)")
-      try:
-        nearest_available_graph.remove_edge(e.agent_id, body.unfollow)
-      except nx.NetworkXError:
-        if self.has_trajectory:
-          raise ValueError(
-              f"rewiring event {e.id} removes a missing edge"
-          ) from None
-        # very occasional data corruption, attempt to remove inexistent edges
-        # this essentially does not affect the collective pattern
-        pass
-      nearest_available_graph.add_edge(e.agent_id, body.follow)
+    self._advance_graph(nearest_available_graph, nearest_available_step, step)
 
     # store the applied graphs
     self.graphs[step] = nearest_available_graph
@@ -186,6 +154,84 @@ class RawSimulationRecord:
     self.graph_steps.sort()
 
     return nearest_available_graph
+
+  def _advance_graph(self, graph: nx.DiGraph, start: int, step: int) -> None:
+    dynamics = self.metadata.get("DynamicsType", "HK")
+    params = self.metadata.get(f"{dynamics}Params", {})
+    if params.get("RewiringRate") == 0:
+      return
+    if self.metadata.get("RewiringEvent") is not True:
+      raise ValueError(
+          f"cannot reconstruct graph at step {step}: rewiring-event collection "
+          "is disabled or unknown and no exact graph snapshot is available"
+      )
+    # Legacy logs can include attempts blocked by an existing target edge.
+    for event_id, agent_id, unfollow, follow in iter_rewiring_events(self.events_db, start + 1, step + 1):
+      has_unfollow = graph.has_edge(agent_id, unfollow)
+      if not has_unfollow and self.has_trajectory:
+        raise ValueError(f"rewiring event {event_id} removes a missing edge")
+      if graph.has_edge(agent_id, follow):
+        continue
+      if has_unfollow:
+        graph.remove_edge(agent_id, unfollow)
+      graph.add_edge(agent_id, follow)
+
+  def iter_graphs(self, steps: Iterable[int]):
+    """Yield completed snapshots in increasing order without caching reconstructed graphs.
+
+    The graph is advanced in place. Consumers retaining a snapshot must copy it.
+    """
+    current = -1
+    graph = None
+    anchors = sorted(self.graph_paths)
+    for step in steps:
+      if step <= current or step < 0 or step > self.max_step:
+        raise ValueError("expected increasing completed steps")
+      anchor_index = bisect_right(anchors, step) - 1
+      if anchor_index < 0:
+        raise ValueError("bad dump data (graph)")
+      anchor = anchors[anchor_index]
+      if anchor > current:
+        cached = self.graphs_stored.get(anchor)
+        graph = cached.copy() if cached is not None else load_gonum_graph_dump(self.graph_paths[anchor])
+        current = anchor
+      assert graph is not None
+      if current < step:
+        self._advance_graph(graph, current, step)
+        current = step
+      yield step, graph
+
+  def iter_feed_events(self, start: int, stop: int):
+    """Yield actual logged feeds for update steps in [start, stop)."""
+    yield from iter_view_posts(self.events_db, start, stop)
+
+  def feed_counts(self, step: int):
+    """Return one agent-count row, or None if feeds were not counted."""
+    if step <= 0 or step > self.max_step:
+      return None
+    collected = self.metadata.get("AgentNumber")
+    if collected is None:
+      collected = getattr(self, "_count_channel_available", None)
+      if collected is None:
+        # A missing historical flag provides no guarantee that a zero channel
+        # was collected. Scan once with bounded memory for positive evidence.
+        collected = any(np.any(self.agent_numbers[i] > 0) for i in range(1, self.max_step + 1))
+        self._count_channel_available = collected
+    if collected is True:
+      return self.agent_numbers[step]
+    # Old view logs retain the confidence buckets even without AgentNumbers.
+    rows = {}
+    for event in self.iter_feed_events(step, step+1):
+      if event.agent_id in rows:
+        raise ValueError(f"duplicate feed at step {step} for agent {event.agent_id}")
+      feed = event.body
+      rows[event.agent_id] = (
+          len(feed.neighbor_concordant), len(feed.recommended_concordant),
+          len(feed.neighbor_discordant), len(feed.recommended_discordant),
+      )
+    if set(rows) != set(range(self.agents)):
+      return None
+    return np.array([rows[i] for i in range(self.agents)], dtype=int)
 
   def freeze(self, steps: Iterable[int]):
     """Reconstruct frozen Go-probe inputs for selected completed steps."""

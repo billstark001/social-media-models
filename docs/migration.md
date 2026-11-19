@@ -25,7 +25,7 @@ This guide covers breaking changes introduced in the v2 refactor and explains ho
 | Grid field | `NetworkGrid.TweetMap` | `NetworkGrid.PostMap` |
 | Grid method | `AddTweet` | `AddPost` |
 | Model init func | `NewSMPModel` (opinions `[]float64`) | `NewSMPModelFloat64` or generic `NewSMPModel[O,P]` |
-| `RewiringEventBody` | no `AgentID` field | `AgentID int64` (the acting agent); `agent_id = 0` marks pre-migration rows |
+| `RewiringEventBody` | no `AgentID` field | `AgentID int64` (the acting agent), recovered from the parent event header during migration |
 | SQLite table | `tweet_events`, `is_retweet` | `post_events`, `is_repost` |
 | Event type string | `"Tweet"` | `"Post"` |
 | Package | _none_ | new `smp/dynamics` package |
@@ -43,35 +43,19 @@ Snapshot files (`.msgpack`) contain a serialized `SMPModelDumpData`. The relevan
 
 ### One-time msgpack migration script (Python)
 
-v2 snapshots are bare `SMPModelDumpData` msgpack blobs. v3 wraps them in a `RawSnapshotData{DynamicsType, Data}` envelope. Use the script below to migrate:
-
-```python
-import msgpack, sys, pathlib
-
-def migrate_snapshot(path: str, dynamics_type: str = "HK"):
-    data = pathlib.Path(path).read_bytes()
-    inner = msgpack.unpackb(data, raw=False)
-
-    # v1→v2: Rename Tweets → Posts at the top level
-    if b"Tweets" in inner:
-        inner[b"Posts"] = inner.pop(b"Tweets")
-
-    # v2→v3: wrap in RawSnapshotData envelope
-    inner_bytes = msgpack.packb(inner)
-    envelope = {"DynamicsType": dynamics_type, "Data": inner_bytes}
-    pathlib.Path(path).write_bytes(msgpack.packb(envelope))
-    print(f"migrated {path}")
-
-for p in sys.argv[1:]:
-    migrate_snapshot(p)
-```
-
-Usage:
+Bare `SMPModelDumpData` dumps need a `RawSnapshotData{DynamicsType, Data}`
+envelope. The maintained migration handles both bare and already enveloped
+snapshots, `.msgpack` and `.msgpack.lz4`, and conflicting old/new field names:
 
 ```bash
-# HK is the default; pass --dynamics Deffuant if applicable
-python migrate_snapshot.py ./run/my-sim/snapshot-*.msgpack
+# HK is the default for a bare dump; use --dynamics for other dynamics
+smp-migrate snapshot ./run/my-sim/snapshot-*.msgpack
+smp-migrate snapshot --dynamics Deffuant ./run/my-sim/snapshot-*.msgpack
 ```
+
+Existing physical state, RNG positions and recommender state are preserved.
+Rewriting bytes changes the checkpoint SHA-256, including branch seeds derived
+from that hash. Already canonical files are left untouched.
 
 ### Metadata JSON
 
@@ -109,20 +93,28 @@ The binary `.lz4` format is **unchanged** — dimensions and element types are i
 
 The table and column names changed. To migrate:
 
-```sql
--- run inside the events.db file
-ALTER TABLE tweet_events RENAME TO post_events;
-ALTER TABLE post_events RENAME COLUMN is_retweet TO is_repost;
-
--- add agent_id to rewiring_events (DEFAULT 0 = sentinel for pre-migration rows)
--- rows with agent_id = 0 were recorded before this field existed;
--- the exact acting agent cannot be recovered; treat as "unknown" in analyzes.
-ALTER TABLE rewiring_events ADD COLUMN agent_id INTEGER NOT NULL DEFAULT 0;
-
--- update the type strings in the events table
-UPDATE events SET type = 'Post' WHERE type = 'Tweet';
-UPDATE events SET type = 'ViewPosts' WHERE type = 'ViewTweets';
+```bash
+smp-migrate events ./run/my-sim/events.db
 ```
+
+The migration transactionally renames or merges old tables, normalizes event
+types, and backfills rewiring actors from `events.agent_id`. Conflicting duplicate
+rows abort the transaction. Runtime readers require canonical table names.
+
+### Recommendation parameter aliases
+
+Use canonical `RecSysParams` keys such as `NoiseStd`, `MixRate`, `UseCache` and
+`LogRecommendations` for all dynamics. Lowercase/camelcase aliases are rejected
+with migration guidance instead of silently selecting a default:
+
+```bash
+smp-migrate metadata ./run/my-sim/metadata.json
+smp-migrate snapshot ./run/my-sim/checkpoint-*.msgpack.lz4
+```
+
+Both commands are idempotent; conflicting aliases leave the file unchanged.
+The unused Go alias `GetDefaultRecsysFactoryDefs()` has been removed; use
+`GetFloat64RecsysFactories[dynamics.HKParams]()` in callers.
 
 ---
 

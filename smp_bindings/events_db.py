@@ -1,4 +1,5 @@
 import sqlite3
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
@@ -84,6 +85,27 @@ def get_events_by_step_range(
   rows = cur.fetchall()
   return [EventRecord(id=row[0], type=row[1], agent_id=row[2], step=row[3]) for row in rows]
 
+def iter_rewiring_events(
+    db: sqlite3.Connection, start: int, stop: int
+) -> Iterator[tuple[int, int, int, int]]:
+  """Stream (event_id, agent_id, unfollow, follow) in commit order for [start, stop)."""
+  cursor = db.execute(
+      """
+      SELECT e.id, e.agent_id, r.unfollow, r.follow
+      FROM events AS e
+      LEFT JOIN rewiring_events AS r ON r.event_id = e.id
+      WHERE e.type = 'Rewiring' AND e.step >= ? AND e.step < ?
+      ORDER BY e.step, e.id
+      """,
+      (start, stop),
+  )
+  try:
+    for event_id, agent_id, unfollow, follow in cursor:
+      if unfollow is None or follow is None:
+        raise ValueError(f"missing rewiring body for event {event_id}")
+      yield event_id, agent_id, unfollow, follow
+  finally:
+    cursor.close()
 
 
 # 2.2 查找一条帖子（agent_id, step）所有被发送和转发的事件
@@ -146,6 +168,26 @@ def get_view_posts_event_body(
   return None
 
 
+def iter_view_posts(db: sqlite3.Connection, start: int, stop: int) -> Iterator[EventRecord]:
+  """Stream canonical view-post events, preserving their logged coverage."""
+  tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+  if "view_tweets_events" in tables:
+    raise ValueError("obsolete ViewTweets schema; run smp-migrate events <events.db>")
+  if "view_posts_events" not in tables:
+    return
+  cursor = db.execute(
+      "SELECT e.id, e.agent_id, e.step, v.data, e.type FROM events e "
+      "JOIN view_posts_events v ON v.event_id=e.id "
+      "WHERE e.type IN ('ViewPosts','ViewTweets') AND e.step>=? AND e.step<? ORDER BY e.step,e.id",
+      (start, stop),
+  )
+  try:
+    for event_id, agent_id, step, payload, kind in cursor:
+      if kind != "ViewPosts":
+        raise ValueError("obsolete ViewTweets schema; run smp-migrate events <events.db>")
+      yield EventRecord(event_id, "ViewPosts", agent_id, step, unpack_view_posts_data(payload))
+  finally:
+    cursor.close()
 
 
 def get_rewiring_event_body(
