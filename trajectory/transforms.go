@@ -21,7 +21,7 @@ var trajectoryBetterEncoder = sync.OnceValues(func() (*zstd.Encoder, error) {
 })
 
 var trajectoryDecoder = sync.OnceValues(func() (*zstd.Decoder, error) {
-	return zstd.NewReader(nil, zstd.WithDecoderConcurrency(1))
+	return zstd.NewReader(nil, zstd.WithDecoderConcurrency(1), zstd.WithDecodeAllCapLimit(true))
 })
 
 // encodeChannel chooses the smallest lossless representation for one bounded
@@ -110,7 +110,18 @@ func decodeShuffledChannel(encoded []byte, codec byte, wordSize, words int) ([]b
 	if err != nil {
 		return nil, err
 	}
-	decoded, err := decoder.DecodeAll(encoded, nil)
+	limit := wordSize * words
+	if codec == trajectoryZstdBit {
+		limit = wordSize * 8 * ((words + 7) / 8)
+	}
+	var header zstd.Header
+	if err := header.Decode(encoded); err != nil {
+		return nil, err
+	}
+	if header.HasFCS && header.FrameContentSize != uint64(limit) {
+		return nil, fmt.Errorf("shuffled channel length differs from declared dimensions")
+	}
+	decoded, err := decoder.DecodeAll(encoded, make([]byte, 0, limit))
 	if err != nil {
 		return nil, err
 	}

@@ -89,13 +89,10 @@ func decodeChannel(encoded []byte, codec byte, wordSize, wordsPerRow, rows int) 
 		return make([]byte, wordSize*wordsPerRow*rows), nil
 	}
 	if codec == 3 {
-		packed, err := io.ReadAll(lz4.NewReader(bytes.NewReader(encoded)))
+		words := wordsPerRow * rows
+		packed, err := readLZ4Channel(encoded, (words+7)/8)
 		if err != nil {
 			return nil, err
-		}
-		words := wordsPerRow * rows
-		if len(packed) != (words+7)/8 {
-			return nil, fmt.Errorf("bitset length mismatch")
 		}
 		raw := make([]byte, words*wordSize)
 		for i := 0; i < words; i++ {
@@ -107,20 +104,16 @@ func decodeChannel(encoded []byte, codec byte, wordSize, wordsPerRow, rows int) 
 		}
 		return raw, nil
 	}
-	r := lz4.NewReader(bytes.NewReader(encoded))
-	raw, err := io.ReadAll(r)
+	if codec != 0 && codec != 1 {
+		return nil, fmt.Errorf("unknown trajectory channel codec %d", codec)
+	}
+	want := wordSize * wordsPerRow * rows
+	raw, err := readLZ4Channel(encoded, want)
 	if err != nil {
 		return nil, err
 	}
-	want := wordSize * wordsPerRow * rows
-	if len(raw) != want {
-		return nil, fmt.Errorf("channel decoded length %d, want %d", len(raw), want)
-	}
 	if codec == 0 {
 		return raw, nil
-	}
-	if codec != 1 {
-		return nil, fmt.Errorf("unknown trajectory channel codec %d", codec)
 	}
 	stride := wordSize * wordsPerRow
 	for row := 1; row < rows; row++ {
@@ -128,6 +121,25 @@ func decodeChannel(encoded []byte, codec byte, wordSize, wordsPerRow, rows int) 
 		for i := 0; i < stride; i++ {
 			raw[base+i] ^= raw[base-stride+i]
 		}
+	}
+	return raw, nil
+}
+
+func readLZ4Channel(encoded []byte, want int) ([]byte, error) {
+	input := bytes.NewReader(encoded)
+	r := lz4.NewReader(input)
+	// Grow only as bytes arrive, and reject oversized expansion before reading
+	// the rest of a corrupt compressed payload. The extra byte also checks EOF
+	// and the LZ4 footer when the declared length is exact.
+	raw, err := io.ReadAll(io.LimitReader(r, int64(want)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) != want {
+		return nil, fmt.Errorf("channel decoded length %d, want %d", len(raw), want)
+	}
+	if input.Len() != 0 {
+		return nil, fmt.Errorf("LZ4 channel has trailing encoded bytes")
 	}
 	return raw, nil
 }
@@ -202,7 +214,29 @@ func LoadChunk(path string) (*Block, error) {
 	if err != nil {
 		return nil, err
 	}
+	return DecodeChunk(data)
+}
+
+// DecodeChunk decodes one complete trajectory block already read by a caller.
+// It permits readers to verify the stored checksum without reading twice.
+func DecodeChunk(data []byte) (*Block, error) {
+	return decodeChunk(data, false)
+}
+
+// DecodeChunkOpinions decodes opinions without allocating counts or sums.
+// All channel envelopes are checked; callers verify the chunk checksum before
+// using this selective decoder, as unselected payloads are not decompressed.
+func DecodeChunkOpinions(data []byte) ([][]float64, error) {
+	block, err := decodeChunk(data, true)
+	if err != nil {
+		return nil, err
+	}
+	return block.Opinions, nil
+}
+
+func decodeChunk(data []byte, opinionsOnly bool) (*Block, error) {
 	reader := bytes.NewReader(data)
+	var err error
 	var magic [8]byte
 	if _, err := io.ReadFull(reader, magic[:]); err != nil {
 		return nil, err
@@ -220,6 +254,11 @@ func LoadChunk(path string) (*Block, error) {
 	if steps == 0 || agents == 0 || uint64(steps)*uint64(agents) > 1<<30 {
 		return nil, fmt.Errorf("invalid trajectory dimensions")
 	}
+	// The widest decoded channel uses 32 bytes per cell. Check byte arithmetic
+	// as well as cell counts, including when this library targets a 32-bit host.
+	if uint64(steps)*uint64(agents) > uint64(int(^uint(0)>>1))/32 {
+		return nil, fmt.Errorf("trajectory dimensions exceed addressable memory")
+	}
 	opinionSize, sumSize := byte(4), byte(4)
 	if magic == trajectoryMagic {
 		if opinionSize, err = reader.ReadByte(); err != nil {
@@ -235,7 +274,7 @@ func LoadChunk(path string) (*Block, error) {
 			return nil, err
 		}
 	}
-	channels := make([][]byte, 3)
+	state := &Block{}
 	for i := 0; i < 3; i++ {
 		codec, err := reader.ReadByte()
 		if err != nil {
@@ -244,6 +283,9 @@ func LoadChunk(path string) (*Block, error) {
 		if codec == 3 && i != 0 {
 			return nil, fmt.Errorf("bitset codec is only valid for opinions")
 		}
+		if codec > 5 {
+			return nil, fmt.Errorf("unknown trajectory channel codec %d", codec)
+		}
 		var length uint32
 		if err := binary.Read(reader, binary.LittleEndian, &length); err != nil {
 			return nil, err
@@ -251,9 +293,14 @@ func LoadChunk(path string) (*Block, error) {
 		if uint64(length) > uint64(reader.Len()) {
 			return nil, fmt.Errorf("truncated trajectory channel")
 		}
-		encoded := make([]byte, length)
-		if _, err := io.ReadFull(reader, encoded); err != nil {
-			return nil, err
+		position := len(data) - reader.Len()
+		encoded := data[position : position+int(length)]
+		reader.Seek(int64(length), io.SeekCurrent)
+		if codec == 2 && length != 0 {
+			return nil, fmt.Errorf("zero channel has a payload")
+		}
+		if opinionsOnly && i != 0 {
+			continue
 		}
 		wordSize, wordsPerRow := int(opinionSize), int(agents)
 		if i == 1 {
@@ -264,29 +311,52 @@ func LoadChunk(path string) (*Block, error) {
 			wordSize = int(sumSize)
 			wordsPerRow = int(agents) * 4
 		}
-		channels[i], err = decodeChannel(encoded, codec, wordSize, wordsPerRow, int(steps))
+		raw, err := decodeChannel(encoded, codec, wordSize, wordsPerRow, int(steps))
 		if err != nil {
 			return nil, err
+		}
+		// Convert each channel before decoding the next, so raw channel buffers
+		// do not accumulate alongside all the decoded state arrays.
+		cells := int(steps) * int(agents)
+		switch i {
+		case 0:
+			state.Opinions = make([][]float64, int(steps))
+			values := make([]float64, cells)
+			for index := range values {
+				values[index] = trajectoryFloat(raw[int(opinionSize)*index:], opinionSize)
+			}
+			for row := range state.Opinions {
+				start, end := row*int(agents), (row+1)*int(agents)
+				state.Opinions[row] = values[start:end:end]
+			}
+		case 1:
+			state.AgentNumbers = make([][][4]int16, int(steps))
+			values := make([][4]int16, cells)
+			for index := range values {
+				for component := range values[index] {
+					values[index][component] = int16(binary.LittleEndian.Uint16(raw[8*index+2*component:]))
+				}
+			}
+			for row := range state.AgentNumbers {
+				start, end := row*int(agents), (row+1)*int(agents)
+				state.AgentNumbers[row] = values[start:end:end]
+			}
+		case 2:
+			state.AgentOpinionSums = make([][][4]float64, int(steps))
+			values := make([][4]float64, cells)
+			for index := range values {
+				for component := range values[index] {
+					values[index][component] = trajectoryFloat(raw[int(sumSize)*(4*index+component):], sumSize)
+				}
+			}
+			for row := range state.AgentOpinionSums {
+				start, end := row*int(agents), (row+1)*int(agents)
+				state.AgentOpinionSums[row] = values[start:end:end]
+			}
 		}
 	}
 	if reader.Len() != 0 {
 		return nil, fmt.Errorf("trailing trajectory bytes")
-	}
-	state := &Block{}
-	for t := 0; t < int(steps); t++ {
-		opinions := make([]float64, agents)
-		numbers := make([][4]int16, agents)
-		sums := make([][4]float64, agents)
-		for a := 0; a < int(agents); a++ {
-			opinions[a] = trajectoryFloat(channels[0][int(opinionSize)*(t*int(agents)+a):], opinionSize)
-			for c := 0; c < 4; c++ {
-				numbers[a][c] = int16(binary.LittleEndian.Uint16(channels[1][8*(t*int(agents)+a)+2*c:]))
-				sums[a][c] = trajectoryFloat(channels[2][int(sumSize)*(4*(t*int(agents)+a)+c):], sumSize)
-			}
-		}
-		state.Opinions = append(state.Opinions, opinions)
-		state.AgentNumbers = append(state.AgentNumbers, numbers)
-		state.AgentOpinionSums = append(state.AgentOpinionSums, sums)
 	}
 	return state, nil
 }
