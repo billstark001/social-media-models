@@ -566,7 +566,7 @@ func (s *Scenario) logEvent(event *model.EventRecord) {
 		}
 
 	case "ViewPosts":
-		if s.Metadata.CollectItemOptions.ViewPostsEvent {
+		if s.Metadata.CollectItemOptions.ViewPostsEvent || s.Metadata.CollectItemOptions.ViewPostsDetails {
 			s.DB.StoreEvent(event)
 		}
 

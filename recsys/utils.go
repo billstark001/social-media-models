@@ -113,12 +113,18 @@ func toFloat64(val any) float64 {
 	}
 }
 
+// postVisibility filters candidates by the holder of the placement rather than
+// by the author alone. It leaves the ranking and sampling rules intact.
+type postVisibility struct{ hideReposts bool }
+
+func (v *postVisibility) SetHideReposts(hide bool) { v.hideReposts = hide }
+
 func selectPost[O any, P any](
 	historicalPostCount int,
 	selfAndNeighborIDs map[int64]bool,
 	agentPickedID int64,
-	agentMap map[int64]*model.SMPAgent[O, P],
-	visiblePosts map[int64][]*model.PostRecord[O],
+	m *model.SMPModel[O, P],
+	hideReposts bool,
 	rng *rand.Rand,
 ) *model.PostRecord[O] {
 	postPickedIndex := -1
@@ -126,14 +132,18 @@ func selectPost[O any, P any](
 		postPickedIndex = rng.IntN(historicalPostCount)
 	}
 	var el *model.PostRecord[O]
+	placementRound := m.CurStep - 1
+	visiblePosts := m.Grid.PostMap
 	if postPickedIndex != -1 && postPickedIndex < len(visiblePosts[agentPickedID]) {
 		el = visiblePosts[agentPickedID][len(visiblePosts[agentPickedID])-postPickedIndex-1]
+		placementRound -= postPickedIndex
 	} else {
-		el = agentMap[agentPickedID].CurPost
+		el = m.Grid.AgentMap[agentPickedID].CurPost
 	}
-	if el == nil || selfAndNeighborIDs[el.AgentID] {
+	if el == nil || selfAndNeighborIDs[el.AgentID] || (hideReposts && !el.IsOriginalPlacement(agentPickedID, placementRound)) {
 		return nil
 	}
+	m.RecordRecommendationPlacement(agentPickedID, placementRound)
 	return el
 }
 

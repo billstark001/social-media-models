@@ -66,16 +66,35 @@ func (rs *Mix[O, P]) Recommend(
 	neighborIDs map[int64]bool,
 	count int,
 ) []*model.PostRecord[O] {
+	posts, _ := rs.RecommendWithLayout(agent, neighborIDs, count)
+	return posts
+}
+
+func (rs *Mix[O, P]) RecommendWithLayout(
+	agent *model.SMPAgent[O, P],
+	neighborIDs map[int64]bool,
+	count int,
+) ([]*model.PostRecord[O], model.RecommendationLayout) {
 	r1Count := int(float64(count)*rs.RecSys1Rate + 0.5)
 	r2Count := count - r1Count
-	ret := make([]*model.PostRecord[O], 0)
+	ret := make([]*model.PostRecord[O], 0, count)
 	if r1Count > 0 {
 		ret = append(ret, rs.RecSys1.Recommend(agent, neighborIDs, r1Count)...)
 	}
+	first := len(ret)
 	if r2Count > 0 {
 		ret = append(ret, rs.RecSys2.Recommend(agent, neighborIDs, r2Count)...)
 	}
-	return ret
+	return ret, model.RecommendationLayout{Exploration: first}
+}
+
+// SetHideReposts applies the same visibility rule to both components.
+func (rs *Mix[O, P]) SetHideReposts(hide bool) {
+	for _, component := range [...]model.SMPModelRecommendationSystem[O, P]{rs.RecSys1, rs.RecSys2} {
+		if configurable, ok := component.(interface{ SetHideReposts(bool) }); ok {
+			configurable.SetHideReposts(hide)
+		}
+	}
 }
 
 // RecommendAt evaluates each component through the counterfactual interface

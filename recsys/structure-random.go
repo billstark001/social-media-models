@@ -68,7 +68,6 @@ func (s *StructureRandom[O, P]) recommendRandom(
 	rng *rand.Rand,
 	useCache bool,
 ) []*model.PostRecord[O] {
-	visiblePosts := s.Model.Grid.PostMap
 
 	// Attempt to read raw scores from cache.
 	var rawCounts map[int64]float64
@@ -142,8 +141,8 @@ func (s *StructureRandom[O, P]) recommendRandom(
 			s.HistoricalPostCount,
 			neighborIDs,
 			agentPicked.ID,
-			s.Model.Grid.AgentMap,
-			visiblePosts,
+			s.Model,
+			s.hideReposts,
 			rng,
 		)
 		if post != nil {

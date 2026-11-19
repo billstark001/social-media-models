@@ -11,6 +11,7 @@ import (
 // OpinionRandom implements a recommendation system with random opinion preferences.
 type OpinionRandom[O any, P any] struct {
 	model.BaseRecommendationSystem[O, P]
+	postVisibility
 	Model               *model.SMPModel[O, P]
 	HistoricalPostCount int
 	AgentCount          int
@@ -174,7 +175,6 @@ func (o *OpinionRandom[O, P]) recommendFromRates(
 	rateVec []float64,
 	rng *rand.Rand,
 ) []*model.PostRecord[O] {
-	visiblePosts := o.Model.Grid.PostMap
 	sum := 0.0
 	rateVec[agent.ID] = 0
 	for id := range neighborIDs {
@@ -201,8 +201,8 @@ func (o *OpinionRandom[O, P]) recommendFromRates(
 			o.HistoricalPostCount,
 			neighborIDs,
 			agentPicked.ID,
-			o.Model.Grid.AgentMap,
-			visiblePosts,
+			o.Model,
+			o.hideReposts,
 			rng,
 		)
 		if post != nil {

@@ -12,6 +12,11 @@ type SMPModelRecommendationSystem[O any, P any] interface {
 	Dump() []byte
 }
 
+// RecommendationLayoutSystem optionally describes the sources of returned posts.
+type RecommendationLayoutSystem[O any, P any] interface {
+	RecommendWithLayout(*SMPAgent[O, P], map[int64]bool, int) ([]*PostRecord[O], RecommendationLayout)
+}
+
 // PreparedRecommendationState is an immutable decoded recommender snapshot.
 // Restore initializes a fresh recommender with independently mutable cache indexes.
 type PreparedRecommendationState interface {

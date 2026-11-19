@@ -24,11 +24,12 @@ type SMPModelParams[O any, P any] struct {
 }
 
 type CollectItemOptions struct {
-	AgentNumber    bool
-	OpinionSum     bool
-	RewiringEvent  bool
-	ViewPostsEvent bool
-	PostEvent      bool
+	AgentNumber      bool
+	OpinionSum       bool
+	RewiringEvent    bool
+	ViewPostsEvent   bool
+	ViewPostsDetails bool `json:"ViewPostsDetails,omitempty" msgpack:"ViewPostsDetails,omitempty"`
+	PostEvent        bool
 }
 
 func DefaultSMPModelParams[O any, P any]() *SMPModelParams[O, P] {
@@ -50,6 +51,13 @@ type SMPModel[O any, P any] struct {
 
 	Graph *simple.DirectedGraph
 	Grid  *NetworkGrid[O, P]
+
+	// ObserveFeed is an optional pre-commit observer. The supplied model state
+	// and slices are read-only and remain valid only during the call.
+	ObserveFeed        func(*SMPAgent[O, P], FeedObservation[O])
+	CaptureFeedDetails bool
+	capturePlacements  bool
+	placements         []PostPlacement
 
 	// CurStep starts from 1; incremented after each simulation step.
 	CurStep int
@@ -228,6 +236,33 @@ func (m *SMPModel[O, P]) GetRecommendation(agent *SMPAgent[O, P], neighbors []*S
 	neighborIDs := m.acquireNeighborIDs(agent.ID, neighbors)
 	defer m.releaseNeighborIDs(neighborIDs)
 	return m.Recsys.Recommend(agent, neighborIDs, m.ModelParams.RecsysCount)
+}
+
+func (m *SMPModel[O, P]) observedRecommendations(agent *SMPAgent[O, P], neighbors []*SMPAgent[O, P], detail bool) ([]*PostRecord[O], RecommendationLayout) {
+	m.placements = m.placements[:0]
+	m.capturePlacements = detail
+	defer func() { m.capturePlacements = false }()
+	mixed, ok := m.Recsys.(RecommendationLayoutSystem[O, P])
+	if !ok {
+		return m.GetRecommendation(agent, neighbors), RecommendationLayout{}
+	}
+	neighborIDs := m.acquireNeighborIDs(agent.ID, neighbors)
+	defer m.releaseNeighborIDs(neighborIDs)
+	return mixed.RecommendWithLayout(agent, neighborIDs, m.ModelParams.RecsysCount)
+}
+
+// RecordRecommendationPlacement associates the next displayed post with the
+// holder and round selected by the recommender. Ordinary runs skip this capture.
+func (m *SMPModel[O, P]) RecordRecommendationPlacement(holder int64, round int) {
+	if m.capturePlacements {
+		m.placements = append(m.placements, PostPlacement{Holder: holder, Round: round})
+	}
+}
+
+func (m *SMPModel[O, P]) ReplaceRecommendationPlacement(index int, holder int64, round int) {
+	if m.capturePlacements && index >= 0 && index < len(m.placements) {
+		m.placements[index] = PostPlacement{Holder: holder, Round: round}
+	}
 }
 
 // GetRecommendationAt evaluates the configured recommender at a hypothetical

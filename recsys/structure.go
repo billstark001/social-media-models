@@ -30,6 +30,7 @@ type StructureDump struct {
 // or 2-hop neighborhood actually changes (via PostStep).
 type Structure[O any, P any] struct {
 	model.BaseRecommendationSystem[O, P]
+	postVisibility
 	Model               *model.SMPModel[O, P]
 	HistoricalPostCount int
 	AgentCount          int
@@ -279,7 +280,6 @@ func (s *Structure[O, P]) recommend(
 	rng *rand.Rand,
 	useCache bool,
 ) []*model.PostRecord[O] {
-	visiblePosts := s.Model.Grid.PostMap
 
 	// Cache hit path.
 	if useCache && s.cacheValid[agent.ID] {
@@ -294,8 +294,8 @@ func (s *Structure[O, P]) recommend(
 						s.HistoricalPostCount,
 						neighborIDs,
 						agentPicked.ID,
-						s.Model.Grid.AgentMap,
-						visiblePosts,
+						s.Model,
+						s.hideReposts,
 						rng,
 					)
 					if post != nil {
@@ -359,8 +359,8 @@ func (s *Structure[O, P]) recommend(
 				s.HistoricalPostCount,
 				neighborIDs,
 				agentPicked.ID,
-				s.Model.Grid.AgentMap,
-				visiblePosts,
+				s.Model,
+				s.hideReposts,
 				rng,
 			)
 			if post != nil {

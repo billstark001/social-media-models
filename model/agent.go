@@ -27,6 +27,7 @@ type ViewPostsEventBody[O any] struct {
 	NeighborDiscordant    []*PostRecord[O]
 	RecommendedConcordant []*PostRecord[O]
 	RecommendedDiscordant []*PostRecord[O]
+	Details               *FeedDetails[O] `json:"Details,omitempty" msgpack:"Details,omitempty"`
 }
 
 // AgentNumberRecord holds counts of (concordant neighbor, concordant recommended,
@@ -98,6 +99,9 @@ func PartitionPosts[O any, P any](
 	discordantRecommended []*PostRecord[O],
 ) {
 	for i, np := range neighborPosts {
+		if np == nil {
+			continue
+		}
 		a := neighbors[i]
 		if dynamics.Concordant(opinion, np.Opinion, params) {
 			concordantNeighborAgents = append(concordantNeighborAgents, a)
@@ -133,14 +137,21 @@ func (a *SMPAgent[O, P]) Step() {
 
 	neighbors := a.Model.Grid.GetNeighbors(a.ID, false)
 
-	neighborPosts := make([]*PostRecord[O], 0, len(neighbors))
-	for _, n := range neighbors {
-		if n.CurPost != nil {
-			neighborPosts = append(neighborPosts, n.CurPost)
-		}
+	neighborPosts := make([]*PostRecord[O], len(neighbors))
+	for i, neighbor := range neighbors {
+		neighborPosts[i] = neighbor.CurPost
 	}
 
-	recommended := a.Model.GetRecommendation(a, neighbors)
+	observeFeed := a.Model.ObserveFeed
+	var recommended []*PostRecord[O]
+	layout := RecommendationLayout{}
+	logViews := (a.CollectOptions.ViewPostsEvent || a.CollectOptions.ViewPostsDetails) && a.Model.EventLogger != nil
+	detail := (logViews && a.CollectOptions.ViewPostsDetails) || a.Model.CaptureFeedDetails
+	if observeFeed == nil && !detail {
+		recommended = a.Model.GetRecommendation(a, neighbors)
+	} else {
+		recommended, layout = a.Model.observedRecommendations(a, neighbors, detail)
+	}
 
 	_, cNP, cR, dNA, dNP, dR := PartitionPosts(
 		a.CurOpinion,
@@ -178,13 +189,19 @@ func (a *SMPAgent[O, P]) Step() {
 		a.OpinionSum = opSum
 	}
 
-	var eViewPosts *ViewPostsEventBody[O]
-	if a.CollectOptions.ViewPostsEvent {
-		eViewPosts = &ViewPostsEventBody[O]{
+	var views ViewPostsEventBody[O]
+	if logViews || observeFeed != nil {
+		views = ViewPostsEventBody[O]{
 			NeighborConcordant:    cNP,
 			NeighborDiscordant:    dNP,
 			RecommendedConcordant: cR,
 			RecommendedDiscordant: dR,
+		}
+		if detail {
+			views.Details = a.feedDetails(neighbors, recommended, layout)
+		}
+		if observeFeed != nil {
+			observeFeed(a, FeedObservation[O]{ViewPostsEventBody: views, Displayed: recommended, Layout: layout})
 		}
 	}
 
@@ -243,12 +260,12 @@ func (a *SMPAgent[O, P]) Step() {
 	}
 
 	if a.Model.EventLogger != nil {
-		if eViewPosts != nil {
+		if logViews {
 			a.Model.EventLogger(&EventRecord{
 				Type:    "ViewPosts",
 				AgentID: a.ID,
 				Step:    a.Model.CurStep,
-				Body:    *eViewPosts,
+				Body:    views,
 			})
 		}
 		if ePost != nil {

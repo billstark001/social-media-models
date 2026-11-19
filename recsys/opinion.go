@@ -12,6 +12,7 @@ import (
 // Opinion implements a recommendation system based on opinion similarity.
 type Opinion[O any, P any] struct {
 	model.BaseRecommendationSystem[O, P]
+	postVisibility
 	Model               *model.SMPModel[O, P]
 	NoiseStd            float64
 	HistoricalPostCount int
@@ -177,8 +178,10 @@ func (o *Opinion[O, P]) recommendAround(
 			postToRecommend := o.AgentMap[a.AgentID].CurPost
 			cond := postToRecommend != nil &&
 				postToRecommend.AgentID != agentID &&
-				!neighborIDs[postToRecommend.AgentID]
+				!neighborIDs[postToRecommend.AgentID] &&
+				(!o.hideReposts || postToRecommend.IsOriginalPlacement(a.AgentID, o.Model.CurStep-1))
 			if cond {
+				o.Model.RecordRecommendationPlacement(a.AgentID, o.Model.CurStep-1)
 				ret = append(ret, postToRecommend)
 				continue
 			}
@@ -187,8 +190,11 @@ func (o *Opinion[O, P]) recommendAround(
 			a.HistoryID != -1 &&
 			!neighborIDs[a.AgentID]
 		if cond {
-			postToRecommend := visiblePosts[a.AgentID][a.HistoryID]
-			if postToRecommend != nil {
+			history := visiblePosts[a.AgentID]
+			postToRecommend := history[a.HistoryID]
+			placementRound := o.Model.CurStep - (len(history) - a.HistoryID)
+			if postToRecommend != nil && (!o.hideReposts || postToRecommend.IsOriginalPlacement(a.AgentID, placementRound)) {
+				o.Model.RecordRecommendationPlacement(a.AgentID, placementRound)
 				ret = append(ret, postToRecommend)
 			}
 		}

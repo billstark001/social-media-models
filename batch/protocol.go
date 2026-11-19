@@ -167,6 +167,7 @@ func decodeMetadata(raw json.RawMessage) (*simulation.ScenarioMetadata, error) {
 	metadata.OpinionSum = false
 	metadata.RewiringEvent = false
 	metadata.ViewPostsEvent = false
+	metadata.ViewPostsDetails = false
 	metadata.PostEvent = false
 	return metadata, nil
 }

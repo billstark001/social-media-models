@@ -229,20 +229,24 @@ func (edb *EventDB) flushLocked() error {
 				return fmt.Errorf("failed to insert post event: %w", err)
 			}
 		case "ViewPosts":
-			if body, ok := event.Body.(model.ViewPostsEventBody[float64]); ok {
-				data, err := msgpack.Marshal(body)
-				if err != nil {
-					tx.Rollback()
-					return fmt.Errorf("failed to marshal ViewPostsEventBody: %w", err)
-				}
-				_, err = tx.Stmt(edb.viewPostsStmt).Exec(eventIDs[i], data)
-				if err != nil {
-					tx.Rollback()
-					return fmt.Errorf("failed to insert view posts event: %w", err)
-				}
-			} else {
+			var body model.ViewPostsEventBody[float64]
+			switch value := event.Body.(type) {
+			case model.ViewPostsEventBody[float64]:
+				body = value
+			case model.ViewPostsEventBody[bool]:
+				body = float64ViewPosts(value)
+			default:
 				tx.Rollback()
 				return fmt.Errorf("invalid ViewPostsEventBody type")
+			}
+			data, err := msgpack.Marshal(body)
+			if err != nil {
+				tx.Rollback()
+				return fmt.Errorf("failed to marshal ViewPostsEventBody: %w", err)
+			}
+			if _, err := tx.Stmt(edb.viewPostsStmt).Exec(eventIDs[i], data); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("failed to insert view posts event: %w", err)
 			}
 		default:
 			tx.Rollback()
@@ -345,4 +349,59 @@ func (edb *EventDB) GetEvents() ([]*model.EventRecord, error) {
 	}
 
 	return events, nil
+}
+
+// Event readers use numeric opinion channels for all dynamics, just as Post
+// events do. Convert bool views at this persistence boundary.
+func float64ViewPosts(body model.ViewPostsEventBody[bool]) model.ViewPostsEventBody[float64] {
+	convertPost := func(post *model.PostRecord[bool]) *model.PostRecord[float64] {
+		if post == nil {
+			return nil
+		}
+		opinion := 0.0
+		if post.Opinion {
+			opinion = 1.0
+		}
+		return &model.PostRecord[float64]{AgentID: post.AgentID, Step: post.Step, Opinion: opinion}
+	}
+	convertPosts := func(posts []*model.PostRecord[bool]) []*model.PostRecord[float64] {
+		if posts == nil {
+			return nil
+		}
+		out := make([]*model.PostRecord[float64], len(posts))
+		for i, post := range posts {
+			out[i] = convertPost(post)
+		}
+		return out
+	}
+	out := model.ViewPostsEventBody[float64]{
+		NeighborConcordant:    convertPosts(body.NeighborConcordant),
+		NeighborDiscordant:    convertPosts(body.NeighborDiscordant),
+		RecommendedConcordant: convertPosts(body.RecommendedConcordant),
+		RecommendedDiscordant: convertPosts(body.RecommendedDiscordant),
+	}
+	if body.Details != nil {
+		convertSlots := func(slots []model.FeedSlot[bool]) []model.FeedSlot[float64] {
+			if slots == nil {
+				return nil
+			}
+			values := make([]model.FeedSlot[float64], len(slots))
+			for i, slot := range slots {
+				values[i] = model.FeedSlot[float64]{
+					Post: convertPost(slot.Post), Placement: slot.Placement, Source: slot.Source,
+				}
+			}
+			return values
+		}
+		opinion := 0.0
+		if body.Details.Opinion {
+			opinion = 1.0
+		}
+		out.Details = &model.FeedDetails[float64]{
+			Opinion: opinion, Requested: body.Details.Requested,
+			Neighbors:       convertSlots(body.Details.Neighbors),
+			Recommendations: convertSlots(body.Details.Recommendations),
+		}
+	}
+	return out
 }

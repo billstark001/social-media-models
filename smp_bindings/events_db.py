@@ -33,6 +33,7 @@ class ViewPostsEventBody:
   neighbor_discordant: list[PostRecord]
   recommended_concordant: list[PostRecord]
   recommended_discordant: list[PostRecord]
+  details: dict | None = None
 
 
 @dataclass
@@ -50,12 +51,16 @@ def unpack_view_posts_data(blob) -> ViewPostsEventBody:
   d = msgpack.unpackb(blob, raw=False)
 
   def to_records(lst):
-    return [PostRecord(*t) for t in lst]
+    return [
+        PostRecord(post["AgentID"], post["Step"], post["Opinion"]) if isinstance(post, dict) else PostRecord(*post)
+        for post in (lst or [])
+    ]
   return ViewPostsEventBody(
       neighbor_concordant=to_records(d.get('NeighborConcordant', [])),
       neighbor_discordant=to_records(d.get('NeighborDiscordant', [])),
       recommended_concordant=to_records(d.get('RecommendedConcordant', [])),
       recommended_discordant=to_records(d.get('RecommendedDiscordant', [])),
+      details=d.get('Details'),
   )
 
 # ---------------- 查询函数 ----------------
@@ -78,6 +83,8 @@ def get_events_by_step_range(
         "SELECT id, type, agent_id, step FROM events WHERE step >= ? AND step < ?", (a, b))
   rows = cur.fetchall()
   return [EventRecord(id=row[0], type=row[1], agent_id=row[2], step=row[3]) for row in rows]
+
+
 
 # 2.2 查找一条帖子（agent_id, step）所有被发送和转发的事件
 
@@ -137,6 +144,8 @@ def get_view_posts_event_body(
   if row:
     return unpack_view_posts_data(row[0])
   return None
+
+
 
 
 def get_rewiring_event_body(
