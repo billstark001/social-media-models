@@ -1,14 +1,19 @@
 package probe
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 
+	"smp/observables"
+	"smp/record"
 	"smp/simulation"
 )
 
 var errNilRequest = errors.New("nil probe request")
+
+const maxGridPoints = 1_000_001
 
 type driftParams struct {
 	tolerance float64
@@ -27,8 +32,15 @@ func gridValues(grid Grid) ([]float64, error) {
 		return nil, fmt.Errorf("grid max %v is less than min %v", grid.Max, grid.Min)
 	}
 	span := grid.Max - grid.Min
-	intervals := int(math.Round(span / grid.Step))
-	if math.Abs(float64(intervals)*grid.Step-span) > 1e-9*max(1, math.Abs(span)) {
+	rounded := math.Round(span / grid.Step)
+	if !isFinite(span) || !isFinite(rounded) || rounded >= float64(int(^uint(0)>>1)) {
+		return nil, errors.New("grid point count exceeds supported integer range")
+	}
+	if rounded >= maxGridPoints {
+		return nil, fmt.Errorf("grid may contain at most %d points", maxGridPoints)
+	}
+	intervals := int(rounded)
+	if intervals == 0 && span != 0 || math.Abs(float64(intervals)*grid.Step-span) > 1e-9*max(1, math.Abs(span)) {
 		return nil, fmt.Errorf("grid step %v does not evenly divide [%v, %v]", grid.Step, grid.Min, grid.Max)
 	}
 	values := make([]float64, intervals+1)
@@ -36,34 +48,127 @@ func gridValues(grid Grid) ([]float64, error) {
 		values[i] = grid.Min + float64(i)*grid.Step
 	}
 	values[len(values)-1] = grid.Max
+	for i := 1; i < len(values); i++ {
+		if values[i] <= values[i-1] {
+			return nil, errors.New("grid coordinates must increase at float64 precision")
+		}
+	}
 	return values, nil
 }
 
-func validateRequest(request *Request, needGrid bool) ([]float64, error) {
-	if request == nil {
-		return nil, errors.New("nil probe request")
+func requiresGraph(selected map[string]bool) bool {
+	return selected["force"] || selected["pathway"] || selected["energy"] || selected["landscape"] || selected["counterfactual_neighbor_energy"] || selected["bins"]
+}
+
+func validateRequest(request *Request, selected map[string]bool) error {
+	if len(request.States) == 0 {
+		return errors.New("at least one frozen state is required")
 	}
-	var values []float64
-	if needGrid {
-		var err error
-		values, err = gridValues(request.Grid)
-		if err != nil {
-			return nil, err
+	if selected["counterfactual_neighbor_energy"] && len(request.AnchorIDs) == 0 {
+		return errors.New("counterfactual_neighbor_energy requires anchor_ids")
+	}
+	if selected["force"] || selected["counterfactual_neighbor_energy"] {
+		seen := make(map[int64]bool, len(request.AnchorIDs))
+		for _, id := range request.AnchorIDs {
+			if id < 0 || seen[id] {
+				return fmt.Errorf("anchor_ids must contain distinct nonnegative IDs; got %d", id)
+			}
+			seen[id] = true
 		}
 	}
-	if request.Replicates <= 0 {
-		request.Replicates = 1
+	needGraph := requiresGraph(selected)
+	for _, state := range request.States {
+		if state.Step < 0 {
+			return errors.New("frozen state step must be nonnegative")
+		}
+		if needGraph {
+			if err := validateFrozenGraph(&state); err != nil {
+				return err
+			}
+		}
+		if selected["force"] || selected["counterfactual_neighbor_energy"] {
+			for _, id := range request.AnchorIDs {
+				if id >= int64(len(state.Opinions)) {
+					return fmt.Errorf("state %d has no anchor agent %d", state.Step, id)
+				}
+			}
+		}
 	}
-	if request.RecsysCount <= 0 {
-		return nil, fmt.Errorf("recsys_count must be > 0, got %d", request.RecsysCount)
+	if selected["force"] {
+		if err := simulation.ValidateRecsysParams(request.RecSysParams); err != nil {
+			return err
+		}
+		if request.Replicates <= 0 {
+			request.Replicates = 1
+		}
+		if request.RecsysCount <= 0 {
+			return fmt.Errorf("recsys_count must be > 0, got %d", request.RecsysCount)
+		}
+		if request.PostRetainCount < 0 {
+			return fmt.Errorf("post_retain_count must be >= 0, got %d", request.PostRetainCount)
+		}
+		for _, state := range request.States {
+			if err := validateForceState(&state); err != nil {
+				return err
+			}
+		}
 	}
-	if request.PostRetainCount < 0 {
-		return nil, fmt.Errorf("post_retain_count must be >= 0, got %d", request.PostRetainCount)
+	return nil
+}
+
+func validateForceState(state *FrozenState) error {
+	if state.Step < 0 || len(state.Opinions) == 0 {
+		return errors.New("force requires a nonempty completed state")
 	}
-	if len(request.States) == 0 {
-		return nil, errors.New("at least one frozen state is required")
+	if state.Step == int(^uint(0)>>1) {
+		return errors.New("force step cannot be advanced to a simulator step without integer overflow")
 	}
-	return values, nil
+	n := len(state.Opinions)
+	for i, opinion := range state.Opinions {
+		if !isFinite(opinion) {
+			return fmt.Errorf("state %d opinion %d must be finite", state.Step, i)
+		}
+		posts, ok := state.Posts[int64(i)]
+		if !ok || len(posts) == 0 {
+			return fmt.Errorf("state %d has no post history for agent %d", state.Step, i)
+		}
+		for _, post := range posts {
+			if post.AgentID < 0 || post.AgentID >= int64(n) || post.Step < -1 || post.Step > state.Step || !isFinite(post.Opinion) {
+				return fmt.Errorf("state %d has invalid post history for agent %d", state.Step, i)
+			}
+		}
+	}
+	if len(state.Posts) != n {
+		return fmt.Errorf("state %d posts include unknown agents", state.Step)
+	}
+	return nil
+}
+
+func validateFrozenGraph(state *FrozenState) error {
+	n := len(state.Opinions)
+	if !state.Graph.Directed || len(state.Graph.Nodes) != n {
+		return fmt.Errorf("state %d requires a directed graph with one node per opinion", state.Step)
+	}
+	for i := range state.Opinions {
+		if _, ok := state.Graph.Nodes[int64(i)]; !ok {
+			return fmt.Errorf("state %d graph node IDs must be dense", state.Step)
+		}
+	}
+	for source, targets := range state.Graph.Adjacency {
+		if source < 0 || source >= int64(n) {
+			return fmt.Errorf("state %d has an out-of-range edge source", state.Step)
+		}
+		for target := range targets {
+			if target < 0 || target >= int64(n) || target == source {
+				return fmt.Errorf("state %d has an invalid edge", state.Step)
+			}
+		}
+	}
+	return nil
+}
+
+func isFinite(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func paramsForRequest(request *Request) (driftParams, error) {
@@ -99,20 +204,134 @@ func prepareEvaluation(request *Request) (map[string]bool, []float64, driftParam
 	if request == nil {
 		return nil, nil, driftParams{}, errNilRequest
 	}
-	if err := loadCheckpointStates(request); err != nil {
-		return nil, nil, driftParams{}, err
-	}
 	selected, err := selectMeasurements(request.Measurements)
 	if err != nil {
 		return nil, nil, driftParams{}, err
 	}
-	needGrid := selected["force"] || selected["landscape"] || selected["counterfactual_neighbor_energy"]
-	grid, err := validateRequest(request, needGrid)
-	if err != nil {
+	if selected["bins"] {
+		if err := observables.ValidateBinBoundaries(request.Bins); err != nil {
+			return nil, nil, driftParams{}, err
+		}
+	}
+	var grid []float64
+	if selected["force"] || selected["landscape"] || selected["counterfactual_neighbor_energy"] {
+		grid, err = gridValues(request.Grid)
+		if err != nil {
+			return nil, nil, driftParams{}, err
+		}
+	}
+	if err := loadSources(request, selected); err != nil {
 		return nil, nil, driftParams{}, err
 	}
-	params, err := paramsForRequest(request)
+	if err := validateRequest(request, selected); err != nil {
+		return nil, nil, driftParams{}, err
+	}
+	var params driftParams
+	if selected["force"] {
+		params, err = paramsForRequest(request)
+	} else {
+		params.tolerance, err = staticEpsilon(request, selected)
+	}
 	return selected, grid, params, err
+}
+
+func staticEpsilon(request *Request, selected map[string]bool) (float64, error) {
+	if !usesCommonEpsilon(request, selected) {
+		return 0, nil
+	}
+	var epsilon float64
+	switch {
+	case request.Epsilon != nil:
+		epsilon = *request.Epsilon
+	case request.DynamicsType == simulation.DynamicsTypeHK:
+		epsilon = request.HKParams.Tolerance
+	case request.DynamicsType == simulation.DynamicsTypeDeffuant:
+		epsilon = request.DeffuantParams.Tolerance
+	default:
+		return 0, errors.New("selected measurements require epsilon or continuous-dynamics metadata")
+	}
+	if !isFinite(epsilon) || epsilon < 0 {
+		return 0, errors.New("epsilon must be finite and nonnegative")
+	}
+	return epsilon, nil
+}
+
+func usesCommonEpsilon(request *Request, selected map[string]bool) bool {
+	needCommon := selected["pathway"] || (selected["terminal"] && request.Terminal == nil)
+	needEnergy := selected["energy"] || selected["landscape"] || selected["counterfactual_neighbor_energy"]
+	return needCommon || (needEnergy && request.EnergyEpsilon == nil)
+}
+
+func validateRunDefaults(request *Request, selected map[string]bool, fields map[string]json.RawMessage) error {
+	if request.DynamicsType != simulation.DynamicsTypeHK && request.DynamicsType != simulation.DynamicsTypeDeffuant {
+		return nil
+	}
+	var required []string
+	if selected["force"] {
+		required = []string{"Tolerance", "Influence"}
+	} else if request.Epsilon == nil && usesCommonEpsilon(request, selected) {
+		required = []string{"Tolerance"}
+	}
+	if len(required) == 0 {
+		return nil
+	}
+	paramsName := request.DynamicsType + "Params"
+	var parameters map[string]json.RawMessage
+	if err := json.Unmarshal(fields[paramsName], &parameters); err != nil {
+		return fmt.Errorf("run metadata lacks explicit %s required by selected measurements", paramsName)
+	}
+	for _, name := range required {
+		var value *float64
+		if err := json.Unmarshal(parameters[name], &value); err != nil || value == nil {
+			return fmt.Errorf("run metadata lacks explicit %s.%s required by selected measurements", paramsName, name)
+		}
+	}
+	return nil
+}
+
+func loadSources(request *Request, selected map[string]bool) error {
+	sources := 0
+	for _, present := range []bool{len(request.States) > 0, len(request.CheckpointPaths) > 0, request.RunDirectory != ""} {
+		if present {
+			sources++
+		}
+	}
+	if sources != 1 {
+		return errors.New("exactly one of states, checkpoint_paths or run_directory is required")
+	}
+	if request.RunDirectory == "" {
+		if request.RunMetadata != nil {
+			return errors.New("run_metadata is supported only with run_directory")
+		}
+		if len(request.Steps) > 0 {
+			return errors.New("steps are supported only with run_directory")
+		}
+		return loadCheckpointStates(request)
+	}
+	run, err := record.OpenRun(request.RunDirectory, request.RunMetadata)
+	if err != nil {
+		return err
+	}
+	defer run.Close()
+	if request.DynamicsType != "" && request.DynamicsType != run.Metadata.DynamicsType {
+		return errors.New("run dynamics differ from request")
+	}
+	applySourceMetadata(request, run.Metadata)
+	if err := validateRunDefaults(request, selected, run.MetadataFields); err != nil {
+		return err
+	}
+	maxStep := run.MaxStep
+	request.sourceMaxStep = &maxStep
+	steps := request.Steps
+	if len(steps) == 0 {
+		steps = []int{run.MaxStep}
+	}
+	return run.ReadStates(steps, record.Requirements{Graph: requiresGraph(selected), Posts: selected["force"]}, func(state record.State) error {
+		request.States = append(request.States, FrozenState{
+			Step: state.Step, Graph: state.Graph, Opinions: state.Opinions, Posts: state.Posts, Precision: state.Precision,
+		})
+		return nil
+	})
 }
 
 func selectMeasurements(names []string) (map[string]bool, error) {
@@ -122,7 +341,7 @@ func selectMeasurements(names []string) (map[string]bool, error) {
 	}
 	for _, name := range names {
 		switch name {
-		case "force", "energy", "landscape", "counterfactual_neighbor_energy":
+		case "force", "energy", "landscape", "counterfactual_neighbor_energy", "pathway", "bins", "terminal":
 			selected[name] = true
 		default:
 			return nil, fmt.Errorf("unknown measurement %q", name)
@@ -135,9 +354,6 @@ func loadCheckpointStates(request *Request) error {
 	if len(request.CheckpointPaths) == 0 {
 		return nil
 	}
-	if len(request.States) > 0 {
-		return errors.New("provide states or checkpoint_paths, not both")
-	}
 	var firstMetadata *simulation.ScenarioMetadata
 	for _, path := range request.CheckpointPaths {
 		snapshot, _, err := simulation.ReadCheckpoint(path)
@@ -147,6 +363,12 @@ func loadCheckpointStates(request *Request) error {
 		if snapshot.Metadata == nil {
 			return errors.New("checkpoint lacks measurement metadata")
 		}
+		if snapshot.Metadata.DataVersion < 0 || snapshot.Metadata.DataVersion > simulation.CurrentDataVersion {
+			return fmt.Errorf("unsupported checkpoint DataVersion %d", snapshot.Metadata.DataVersion)
+		}
+		if snapshot.DynamicsType != snapshot.Metadata.DynamicsType {
+			return errors.New("checkpoint dynamics differ from its metadata")
+		}
 		if firstMetadata == nil {
 			firstMetadata = snapshot.Metadata
 		} else if err := simulation.ValidateCheckpointMetadata(firstMetadata, snapshot.Metadata); err != nil {
@@ -155,7 +377,7 @@ func loadCheckpointStates(request *Request) error {
 		if request.DynamicsType != "" && request.DynamicsType != snapshot.Metadata.DynamicsType {
 			return errors.New("checkpoint dynamics differ from request")
 		}
-		applyCheckpointMetadata(request, snapshot.Metadata)
+		applySourceMetadata(request, snapshot.Metadata)
 		view, err := simulation.InspectFloat64Checkpoint(snapshot)
 		if err != nil {
 			return err
@@ -165,7 +387,7 @@ func loadCheckpointStates(request *Request) error {
 	return nil
 }
 
-func applyCheckpointMetadata(request *Request, meta *simulation.ScenarioMetadata) {
+func applySourceMetadata(request *Request, meta *simulation.ScenarioMetadata) {
 	request.DynamicsType = meta.DynamicsType
 	request.HKParams = meta.HKParams
 	request.DeffuantParams = meta.DeffuantParams

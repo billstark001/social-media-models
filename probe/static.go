@@ -1,17 +1,17 @@
 package probe
 
 import (
-	"errors"
-
 	"smp/observables"
+	"smp/terminal"
 	"smp/utils"
+
+	"gonum.org/v1/gonum/graph/simple"
 )
 
-func measureStatic(request *Request, selected map[string]bool, grid []float64, params driftParams, results []StateResult) error {
-	if !selected["energy"] && !selected["landscape"] && !selected["counterfactual_neighbor_energy"] {
-		return nil
+func energyOptions(request *Request, epsilon float64) observables.EnergyOptions {
+	if request.Epsilon != nil {
+		epsilon = *request.Epsilon
 	}
-	epsilon := params.tolerance
 	if request.EnergyEpsilon != nil {
 		epsilon = *request.EnergyEpsilon
 	}
@@ -19,46 +19,69 @@ func measureStatic(request *Request, selected map[string]bool, grid []float64, p
 	if scale == 0 {
 		scale = 1
 	}
-	for i := range request.States {
-		if err := measureStaticState(&request.States[i], request.AnchorIDs, selected, grid, epsilon, scale, &results[i]); err != nil {
-			return err
-		}
-	}
-	return nil
+	return observables.EnergyOptions{Epsilon: epsilon, Scale: scale}
 }
 
-func measureStaticState(state *FrozenState, anchorIDs []int64, selected map[string]bool, grid []float64, epsilon, scale float64, result *StateResult) error {
-	graph := utils.DeserializeGraph(&state.Graph)
+func staticOptions(request *Request, selected map[string]bool, grid []float64, params driftParams) observables.StateOptions {
+	epsilon := params.tolerance
+	if request.Epsilon != nil {
+		epsilon = *request.Epsilon
+	}
+	energy := energyOptions(request, params.tolerance)
+	options := observables.StateOptions{}
 	if selected["energy"] {
-		value, err := observables.MeasureEnergy(state.Opinions, graph, epsilon, scale)
-		if err != nil {
-			return err
-		}
-		result.Energy = &value
+		options.Energy = &energy
+	}
+	if selected["pathway"] {
+		options.Pathway = &observables.PathwayOptions{Epsilon: epsilon}
+	}
+	if selected["bins"] {
+		options.Bins = request.Bins
 	}
 	if selected["landscape"] {
-		value, err := observables.MeasureLandscape(state.Opinions, graph, epsilon, scale, grid)
+		options.Landscape = &observables.LandscapeOptions{Epsilon: energy.Epsilon, Scale: energy.Scale, Queries: grid}
+	}
+	if selected["terminal"] {
+		options.Terminal = &terminal.Options{Epsilon: epsilon, MajorMass: 0.02}
+		if request.Terminal != nil {
+			*options.Terminal = *request.Terminal
+		}
+	}
+	return options
+}
+
+func measureStatic(request *Request, selected map[string]bool, grid []float64, params driftParams, results []StateResult) error {
+	options := staticOptions(request, selected, grid, params)
+	if options.Energy == nil && options.Pathway == nil && options.Bins == nil && options.Landscape == nil && options.Terminal == nil && !selected["counterfactual_neighbor_energy"] {
+		return nil
+	}
+	var measurer observables.StateMeasurer
+	for i := range request.States {
+		state := &request.States[i]
+		var graph *simple.DirectedGraph
+		if requiresGraph(selected) {
+			graph = utils.DeserializeGraph(&state.Graph)
+		}
+		value, err := measurer.Measure(state.Opinions, graph, options)
 		if err != nil {
 			return err
 		}
-		result.Landscape = &value
-	}
-	if selected["counterfactual_neighbor_energy"] {
-		if len(anchorIDs) == 0 {
-			return errors.New("counterfactual_neighbor_energy requires anchor_ids")
-		}
-		values := make(map[int64][]float64, len(anchorIDs))
-		valid := make(map[int64]bool, len(anchorIDs))
-		for _, id := range anchorIDs {
-			curve, isValid, err := observables.CounterfactualNeighborEnergy(state.Opinions, graph, id, epsilon, scale, grid)
-			if err != nil {
-				return err
+		result := &results[i]
+		result.Energy, result.Pathway, result.Binned = value.Energy, value.Pathway, value.Binned
+		result.Landscape, result.Terminal = value.Landscape, value.Terminal
+		if selected["counterfactual_neighbor_energy"] {
+			energy := energyOptions(request, params.tolerance)
+			values := make(map[int64][]float64, len(request.AnchorIDs))
+			valid := make(map[int64]bool, len(request.AnchorIDs))
+			for _, id := range request.AnchorIDs {
+				curve, isValid, err := observables.CounterfactualNeighborEnergy(state.Opinions, graph, id, energy.Epsilon, energy.Scale, grid)
+				if err != nil {
+					return err
+				}
+				values[id], valid[id] = curve, isValid
 			}
-			values[id] = curve
-			valid[id] = isValid
+			result.CounterfactualNeighborEnergy, result.CounterfactualNeighborValid = values, valid
 		}
-		result.CounterfactualNeighborEnergy = values
-		result.CounterfactualNeighborValid = valid
 	}
 	return nil
 }

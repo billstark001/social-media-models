@@ -49,7 +49,7 @@ func TestRunMsgpackProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
-	if err := run(bytes.NewReader(encoded), &output); err != nil {
+	if err := runMsgpack(bytes.NewReader(encoded), &output); err != nil {
 		t.Fatal(err)
 	}
 	var response probe.Response
@@ -61,5 +61,33 @@ func TestRunMsgpackProtocol(t *testing.T) {
 	}
 	if response.Version != probe.ProtocolVersion {
 		t.Fatalf("protocol version: got %d", response.Version)
+	}
+}
+
+func TestMsgpackTerminalUsesBoundaryFieldNames(t *testing.T) {
+	request := map[string]any{
+		"version": 1, "measurements": []string{"terminal"},
+		"states":   []map[string]any{{"step": 0, "opinions": []float64{0, 0.2}}},
+		"terminal": map[string]any{"epsilon": 0.0, "major_mass": 0.02},
+	}
+	encoded, err := msgpack.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := runMsgpack(bytes.NewReader(encoded), &output); err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]any
+	if err := msgpack.Unmarshal(output.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	result := response["results"].([]any)[0].(map[string]any)["terminal"].(map[string]any)
+	if _, ok := result["k_major"]; !ok || result["category"] != "k2" {
+		t.Fatalf("terminal boundary codec lost its explicit zero or canonical keys: %v", result)
+	}
+	encoded = append(encoded, 0xc0)
+	if err := runMsgpack(bytes.NewReader(encoded), &bytes.Buffer{}); err == nil {
+		t.Fatal("accepted trailing MsgPack object")
 	}
 }

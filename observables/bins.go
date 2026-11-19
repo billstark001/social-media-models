@@ -17,15 +17,27 @@ type BinnedState struct {
 	Edges      int       `json:"edges" msgpack:"edges"`
 }
 
-func MeasureBinnedState(opinions []float64, graph *simple.DirectedGraph, boundaries []float64) (BinnedState, error) {
-	var out BinnedState
+// ValidateBinBoundaries checks a binning request before state or file loading.
+func ValidateBinBoundaries(boundaries []float64) error {
 	if len(boundaries) < 2 {
-		return out, fmt.Errorf("at least two bin boundaries are required")
+		return fmt.Errorf("at least two bin boundaries are required")
+	}
+	bins := len(boundaries) - 1
+	if bins > int(^uint(0)>>1)/8/bins {
+		return fmt.Errorf("binned edge matrix exceeds addressable memory")
 	}
 	for i, x := range boundaries {
 		if math.IsNaN(x) || math.IsInf(x, 0) || (i > 0 && x <= boundaries[i-1]) {
-			return out, fmt.Errorf("bin boundaries must be finite and increasing")
+			return fmt.Errorf("bin boundaries must be finite and increasing")
 		}
+	}
+	return nil
+}
+
+func MeasureBinnedState(opinions []float64, graph *simple.DirectedGraph, boundaries []float64) (BinnedState, error) {
+	var out BinnedState
+	if err := ValidateBinBoundaries(boundaries); err != nil {
+		return out, err
 	}
 	n := len(opinions)
 	if n == 0 {

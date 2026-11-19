@@ -14,7 +14,6 @@ import (
 	"smp/observables"
 	smprng "smp/rng"
 	"smp/simulation"
-	"smp/terminal"
 )
 
 func deriveBranchSpec(base smprng.Spec, sourceSHA string, index int) smprng.Spec {
@@ -214,15 +213,16 @@ func runReplicate(ctx context.Context, metadata *simulation.ScenarioMetadata, pr
 		rep.FinalOpinions = finalOpinions
 	}
 	if output.Terminal != nil {
-		epsilon, err := confidenceTolerance(&copyMetadata)
+		options, err := terminalStateOptions(&copyMetadata, output.Terminal)
 		if err != nil {
 			return rep, err
 		}
-		classified, err := terminal.ClassifyOpinions(finalOpinions, epsilon, output.Terminal.MajorMass, output.Terminal.PositionResolution, output.Terminal.MassResolution)
+		var measure observables.StateMeasurer
+		state, err := measure.Measure(finalOpinions, nil, options)
 		if err != nil {
 			return rep, err
 		}
-		rep.Terminal = &classified
+		rep.Terminal = state.Terminal
 	}
 	if trace != nil {
 		rep.ExposureTrace, err = trace.finish()
@@ -239,7 +239,10 @@ func observeReplicate(ctx context.Context, scenario *simulation.Scenario, spec *
 	policy := scenario.Metadata.RecsysFactoryType
 	var m *hkModel
 	var exposure Exposure
-	var measure observables.PathwayMeasurer
+	observer, err := newEndpointObserver(scenario.Metadata, output)
+	if err != nil {
+		return err
+	}
 	var opinions []float64
 	if output.Pathway || change != nil {
 		m = scenario.Model.(*simulation.Float64ModelWrapper[dynamics.HKParams]).M
@@ -265,7 +268,7 @@ func observeReplicate(ctx context.Context, scenario *simulation.Scenario, spec *
 						for _, agent := range m.Schedule.Agents {
 							opinions[agent.ID] = agent.CurOpinion
 						}
-						hit, err := measure.ExcessAtLeast(opinions, m.Graph, m.AgentParams.Tolerance, *change.ExcessAtLeast)
+						hit, err := observer.measure.Pathway.ExcessAtLeast(opinions, m.Graph, m.AgentParams.Tolerance, *change.ExcessAtLeast)
 						if err != nil {
 							return err
 						}
@@ -301,7 +304,7 @@ func observeReplicate(ctx context.Context, scenario *simulation.Scenario, spec *
 				return nil
 			}
 		}
-		point, err := endpoint(scenario, h, output, &measure)
+		point, err := observer.observe(scenario, h)
 		if err != nil {
 			return err
 		}

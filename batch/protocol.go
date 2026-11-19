@@ -25,12 +25,11 @@ import (
 const SchemaVersion = 1
 
 type Request struct {
-	SchemaVersion  int             `json:"schema_version"`
-	RequestID      string          `json:"request_id"`
-	Metadata       json.RawMessage `json:"metadata"`
-	Output         OutputOptions   `json:"output"`
-	Experiment     *ExperimentSpec `json:"experiment,omitempty"`
-	MeasurePathway *PathwayInput   `json:"measure_pathway,omitempty"`
+	SchemaVersion int             `json:"schema_version"`
+	RequestID     string          `json:"request_id"`
+	Metadata      json.RawMessage `json:"metadata"`
+	Output        OutputOptions   `json:"output"`
+	Experiment    *ExperimentSpec `json:"experiment,omitempty"`
 }
 
 type ExperimentSpec struct {
@@ -51,11 +50,6 @@ type OutputOptions struct {
 	FullState     bool             `json:"full_state,omitempty"`
 	Pathway       bool             `json:"pathway,omitempty"`
 	ExposureTrace string           `json:"exposure_trace,omitempty"`
-}
-
-func (output OutputOptions) empty() bool {
-	return !output.FinalOpinions && output.Terminal == nil && len(output.Bins) == 0 &&
-		!output.Energy && !output.FullState && !output.Pathway && output.ExposureTrace == ""
 }
 
 type EdgePair [2]int64
@@ -98,18 +92,17 @@ type OpinionSummary struct {
 }
 
 type Result struct {
-	ProtocolSHA256 string                    `json:"protocol_sha256"`
-	RNG            smprng.Spec               `json:"resolved_rng"`
-	Steps          int                       `json:"steps"`
-	StopReason     string                    `json:"stop_reason"`
-	Opinions       *OpinionSummary           `json:"opinions,omitempty"`
-	Terminal       *terminal.Result          `json:"terminal,omitempty"`
-	FinalOpinions  []float64                 `json:"final_opinions,omitempty"`
-	SourceSHA256   string                    `json:"source_sha256,omitempty"`
-	Replicates     []ReplicateResult         `json:"replicates,omitempty"`
-	Energy         *observables.Energy       `json:"energy,omitempty"`
-	Binned         *observables.BinnedState  `json:"binned,omitempty"`
-	Pathway        *observables.PathwayState `json:"pathway,omitempty"`
+	ProtocolSHA256 string                   `json:"protocol_sha256"`
+	RNG            smprng.Spec              `json:"resolved_rng"`
+	Steps          int                      `json:"steps"`
+	StopReason     string                   `json:"stop_reason"`
+	Opinions       *OpinionSummary          `json:"opinions,omitempty"`
+	Terminal       *terminal.Result         `json:"terminal,omitempty"`
+	FinalOpinions  []float64                `json:"final_opinions,omitempty"`
+	SourceSHA256   string                   `json:"source_sha256,omitempty"`
+	Replicates     []ReplicateResult        `json:"replicates,omitempty"`
+	Energy         *observables.Energy      `json:"energy,omitempty"`
+	Binned         *observables.BinnedState `json:"binned,omitempty"`
 }
 
 type ResponseError struct {
@@ -157,7 +150,7 @@ func decodeRequest(line string) (Request, error) {
 			SchemaVersion,
 		)
 	}
-	if request.MeasurePathway == nil && (len(request.Metadata) == 0 || string(request.Metadata) == "null") {
+	if len(request.Metadata) == 0 || string(request.Metadata) == "null" {
 		return request, errors.New("metadata must be a JSON object")
 	}
 	return request, nil
@@ -189,13 +182,8 @@ func decodeMetadata(raw json.RawMessage) (*simulation.ScenarioMetadata, error) {
 
 func normalizeOutput(output OutputOptions) (OutputOptions, error) {
 	if len(output.Bins) > 0 {
-		if len(output.Bins) < 2 {
-			return output, errors.New("output.bins needs at least two boundaries")
-		}
-		for i, x := range output.Bins {
-			if !isFinite(x) || (i > 0 && x <= output.Bins[i-1]) {
-				return output, errors.New("output.bins must be finite and increasing")
-			}
+		if err := observables.ValidateBinBoundaries(output.Bins); err != nil {
+			return output, fmt.Errorf("output.bins: %w", err)
 		}
 	}
 	if output.Terminal == nil {
@@ -229,6 +217,34 @@ func confidenceTolerance(metadata *simulation.ScenarioMetadata) (float64, error)
 	default:
 		return 0, fmt.Errorf("terminal component classification is not supported for %s", metadata.DynamicsType)
 	}
+}
+
+// stateOptions adapts batch defaults for endpoint observations. Terminal
+// classification is separate so normal runs retain its distinct error kind.
+func stateOptions(metadata *simulation.ScenarioMetadata, output OutputOptions) (observables.StateOptions, error) {
+	options := observables.StateOptions{Bins: output.Bins}
+	if output.Energy {
+		epsilon, err := confidenceTolerance(metadata)
+		if err != nil {
+			return options, err
+		}
+		options.Energy = &observables.EnergyOptions{Epsilon: epsilon, Scale: 1}
+	}
+	if output.Pathway {
+		options.Pathway = &observables.PathwayOptions{Epsilon: metadata.HKParams.Tolerance}
+	}
+	return options, nil
+}
+
+func terminalStateOptions(metadata *simulation.ScenarioMetadata, output *TerminalOptions) (observables.StateOptions, error) {
+	epsilon, err := confidenceTolerance(metadata)
+	if err != nil {
+		return observables.StateOptions{}, err
+	}
+	return observables.StateOptions{Terminal: &terminal.Options{
+		Epsilon: epsilon, MajorMass: output.MajorMass,
+		PositionResolution: output.PositionResolution, MassResolution: output.MassResolution,
+	}}, nil
 }
 
 func protocolSHA256(metadata *simulation.ScenarioMetadata, output OutputOptions, experiment *ExperimentSpec, sourceSHA string) (string, error) {
@@ -268,37 +284,33 @@ func summarizeOpinions(values []float64) OpinionSummary {
 	return result
 }
 
-func endpoint(scenario *simulation.Scenario, relative int, output OutputOptions, measure *observables.PathwayMeasurer) (Endpoint, error) {
+type endpointObserver struct {
+	measure   observables.StateMeasurer
+	options   observables.StateOptions
+	fullState bool
+}
+
+// Observation settings are constant within a replicate. Resolve them once so
+// repeated small-state measurements do not allocate per-endpoint option objects.
+func newEndpointObserver(metadata *simulation.ScenarioMetadata, output OutputOptions) (*endpointObserver, error) {
+	options, err := stateOptions(metadata, output)
+	if err != nil {
+		return nil, err
+	}
+	return &endpointObserver{options: options, fullState: output.FullState}, nil
+}
+
+func (o *endpointObserver) observe(scenario *simulation.Scenario, relative int) (Endpoint, error) {
 	step := scenario.Model.GetCurStep() - 1
 	result := Endpoint{Step: step, RelativeStep: relative}
 	opinions := scenario.Model.GetOpinions()
 	graph := scenario.Model.GetGraph()
-	if output.Energy {
-		epsilon, err := confidenceTolerance(scenario.Metadata)
-		if err != nil {
-			return result, err
-		}
-		energy, err := observables.MeasureEnergy(opinions, graph, epsilon, 1)
-		if err != nil {
-			return result, err
-		}
-		result.Energy = &energy
+	state, err := o.measure.Measure(opinions, graph, o.options)
+	if err != nil {
+		return result, err
 	}
-	if len(output.Bins) > 0 {
-		binned, err := observables.MeasureBinnedState(opinions, graph, output.Bins)
-		if err != nil {
-			return result, err
-		}
-		result.Binned = &binned
-	}
-	if output.Pathway {
-		state, err := measure.Measure(opinions, graph, scenario.Metadata.HKParams.Tolerance)
-		if err != nil {
-			return result, err
-		}
-		result.Pathway = &state
-	}
-	if output.FullState {
+	result.Energy, result.Binned, result.Pathway = state.Energy, state.Binned, state.Pathway
+	if o.fullState {
 		result.Opinions = opinions
 		nodes := graph.Nodes()
 		for nodes.Next() {
@@ -359,16 +371,6 @@ func processRequest(ctx context.Context, line string, options Options) (Response
 	request, err := decodeRequest(line)
 	if err != nil {
 		return errorResponse(request.RequestID, "invalid_request", err), nil, nil
-	}
-	if request.MeasurePathway != nil {
-		if request.Experiment != nil || len(request.Metadata) > 0 || !request.Output.empty() {
-			return errorResponse(request.RequestID, "invalid_request", errors.New("measure_pathway accepts only a frozen state")), nil, nil
-		}
-		state, err := request.MeasurePathway.measure()
-		if err != nil {
-			return errorResponse(request.RequestID, "measurement", err), nil, nil
-		}
-		return Response{SchemaVersion: SchemaVersion, RequestID: request.RequestID, Status: "ok", Result: &Result{Pathway: &state}}, nil, nil
 	}
 	metadata, err := decodeMetadata(request.Metadata)
 	if err != nil {

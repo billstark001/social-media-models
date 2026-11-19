@@ -6,7 +6,6 @@ import (
 	"smp/observables"
 	"smp/progress"
 	"smp/simulation"
-	"smp/terminal"
 )
 
 func runNormal(ctx context.Context, metadata *simulation.ScenarioMetadata, request Request, options Options) (Response, error) {
@@ -45,34 +44,26 @@ func runNormal(ctx context.Context, metadata *simulation.ScenarioMetadata, reque
 func measureNormalResult(metadata *simulation.ScenarioMetadata, output OutputOptions, scenario *simulation.Scenario, result *Result) (string, error) {
 	opinions := scenario.Model.GetOpinions()
 	graph := scenario.Model.GetGraph()
-	if output.Energy {
-		epsilon, err := confidenceTolerance(metadata)
-		if err != nil {
-			return "measurement", err
-		}
-		value, err := observables.MeasureEnergy(opinions, graph, epsilon, 1)
-		if err != nil {
-			return "measurement", err
-		}
-		result.Energy = &value
+	options, err := stateOptions(metadata, output)
+	if err != nil {
+		return "measurement", err
 	}
-	if len(output.Bins) > 0 {
-		value, err := observables.MeasureBinnedState(opinions, graph, output.Bins)
-		if err != nil {
-			return "measurement", err
-		}
-		result.Binned = &value
+	var measure observables.StateMeasurer
+	state, err := measure.Measure(opinions, graph, options)
+	if err != nil {
+		return "measurement", err
 	}
+	result.Energy, result.Binned = state.Energy, state.Binned
 	if output.Terminal != nil {
-		epsilon, err := confidenceTolerance(metadata)
+		options, err := terminalStateOptions(metadata, output.Terminal)
 		if err != nil {
 			return "terminal_classification", err
 		}
-		classification, err := terminal.ClassifyOpinions(opinions, epsilon, output.Terminal.MajorMass, output.Terminal.PositionResolution, output.Terminal.MassResolution)
+		state, err := measure.Measure(opinions, graph, options)
 		if err != nil {
 			return "terminal_classification", err
 		}
-		result.Terminal = &classification
+		result.Terminal = state.Terminal
 	}
 	if output.FinalOpinions {
 		result.FinalOpinions = opinions
