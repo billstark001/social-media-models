@@ -1,29 +1,25 @@
 """Python bindings for the Go ``smp-probe`` counterfactual evaluator.
 
-Python reconstructs frozen network/opinion/post states from simulation output.
-All recommendation and drift evaluation remains in Go.
+Go reads persistent runs and checkpoints directly. Explicit frozen states remain
+available for synthetic inputs. All measurement and recommendation logic is Go.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
-from collections.abc import Iterable, Mapping, Sequence
+import tempfile
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import msgpack
 import networkx as nx
 
-from smp_bindings.events_db import (
-  PostEventBody,
-  PostRecord,
-  batch_load_event_bodies,
-  get_events_by_step_range,
-)
+from smp_bindings.process import process_group_kwargs, terminate_process
 
-if TYPE_CHECKING:
-  from smp_bindings.record import RawSimulationRecord
+from smp_bindings.events_db import PostRecord
 
 
 @dataclass(frozen=True)
@@ -34,7 +30,7 @@ class FrozenSimulationState:
   graph: nx.DiGraph
   opinions: Sequence[float]
   posts: Mapping[int, Sequence[PostRecord]]
-  precision: str = "history_f32"
+  precision: str = "inline_f64"
 
   def to_wire(self) -> dict[str, Any]:
     return {
@@ -76,136 +72,11 @@ def _graph_to_wire(graph: nx.DiGraph) -> dict[str, Any]:
   }
 
 
-def freeze_record(
-    record: RawSimulationRecord,
-    steps: Iterable[int],
-) -> list[FrozenSimulationState]:
-  """Reconstruct post history and network snapshots for selected steps.
-
-  Normal posts are implied by the accumulated opinion rows. Repost events are
-  read from SQLite and replace the corresponding normal post. Therefore a run
-  with nonzero ``RepostRate`` must have ``PostEvent`` collection enabled.
-  """
-
-  requested_steps = sorted({int(step) for step in steps})
-  if not requested_steps:
-    raise ValueError("at least one probe step is required")
-  for step in requested_steps:
-    if step < 0 or step > record.max_step:
-      raise ValueError(
-          f"invalid probe step {step}; available range is [0, {record.max_step}]"
-      )
-
-  dynamics_type = record.metadata.get("DynamicsType")
-  if dynamics_type not in ("HK", "Deffuant"):
-    raise ValueError(
-        f"smp-probe supports HK and Deffuant, got {dynamics_type!r}"
-    )
-  params_value = record.metadata.get(f"{dynamics_type}Params")
-  params = params_value if isinstance(params_value, Mapping) else {}
-  repost_rate = float(params.get("RepostRate", 0.0))
-  post_events_enabled = bool(record.metadata.get("PostEvent", False))
-  max_requested = requested_steps[-1]
-  if max_requested > 0 and repost_rate > 0 and not post_events_enabled:
-    raise ValueError(
-        "cannot reconstruct posts: RepostRate is nonzero but PostEvent "
-        "collection was disabled"
-    )
-
-  rewiring_rate = float(params.get("RewiringRate", 0.0))
-  rewiring_events_enabled = bool(record.metadata.get("RewiringEvent", False))
-  graph_paths = getattr(record, "graph_paths", {})
-  missing_exact_graphs = [
-      step for step in requested_steps if step not in graph_paths
-  ]
-  if (
-      rewiring_rate > 0
-      and not rewiring_events_enabled
-      and missing_exact_graphs
-  ):
-    raise ValueError(
-        "cannot reconstruct networks at steps "
-        f"{missing_exact_graphs}: RewiringRate is nonzero but "
-        "RewiringEvent collection was disabled and no exact graph dump exists"
-    )
-
-  reposts_by_step: dict[int, dict[int, PostRecord]] = {}
-  if max_requested > 0 and post_events_enabled:
-    events = get_events_by_step_range(
-        record.events_db,
-        1,
-        max_requested + 1,
-        type_="Post",
-    )
-    batch_load_event_bodies(record.events_db, events, event_type="Post")
-    for event in events:
-      if not isinstance(event.body, PostEventBody) or not event.body.is_repost:
-        continue
-      step_events = reposts_by_step.setdefault(int(event.step), {})
-      if event.agent_id in step_events:
-        raise ValueError(
-            f"multiple Post events for agent {event.agent_id} at step {event.step}"
-        )
-      step_events[int(event.agent_id)] = event.body.record
-
-  retain_count = max(int(record.metadata.get("PostRetainCount", 0)), 1)
-  posts: dict[int, list[PostRecord]] = {
-      agent_id: [
-          PostRecord(
-              agent_id=agent_id,
-              step=-1,
-              opinion=float(record.opinions[0, agent_id]),
-          )
-      ]
-      for agent_id in range(record.agents)
-  }
-
-  states: list[FrozenSimulationState] = []
-  requested = set(requested_steps)
-
-  def append_state(step: int) -> None:
-    precision = (
-        "history_" + record.trajectory.opinion_precision_at(step).replace("float", "f")
-        if getattr(record, "trajectory", None) is not None else "history_f32"
-    )
-    states.append(FrozenSimulationState(
-        step=step,
-        graph=record.get_graph(step).copy(),
-        opinions=[float(value) for value in record.opinions[step]],
-        posts={
-            agent_id: list(records)
-            for agent_id, records in posts.items()
-        },
-        precision=precision,
-    ))
-
-  if 0 in requested:
-    append_state(0)
-  for step in range(1, max_requested + 1):
-    step_reposts = reposts_by_step.get(step, {})
-    for agent_id in range(record.agents):
-      post = step_reposts.get(agent_id)
-      if post is None:
-        post = PostRecord(
-            agent_id=agent_id,
-            step=step,
-            opinion=float(record.opinions[step, agent_id]),
-        )
-      history = posts[agent_id]
-      history.append(post)
-      if len(history) > retain_count:
-        del history[:-retain_count]
-    if step in requested:
-      append_state(step)
-
-  return states
-
-
 def run_probe(
     states: Sequence[FrozenSimulationState],
-    metadata: Mapping[str, Any],
+    metadata: Mapping[str, Any] | None = None,
     *,
-    h: float,
+    h: float = 0.02,
     minimum: float = -1.0,
     maximum: float = 1.0,
     replicates: int = 1,
@@ -216,18 +87,16 @@ def run_probe(
     energy_scale: float = 1.0,
     energy_epsilon: float | None = None,
     per_anchor: bool = False,
+    epsilon: float | None = None,
+    bins: Sequence[float] | None = None,
+    terminal: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
   """Run the Go evaluator and return its decoded response."""
 
   if not states:
     raise ValueError("at least one frozen state is required")
+  metadata = metadata or {}
   dynamics_type = str(metadata.get("DynamicsType", ""))
-  if dynamics_type not in ("HK", "Deffuant"):
-    raise ValueError(
-        f"smp-probe supports HK and Deffuant, got {dynamics_type!r}"
-    )
-  if replicates <= 0:
-    raise ValueError("replicates must be positive")
 
   if rng is None:
     metadata_rng = metadata.get("RNG")
@@ -261,12 +130,15 @@ def run_probe(
           "step": float(h),
       },
       "replicates": int(replicates),
-      "anchor_ids": [int(agent_id) for agent_id in (anchor_ids or [])],
+      "anchor_ids": [int(agent_id) for agent_id in ([] if anchor_ids is None else anchor_ids)],
       "states": [state.to_wire() for state in states],
       "measurements": list(measurements) if measurements is not None else [],
       "energy_scale": float(energy_scale),
       "energy_epsilon": energy_epsilon,
       "per_anchor": per_anchor,
+      "epsilon": epsilon,
+      "bins": [] if bins is None else list(bins),
+      "terminal": dict(terminal) if terminal is not None else None,
   }
   return _send_probe_request(request, binary_path)
 
@@ -284,6 +156,9 @@ def run_probe_checkpoints(
     energy_epsilon: float | None = None,
     per_anchor: bool = False,
     binary_path: str | None = None,
+    epsilon: float | None = None,
+    bins: Sequence[float] | None = None,
+    terminal: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
   """Measure exact float64 checkpoints directly in Go without Python state copies."""
   if not checkpoint_paths:
@@ -294,12 +169,117 @@ def run_probe_checkpoints(
       "measurements": list(measurements),
       "grid": {"min": minimum, "max": maximum, "step": h},
       "replicates": replicates,
-      "anchor_ids": [int(value) for value in (anchor_ids or [])],
+      "anchor_ids": [int(value) for value in ([] if anchor_ids is None else anchor_ids)],
+      "energy_scale": energy_scale,
+      "energy_epsilon": energy_epsilon,
+      "per_anchor": per_anchor,
+      "epsilon": epsilon,
+      "bins": [] if bins is None else list(bins),
+      "terminal": dict(terminal) if terminal is not None else None,
+  }
+  return _send_probe_request(request, binary_path)
+
+
+def run_probe_run(
+    directory: str | os.PathLike[str],
+    steps: Sequence[int] | None = None,
+    *,
+    measurements: Sequence[str],
+    metadata: Mapping[str, Any] | None = None,
+    epsilon: float | None = None,
+    bins: Sequence[float] | None = None,
+    terminal: Mapping[str, Any] | None = None,
+    h: float = 0.02,
+    minimum: float = -1.0,
+    maximum: float = 1.0,
+    replicates: int = 1,
+    anchor_ids: Sequence[int] | None = None,
+    rng: Mapping[str, str] | None = None,
+    energy_scale: float = 1.0,
+    energy_epsilon: float | None = None,
+    per_anchor: bool = False,
+    binary_path: str | None = None,
+) -> dict[str, Any]:
+  """Measure a saved run in Go; omitted steps select its last recorded state."""
+  request = {
+      "version": 1,
+      "run_directory": os.fspath(directory),
+      "steps": [] if steps is None else list(steps),
+      "measurements": list(measurements),
+      "epsilon": epsilon,
+      "bins": [] if bins is None else list(bins),
+      "terminal": dict(terminal) if terminal is not None else None,
+      "grid": {"min": minimum, "max": maximum, "step": h},
+      "replicates": replicates,
+      "anchor_ids": [] if anchor_ids is None else list(anchor_ids),
+      "rng": dict(rng or {}),
       "energy_scale": energy_scale,
       "energy_epsilon": energy_epsilon,
       "per_anchor": per_anchor,
   }
+  if metadata is not None:
+    request["run_metadata"] = dict(metadata)
   return _send_probe_request(request, binary_path)
+
+
+def run_probe_jobs(
+    requests: Iterable[Mapping[str, Any]],
+    *,
+    binary_path: str | None = None,
+) -> Iterator[dict[str, Any]]:
+  """Evaluate independent native requests through one sequential JSONL worker.
+
+  Each request can select inline states, a run directory, or checkpoints. Jobs
+  own their probe RNG; states within one job share the same RNG lifecycle.
+  """
+  executable = binary_path or os.environ.get("SMP_PROBE_BINARY") or "./smp-probe"
+  with tempfile.TemporaryFile(mode="w+", encoding="utf8") as diagnostics:
+    process = subprocess.Popen(
+        [os.fspath(executable), "--format", "jsonl"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=diagnostics,
+        text=True, encoding="utf8", bufsize=1, **process_group_kwargs(),
+    )
+    try:
+      assert process.stdin is not None and process.stdout is not None
+      for index, original in enumerate(requests, 1):
+        request = dict(original)
+        request.setdefault("version", 1)
+        request.setdefault("request_id", f"probe-{index}")
+        request_id = request["request_id"]
+        if not isinstance(request_id, str) or not request_id.strip():
+          raise ValueError("probe request_id must be a non-empty string")
+        process.stdin.write(json.dumps(request, allow_nan=False, separators=(",", ":")) + "\n")
+        process.stdin.flush()
+        line = process.stdout.readline()
+        if not line:
+          diagnostics.seek(0)
+          raise RuntimeError(f"smp-probe ended before job {index}: {diagnostics.read().strip()}")
+        response = json.loads(line)
+        if not isinstance(response, dict) or type(response.get("line")) is not int or response["line"] != index:
+          raise RuntimeError(f"smp-probe returned an uncorrelated reply for job {index}")
+        response_id = response.get("request_id")
+        if response.get("status") == "error":
+          if response_id not in (None, "") and response_id != request_id:
+            raise RuntimeError(f"smp-probe returned an uncorrelated reply for job {index}")
+          raise RuntimeError(f"smp-probe job {index}: {response.get('error', 'invalid response')}")
+        if response.get("status") != "ok":
+          raise RuntimeError(f"smp-probe job {index}: invalid response status {response.get('status')!r}")
+        if response_id != request_id:
+          raise RuntimeError(f"smp-probe returned an uncorrelated reply for job {index}")
+        result = response.get("result")
+        if not isinstance(result, dict) or result.get("version") != 1:
+          raise RuntimeError("smp-probe returned an invalid result")
+        yield result
+      process.stdin.close()
+      if process.wait() != 0:
+        diagnostics.seek(0)
+        raise RuntimeError(f"smp-probe failed: {diagnostics.read().strip()}")
+    finally:
+      terminate_process(process, process_group=True)
+      if process.stdin is not None and not process.stdin.closed:
+        process.stdin.close()
+      if process.stdout is not None:
+        process.stdout.close()
 
 
 def _send_probe_request(request: Mapping[str, Any], binary_path: str | None) -> dict[str, Any]:

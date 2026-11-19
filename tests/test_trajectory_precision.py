@@ -26,6 +26,16 @@ def make_chunk(opinion_dtype: str, sum_dtype: str, version: int = 3) -> bytes:
   return bytes(data)
 
 
+def write_reader(root: Path, raw: bytes, *, agents: int = 2, precision: str = "float32") -> TrajectoryReader:
+  (root / "chunk.smpc").write_bytes(raw)
+  (root / "trajectory.json").write_text(json.dumps({
+      "version": 3, "agents": agents, "next_step": 1,
+      "precision": {"opinions": precision, "opinion_sums": precision},
+      "chunks": [{"start": 0, "end": 0, "file": "chunk.smpc", "sha256": hashlib.sha256(raw).hexdigest()}],
+  }))
+  return TrajectoryReader(root)
+
+
 class TrajectoryPrecisionTest(unittest.TestCase):
 
   def test_all_channel_precision_combinations(self):
@@ -60,6 +70,37 @@ class TrajectoryPrecisionTest(unittest.TestCase):
       self.assertEqual(reader.channel("opinions").dtype, np.dtype("float32"))
       self.assertEqual(reader.row("opinions", 0).dtype, np.dtype("float32"))
       self.assertEqual(reader.row("opinions", 1).dtype, np.dtype("float32"))
+
+  def test_reader_rejects_manifest_and_chunk_mismatches(self):
+    raw = make_chunk("float32", "float32")
+    with tempfile.TemporaryDirectory() as folder:
+      root = Path(folder)
+      reader = write_reader(root, raw, agents=3)
+      with self.assertRaisesRegex(ValueError, "shape mismatch"):
+        reader.row("opinions", 0)
+      reader = write_reader(root, raw, precision="float16")
+      with self.assertRaisesRegex(ValueError, "precision mismatch"):
+        reader.row("opinions", 0)
+
+  def test_empty_channel_selections_preserve_shape_and_dtype(self):
+    with tempfile.TemporaryDirectory() as folder:
+      root = Path(folder)
+      reader = write_reader(root, make_chunk("float32", "float32"))
+      for field, shape in (("opinions", (0, 2)), ("agent_numbers", (0, 2, 4))):
+        channel = reader.channel(field)
+        self.assertEqual(channel[0:0].shape, shape)
+        self.assertEqual(channel[[]].shape, shape)
+        self.assertEqual(channel[0:0].dtype, channel.dtype)
+      (root / "trajectory.json").write_text(json.dumps({
+          "version": 3, "agents": 2, "next_step": 0, "chunks": [],
+      }))
+      self.assertEqual(np.asarray(TrajectoryReader(root).channel("opinions")).shape, (0, 2))
+
+  def test_decoder_rejects_truncated_headers_and_payloads(self):
+    raw = make_chunk("float32", "float32")
+    for invalid in (raw[:10], raw[:17], raw[:20], raw[:-1]):
+      with self.subTest(length=len(invalid)), self.assertRaisesRegex(ValueError, "truncated"):
+        load_trajectory_chunk(invalid)
 
 
 if __name__ == "__main__":

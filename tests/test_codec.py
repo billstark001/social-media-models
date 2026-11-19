@@ -49,6 +49,10 @@ class CodecTest(unittest.TestCase):
           "metadata": {},
       })
 
+  def test_batch_request_requires_simulation_metadata(self):
+    with self.assertRaisesRegex(ProtocolError, "metadata must be an object"):
+      encode_batch_request({"request_id": "offline", "measure_pathway": {"epsilon": 0.45, "opinions": [-1, 1]}})
+
   def test_batch_response_is_correlated(self):
     response = decode_batch_response(
         '{"schema_version":1,"request_id":"case","status":"ok",'

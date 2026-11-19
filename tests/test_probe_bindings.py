@@ -1,84 +1,31 @@
 import json
 import os
-import sqlite3
 import tempfile
 import unittest
 
 import networkx as nx
-import numpy as np
-
-from smp_bindings.probe import freeze_record, run_probe
+from smp_bindings.events_db import PostRecord
+from smp_bindings.probe import FrozenSimulationState, run_probe
 from smp_bindings.record import RawSimulationRecord
 
 
-class _FakeRecord:
-
-  def __init__(self, dynamics_type="HK"):
-    self.max_step = 2
-    self.agents = 3
-    self.opinions = np.array([
-        [-0.5, 0.0, 0.5],
-        [-0.4, 0.1, 0.4],
-        [-0.3, 0.2, 0.3],
-    ])
-    self.metadata = {
-        "DynamicsType": dynamics_type,
-        f"{dynamics_type}Params": {
-            "Tolerance": 0.75,
-            "Influence": 0.5,
-            "RepostRate": 0.0,
-        },
-        "PostEvent": False,
-        "PostRetainCount": 2,
-        "RecsysCount": 1,
-        "RecsysFactoryType": "Random",
-    }
-
-  def get_graph(self, step):
-    graph = nx.DiGraph()
-    graph.add_nodes_from(range(self.agents))
-    graph.add_edges_from([(0, 1), (1, 2), (2, 0)])
-    return graph
+def synthetic_state():
+  graph = nx.DiGraph([(0, 1), (1, 2), (2, 0)])
+  opinions = [-0.3, 0.2, 0.3]
+  return FrozenSimulationState(
+      step=2, graph=graph, opinions=opinions,
+      posts={agent: [PostRecord(agent, 2, opinion)] for agent, opinion in enumerate(opinions)},
+  )
 
 
 class ProbeBindingsTest(unittest.TestCase):
 
-  def test_freeze_reconstructs_normal_post_history(self):
-    states = freeze_record(_FakeRecord(), [0, 2])
-    self.assertEqual([state.step for state in states], [0, 2])
-    self.assertEqual(states[0].posts[0][0].step, -1)
-    self.assertEqual(
-        [post.step for post in states[1].posts[0]],
-        [1, 2],
-    )
-    self.assertAlmostEqual(states[1].posts[0][-1].opinion, -0.3)
-
-  def test_freeze_reconstructs_repost_origin(self):
-    record = _FakeRecord()
-    record.metadata["HKParams"]["RepostRate"] = 0.5
-    record.metadata["PostEvent"] = True
-    record.events_db = sqlite3.connect(":memory:")
-    record.events_db.execute(
-        "CREATE TABLE events "
-        "(id INTEGER, type TEXT, agent_id INTEGER, step INTEGER)"
-    )
-    record.events_db.execute(
-        "CREATE TABLE post_events "
-        "(event_id INTEGER, agent_id INTEGER, step INTEGER, "
-        "opinion REAL, is_repost INTEGER)"
-    )
-    record.events_db.execute(
-        "INSERT INTO events VALUES (1, 'Post', 0, 1)"
-    )
-    record.events_db.execute(
-        "INSERT INTO post_events VALUES (1, 2, -1, 0.5, 1)"
-    )
-    states = freeze_record(record, [1])
-    repost = states[0].posts[0][-1]
-    self.assertEqual(repost.agent_id, 2)
-    self.assertEqual(repost.step, -1)
-    self.assertAlmostEqual(repost.opinion, 0.5)
-    record.events_db.close()
+  def test_synthetic_input_preserves_post_origin(self):
+    state = synthetic_state()
+    state.posts[0].append(PostRecord(2, -1, 0.5))
+    wire = state.to_wire()
+    self.assertEqual(wire["precision"], "inline_f64")
+    self.assertEqual(wire["posts"][0][-1], {"AgentID": 2, "Step": -1, "Opinion": 0.5})
 
   def test_record_prefers_persisted_resolved_metadata(self):
     with tempfile.TemporaryDirectory() as base_dir:
@@ -108,11 +55,14 @@ class ProbeBindingsTest(unittest.TestCase):
   )
   def test_go_probe_round_trip_for_hk_and_deffuant(self):
     for dynamics_type in ("HK", "Deffuant"):
-      record = _FakeRecord(dynamics_type)
-      states = freeze_record(record, [2])
+      metadata = {
+          "DynamicsType": dynamics_type,
+          f"{dynamics_type}Params": {"Tolerance": 0.75, "Influence": 0.5},
+          "RecsysCount": 1, "PostRetainCount": 2, "RecsysFactoryType": "Random",
+      }
       response = run_probe(
-          states,
-          record.metadata,
+          [synthetic_state()],
+          metadata,
           h=1.0,
           binary_path=os.environ["SMP_PROBE_TEST_BINARY"],
       )

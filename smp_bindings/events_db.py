@@ -1,18 +1,18 @@
 import sqlite3
 from collections.abc import Iterator
+from contextlib import closing
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, TypeVar
 
 import msgpack
-
-# ---------------- 数据模型 ----------------
 
 
 @dataclass
 class PostRecord:
   agent_id: int
   step: int
-  opinion: float  # bool 类型 dynamics 以 0.0/1.0 存储
+  opinion: float  # Boolean dynamics use 0.0/1.0 in event storage.
 
 
 @dataclass
@@ -43,9 +43,7 @@ class EventRecord:
   type: str
   agent_id: int
   step: int
-  body: Any | None = None  # 可选事件体
-
-# ---------------- 工具函数 ----------------
+  body: Any | None = None
 
 
 def unpack_view_posts_data(blob) -> ViewPostsEventBody:
@@ -64,10 +62,6 @@ def unpack_view_posts_data(blob) -> ViewPostsEventBody:
       details=d.get('Details'),
   )
 
-# ---------------- 查询函数 ----------------
-
-# 2.1 查找 step 在 [a, b) 的所有事件（可选type）
-
 
 def get_events_by_step_range(
     db: sqlite3.Connection,
@@ -75,15 +69,16 @@ def get_events_by_step_range(
     b: int,
     type_: str | None = None
 ) -> list[EventRecord]:
-  cur = db.cursor()
+  """Read event headers for [a, b), ordered by completed step and event ID."""
+  query = "SELECT id, type, agent_id, step FROM events WHERE step >= ? AND step < ?"
+  params: tuple = (a, b)
   if type_:
-    cur.execute(
-        "SELECT id, type, agent_id, step FROM events WHERE step >= ? AND step < ? AND type = ?", (a, b, type_))
-  else:
-    cur.execute(
-        "SELECT id, type, agent_id, step FROM events WHERE step >= ? AND step < ?", (a, b))
-  rows = cur.fetchall()
+    query += " AND type = ?"
+    params += (type_,)
+  with closing(db.execute(query + " ORDER BY step, id", params)) as cur:
+    rows = cur.fetchall()
   return [EventRecord(id=row[0], type=row[1], agent_id=row[2], step=row[3]) for row in rows]
+
 
 def iter_rewiring_events(
     db: sqlite3.Connection, start: int, stop: int
@@ -108,22 +103,20 @@ def iter_rewiring_events(
     cursor.close()
 
 
-# 2.2 查找一条帖子（agent_id, step）所有被发送和转发的事件
-
-
 def get_post_events_by_agent_step(
     db: sqlite3.Connection,
     agent_id: int,
     step: int
 ) -> list[EventRecord]:
-  cur = db.cursor()
-  cur.execute("""
+  """Find the emissions of a post identified by its original author and step."""
+  with closing(db.execute("""
     SELECT e.id, e.type, e.agent_id, e.step, t.is_repost, t.opinion
     FROM events e
     JOIN post_events t ON e.id = t.event_id
     WHERE t.agent_id = ? AND t.step = ?
-  """, (agent_id, step))
-  rows = cur.fetchall()
+    ORDER BY e.step, e.id
+  """, (agent_id, step))) as cur:
+    rows = cur.fetchall()
   return [
       EventRecord(
           id=row[0], type=row[1], agent_id=row[2], step=row[3],
@@ -135,8 +128,6 @@ def get_post_events_by_agent_step(
       for row in rows
   ]
 
-# 2.3 查找指定 step，type，可选 agent 的所有事件
-
 
 def get_events_by_step_type(
     db: sqlite3.Connection,
@@ -144,14 +135,13 @@ def get_events_by_step_type(
     type_: str,
     agent_id: int | None = None
 ) -> list[EventRecord]:
-  cur = db.cursor()
+  query = "SELECT id, type, agent_id, step FROM events WHERE step=? AND type=?"
+  params: tuple = (step, type_)
   if agent_id is not None:
-    cur.execute("SELECT id, type, agent_id, step FROM events WHERE step=? AND type=? AND agent_id=?",
-                (step, type_, agent_id))
-  else:
-    cur.execute(
-        "SELECT id, type, agent_id, step FROM events WHERE step=? AND type=?", (step, type_))
-  rows = cur.fetchall()
+    query += " AND agent_id=?"
+    params += (agent_id,)
+  with closing(db.execute(query + " ORDER BY id", params)) as cur:
+    rows = cur.fetchall()
   return [EventRecord(id=row[0], type=row[1], agent_id=row[2], step=row[3]) for row in rows]
 
 
@@ -159,10 +149,9 @@ def get_view_posts_event_body(
     db: sqlite3.Connection,
     event_id: int
 ) -> ViewPostsEventBody | None:
-  cur = db.cursor()
-  cur.execute(
-      "SELECT data FROM view_posts_events WHERE event_id = ?", (event_id,))
-  row = cur.fetchone()
+  with closing(db.execute(
+      "SELECT data FROM view_posts_events WHERE event_id = ?", (event_id,))) as cur:
+    row = cur.fetchone()
   if row:
     return unpack_view_posts_data(row[0])
   return None
@@ -170,14 +159,21 @@ def get_view_posts_event_body(
 
 def iter_view_posts(db: sqlite3.Connection, start: int, stop: int) -> Iterator[EventRecord]:
   """Stream canonical view-post events, preserving their logged coverage."""
-  tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+  with closing(db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")) as cursor:
+    tables = {row[0] for row in cursor}
   if "view_tweets_events" in tables:
     raise ValueError("obsolete ViewTweets schema; run smp-migrate events <events.db>")
   if "view_posts_events" not in tables:
+    with closing(db.execute(
+        "SELECT id FROM events WHERE type = 'ViewPosts' AND step >= ? AND step < ? LIMIT 1",
+        (start, stop),
+    )) as cursor:
+      if cursor.fetchone() is not None:
+        raise ValueError("view-post events are missing their body table")
     return
   cursor = db.execute(
       "SELECT e.id, e.agent_id, e.step, v.data, e.type FROM events e "
-      "JOIN view_posts_events v ON v.event_id=e.id "
+      "LEFT JOIN view_posts_events v ON v.event_id=e.id "
       "WHERE e.type IN ('ViewPosts','ViewTweets') AND e.step>=? AND e.step<? ORDER BY e.step,e.id",
       (start, stop),
   )
@@ -185,6 +181,8 @@ def iter_view_posts(db: sqlite3.Connection, start: int, stop: int) -> Iterator[E
     for event_id, agent_id, step, payload, kind in cursor:
       if kind != "ViewPosts":
         raise ValueError("obsolete ViewTweets schema; run smp-migrate events <events.db>")
+      if payload is None:
+        raise ValueError(f"missing view-post body for event {event_id}")
       yield EventRecord(event_id, "ViewPosts", agent_id, step, unpack_view_posts_data(payload))
   finally:
     cursor.close()
@@ -194,10 +192,9 @@ def get_rewiring_event_body(
     db: sqlite3.Connection,
     event_id: int
 ) -> RewiringEventBody | None:
-  cur = db.cursor()
-  cur.execute(
-      "SELECT agent_id, unfollow, follow FROM rewiring_events WHERE event_id = ?", (event_id,))
-  row = cur.fetchone()
+  with closing(db.execute(
+      "SELECT agent_id, unfollow, follow FROM rewiring_events WHERE event_id = ?", (event_id,))) as cur:
+    row = cur.fetchone()
   if row:
     return RewiringEventBody(agent_id=row[0], unfollow=row[1], follow=row[2])
   return None
@@ -207,10 +204,9 @@ def get_post_event_body(
     db: sqlite3.Connection,
     event_id: int
 ) -> PostEventBody | None:
-  cur = db.cursor()
-  cur.execute(
-      "SELECT agent_id, step, opinion, is_repost FROM post_events WHERE event_id = ?", (event_id,))
-  row = cur.fetchone()
+  with closing(db.execute(
+      "SELECT agent_id, step, opinion, is_repost FROM post_events WHERE event_id = ?", (event_id,))) as cur:
+    row = cur.fetchone()
   if row:
     return PostEventBody(
         record=PostRecord(agent_id=row[0], step=row[1], opinion=row[2]),
@@ -241,7 +237,9 @@ T = TypeVar('T')
 def get_batch_iterator(
     lst: list[T],
     size: int,
-):
+) -> Iterator[list[T]]:
+  if size <= 0:
+    raise ValueError("batch size must be positive")
   for i in range(0, len(lst), size):
     yield lst[i:i + size]
 
@@ -254,43 +252,39 @@ def batch_load_event_bodies(
 ) -> list[EventRecord]:
   if not events:
     return []
-  event_type = event_type or events[0].type  # 假设同类
+  event_type = event_type or events[0].type
+  if any(event.type != event_type for event in events):
+    raise ValueError("batch event bodies require one event type")
+  if max_batch_size <= 0:
+    raise ValueError("max_batch_size must be positive")
   event_ids = [e.id for e in events]
   id2body = {}
 
-  cur = db.cursor()
+  # Keep batches within SQLite's baseline parameter limit.
+  event_ids_itr = get_batch_iterator(event_ids, min(max_batch_size, 999))
+  with closing(db.cursor()) as cur:
+    if event_type == "Rewiring":
+      for batch in event_ids_itr:
+        sql = f"SELECT event_id, agent_id, unfollow, follow FROM rewiring_events WHERE event_id IN ({','.join(['?']*len(batch))})"
+        cur.execute(sql, batch)
+        for eid, aid, unf, fol in cur.fetchall():
+          id2body[eid] = RewiringEventBody(agent_id=aid, unfollow=unf, follow=fol)
+    elif event_type == "Post":
+      for batch in event_ids_itr:
+        sql = f"SELECT event_id, agent_id, step, opinion, is_repost FROM post_events WHERE event_id IN ({','.join(['?']*len(batch))})"
+        cur.execute(sql, batch)
+        for eid, aid, step, op, is_rp in cur.fetchall():
+          id2body[eid] = PostEventBody(
+              record=PostRecord(agent_id=aid, step=step, opinion=op),
+              is_repost=bool(is_rp)
+          )
+    elif event_type == "ViewPosts":
+      for batch in event_ids_itr:
+        sql = f"SELECT event_id, data FROM view_posts_events WHERE event_id IN ({','.join(['?']*len(batch))})"
+        cur.execute(sql, batch)
+        for eid, blob in cur.fetchall():
+          id2body[eid] = unpack_view_posts_data(blob)
 
-  event_ids_itr = get_batch_iterator(event_ids, max_batch_size)
-
-  if event_type == "Rewiring":
-    # 批量查 rewiring_events
-    for batch in event_ids_itr:
-      sql = f"SELECT event_id, agent_id, unfollow, follow FROM rewiring_events WHERE event_id IN ({','.join(['?']*len(batch))})"
-      cur.execute(sql, batch)
-      for eid, aid, unf, fol in cur.fetchall():
-        id2body[eid] = RewiringEventBody(agent_id=aid, unfollow=unf, follow=fol)
-  elif event_type == "Post":
-    # 批量查 post_events
-    for batch in event_ids_itr:
-      sql = f"SELECT event_id, agent_id, step, opinion, is_repost FROM post_events WHERE event_id IN ({','.join(['?']*len(batch))})"
-      cur.execute(sql, batch)
-      for eid, aid, step, op, is_rp in cur.fetchall():
-        id2body[eid] = PostEventBody(
-            record=PostRecord(agent_id=aid, step=step, opinion=op),
-            is_repost=bool(is_rp)
-        )
-  elif event_type == "ViewPosts":
-    # 批量查 view_posts_events
-    for batch in event_ids_itr:
-      sql = f"SELECT event_id, data FROM view_posts_events WHERE event_id IN ({','.join(['?']*len(batch))})"
-      cur.execute(sql, batch)
-      for eid, blob in cur.fetchall():
-        id2body[eid] = unpack_view_posts_data(blob)
-  else:
-    # 其他类型不处理
-    pass
-
-  # 结果合成
   out = []
   for e in events:
     e.body = id2body.get(e.id)
@@ -299,16 +293,5 @@ def batch_load_event_bodies(
 
 
 def load_events_db(filename: str):
-  return sqlite3.connect(filename)
-
-# ---------------- 示例用法 ----------------
-
-
-if __name__ == "__main__":
-  db = sqlite3.connect("your.db")
-  # 查询 step 在 [10, 20) 的所有 Post 事件，并加载 body
-  events = get_events_by_step_range(db, 10, 20, type_="Post")
-  events_with_body = [load_event_body(db, e) for e in events]
-  for e in events_with_body:
-    print(e)
-  db.close()
+  """Open an existing event database without allowing writes or file creation."""
+  return sqlite3.connect(Path(filename).resolve().as_uri() + "?mode=ro", uri=True)

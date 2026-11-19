@@ -1,4 +1,4 @@
-"""One lazy reader for version-2 accumulated simulation channels."""
+"""Lazy readers for version-2 and version-3 trajectory channels."""
 
 from __future__ import annotations
 
@@ -16,12 +16,16 @@ import zstandard
 def load_trajectory_chunk(raw: bytes) -> dict[str, np.ndarray]:
   if raw[:8] not in (b"SMPTRJ02", b"SMPTRJ03"):
     raise ValueError("unknown trajectory chunk format")
+  if len(raw) < 16:
+    raise ValueError("truncated trajectory header")
   steps, agents = struct.unpack_from("<II", raw, 8)
   if steps == 0 or agents == 0 or steps * agents > 1 << 30:
     raise ValueError("invalid trajectory dimensions")
   offset = 16
   opinion_size, sum_size = 4, 4
   if raw[:8] == b"SMPTRJ03":
+    if len(raw) < offset + 2:
+      raise ValueError("truncated trajectory precision")
     opinion_size, sum_size = struct.unpack_from("<BB", raw, offset)
     offset += 2
     if opinion_size not in (2, 4, 8) or sum_size not in (2, 4, 8):
@@ -31,8 +35,14 @@ def load_trajectory_chunk(raw: bytes) -> dict[str, np.ndarray]:
            ("<u2", (steps, agents, 4)),
            (f"<u{sum_size}", (steps, agents, 4))]
   for dtype, shape in specs:
+    if len(raw) < offset + 5:
+      raise ValueError("truncated trajectory channel header")
     codec, length = struct.unpack_from("<BI", raw, offset)
     offset += 5
+    if codec not in (0, 1, 2, 3, 4, 5):
+      raise ValueError("unknown trajectory channel codec")
+    if length > len(raw) - offset:
+      raise ValueError("truncated trajectory channel payload")
     if codec == 2:
       if length != 0:
         raise ValueError("zero channel has a payload")
@@ -57,10 +67,10 @@ def load_trajectory_chunk(raw: bytes) -> dict[str, np.ndarray]:
         restored = np.packbits(bits.T.copy(), axis=1, bitorder="little").reshape(-1)
       channels.append(restored.view(dtype).reshape(shape))
       continue
-    block = lz4.frame.decompress(payload)
     if codec == 3:
       if len(channels) != 0:
         raise ValueError("bitset codec is only valid for opinions")
+      block = lz4.frame.decompress(payload)
       packed = np.frombuffer(block, dtype=np.uint8)
       if len(packed) != (steps * agents + 7) // 8:
         raise ValueError("bitset length mismatch")
@@ -68,6 +78,9 @@ def load_trajectory_chunk(raw: bytes) -> dict[str, np.ndarray]:
       float_type = np.dtype(dtype.replace("u", "f"))
       channels.append(bits.astype(float_type).view(dtype).reshape(shape))
       continue
+    block = lz4.frame.decompress(payload)
+    if len(block) != np.dtype(dtype).itemsize * int(np.prod(shape)):
+      raise ValueError("trajectory channel length mismatch")
     arr = np.frombuffer(block, dtype=dtype).reshape(shape)
     if codec == 1:
       arr = np.bitwise_xor.accumulate(arr, axis=0)
@@ -91,6 +104,8 @@ class TrajectoryReader:
       raise ValueError("unsupported trajectory version")
     self.agents = int(manifest["agents"])
     self.steps = int(manifest["next_step"])
+    if self.agents <= 0 or self.steps < 0:
+      raise ValueError("invalid trajectory dimensions")
     self.chunks = list(manifest["chunks"])
     precision = manifest.get("precision", {"opinions": "float32", "opinion_sums": "float32"})
     self.precision = precision
@@ -120,7 +135,7 @@ class TrajectoryReader:
   def _chunk(self, step: int) -> tuple[dict[str, Any], int]:
     if step < 0 or step >= self.steps:
       raise IndexError(step)
-    # Chunks are ordered; a small linear scan is adequate for sequential reads.
+    # Locate the containing chunk without reading unrelated blocks.
     lo, hi = 0, len(self.chunks)
     while lo < hi:
       mid = (lo + hi) // 2
@@ -134,9 +149,15 @@ class TrajectoryReader:
       raw = path.read_bytes()
       if hashlib.sha256(raw).hexdigest() != chunk["sha256"]:
         raise ValueError(f"trajectory checksum mismatch: {path.name}")
-      self._cached = load_trajectory_chunk(raw)
-      if self._cached["opinions"].shape[0] != int(chunk["end"]) - int(chunk["start"]) + 1:
-        raise ValueError(f"trajectory row count mismatch: {path.name}")
+      decoded = load_trajectory_chunk(raw)
+      if decoded["opinions"].shape != (int(chunk["end"]) - int(chunk["start"]) + 1, self.agents):
+        raise ValueError(f"trajectory shape mismatch: {path.name}")
+      legacy = int(chunk["end"]) <= self.legacy_end_step
+      for field, key in (("opinions", "opinions"), ("agent_opinion_sums", "opinion_sums")):
+        precision = "float32" if legacy else self.precision[key]
+        if decoded[field].dtype.itemsize != np.dtype(precision).itemsize:
+          raise ValueError(f"trajectory {key} precision mismatch: {path.name}")
+      self._cached = decoded
       self._cached_index = lo
     assert self._cached is not None
     return self._cached, step - int(chunk["start"])
@@ -177,12 +198,14 @@ class LazyChannel:
       row = self.reader.row(self.field, index)
       return row[tuple(rest)] if rest else row
     else:
-      indices = np.arange(len(self))[step]
-      row = np.stack([self.reader.row(self.field, int(i)) for i in np.atleast_1d(indices)])
+      indices = range(*step.indices(len(self))) if isinstance(step, slice) else np.arange(len(self))[step]
+      rows = [self.reader.row(self.field, int(i)) for i in indices]
+      row = np.stack(rows) if rows else np.empty((0, *self.shape[1:]), dtype=self.dtype)
       return row[(slice(None), *rest)] if rest else row
 
   def __array__(self, dtype: Any = None, copy: bool | None = None) -> np.ndarray:
-    value = np.stack([self.reader.row(self.field, step) for step in range(len(self))])
+    rows = [self.reader.row(self.field, step) for step in range(len(self))]
+    value = np.stack(rows) if rows else np.empty(self.shape, dtype=self.dtype)
     if dtype is not None:
       value = value.astype(dtype, copy=False)
     if copy:

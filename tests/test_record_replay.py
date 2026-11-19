@@ -11,6 +11,7 @@ from smp_bindings.record import RawSimulationRecord
 def test_graph_replay_respects_blocked_replacements_and_new_anchors(monkeypatch):
   record = RawSimulationRecord.__new__(RawSimulationRecord)
   record.has_trajectory = True
+  record.agents = 4
   record.metadata = {"RewiringEvent": True}
   record.max_step = 4
   record.graph_paths = {0: "initial", 3: "anchor"}
@@ -18,7 +19,7 @@ def test_graph_replay_respects_blocked_replacements_and_new_anchors(monkeypatch)
   record.graphs = {}
   record.graph_steps = [0, 3]
   anchor = nx.DiGraph([(0, 2), (0, 3)])
-  monkeypatch.setattr("smp_bindings.record.load_gonum_graph_dump", lambda _: anchor.copy())
+  monkeypatch.setattr("smp_bindings.record.load_gonum_graph_dump", lambda _, **kwargs: anchor.copy())
 
   with sqlite3.connect(":memory:") as db:
     record.events_db = db
@@ -42,6 +43,7 @@ def test_graph_replay_respects_blocked_replacements_and_new_anchors(monkeypatch)
     {"RewiringEvent": False, "HKParams": {"RewiringRate": 0.1}},
     {"HKParams": {"RewiringRate": 0.1}},
     {},
+    {"HKParams": None},
 ])
 def test_graph_replay_requires_collection_evidence_for_unsaved_steps(flags):
   record = RawSimulationRecord.__new__(RawSimulationRecord)
@@ -112,3 +114,23 @@ def test_unknown_zero_count_channel_can_use_complete_view_posts():
   assert record.feed_counts(1).tolist() == [[0, 0, 0, 0], [0, 0, 0, 0]]
   events.pop()
   assert record.feed_counts(1) is None
+
+
+def test_record_probe_uses_native_run_source(monkeypatch, tmp_path):
+  record = RawSimulationRecord.__new__(RawSimulationRecord)
+  record.directory = str(tmp_path)
+  record.metadata = {"UniqueName": tmp_path.name}
+  calls = []
+
+  def run(directory, steps, **options):
+    calls.append((directory, steps, options))
+    return {"results": []}
+
+  monkeypatch.setattr("smp_bindings.probe.run_probe_run", run)
+  assert record.evaluate_probe([2, 0, 2], minimum=-0.5, maximum=0.5, measurements=["bins"], bins=[-1, 0, 1]) == {"results": []}
+  assert calls[0][0:2] == (str(tmp_path), [0, 2])
+  assert calls[0][2]["minimum"] == -0.5
+  assert calls[0][2]["maximum"] == 0.5
+  assert calls[0][2]["bins"] == [-1, 0, 1]
+  with pytest.raises(ValueError, match="at least one probe step"):
+    record.evaluate_probe([])

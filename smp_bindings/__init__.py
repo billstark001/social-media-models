@@ -42,9 +42,10 @@ from smp_bindings.model_state import (
 )
 from smp_bindings.probe import (
     FrozenSimulationState,
-    freeze_record,
     run_probe,
     run_probe_checkpoints,
+    run_probe_jobs,
+    run_probe_run,
 )
 from smp_bindings.process import (
     executable_path,
@@ -78,7 +79,6 @@ __all__ = [
     "delete_problematic_simulations",
     "encode_batch_request",
     "executable_path",
-    "freeze_record",
     "get_events_by_step_range",
     "get_events_by_step_type",
     "get_post_event_body",
@@ -98,6 +98,8 @@ __all__ = [
     "run_batch_parallel",
     "run_probe",
     "run_probe_checkpoints",
+    "run_probe_jobs",
+    "run_probe_run",
     "TrajectoryReader",
     "run_simulation",
     "run_simulations",

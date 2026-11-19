@@ -121,8 +121,9 @@ See [`docs/architecture.md`](docs/architecture.md) for the full file layout.
 
 This repository owns the microscopic Go dynamics/recommenders, the `smp`,
 `smp-batch` and `smp-probe` commands, and the `smp_bindings` reader/launcher.
-The theory experiment adapters link its public Go packages directly; reading
-legacy microscopic records uses its Python binding.
+The theory experiment adapters link its public Go packages directly. The native
+Go reader handles saved histories; Python bindings provide orchestration and
+raw plotting channels.
 
 [extended-hk-model](https://github.com/billstark001/extended-hk-model) owns the
 paper's parameter designs, generation orchestration, fitting, analysis and
@@ -370,11 +371,10 @@ with an optional fixed duration. The response reports the switch step and
 whether a threshold trigger reached its fallback. Scheduled interventions
 require a fixed observation window. They do not save intermediate checkpoints.
 
-For offline pathway measurements, send `measure_pathway` with `epsilon`,
-`opinions` and a directed `edges` list. Each request returns `result.pathway`
-from the online measurement kernel. The Python binding
-`smp_bindings.pathway.measure_pathways` streams observations through one
-worker.
+Offline pathway measurements use `smp-probe` with `measurements: ["pathway"]`
+and an explicit `epsilon`, a saved-run directory, or a checkpoint. Python's
+`run_probe_jobs` streams independent observations through one worker. See
+[`docs/measurements.md`](docs/measurements.md) for source and job examples.
 
 HK batch pathway windows include requested and displayed slots, with
 exploration, policy and bridge counts. Set `output.exposure_trace` to a
@@ -395,12 +395,13 @@ Run `smp-migrate events <events.db>` first for the obsolete ViewTweets schema.
 
 ## Frozen-state probe
 
-`smp-probe` evaluates the recommender for a hypothetical agent opinion
-`x ∈ [-1, 1]` on one or more frozen simulation steps. It does not resume the
-simulation and does not require an analysis checkpoint: Python reconstructs a
-minimal frozen state from the saved opinion rows, network snapshots/rewiring
-events, and repost events, then sends that state to Go. Recommendation logic is
-therefore implemented only once, in Go.
+`smp-probe` measures frozen states and evaluates the recommender for a hypothetical
+agent opinion `x ∈ [-1, 1]`. It reads persistent run directories and checkpoints
+directly in Go, without resuming the simulation. Explicit frozen inputs remain
+available for synthetic analyses. Native JSON/JSONL and direct source flags
+provide the same calculations without Python; see
+[`docs/measurements.md`](docs/measurements.md) for the Go API, CLI, input coverage
+and batch examples.
 
 The original `Recommend` method and simulation path are unchanged. Built-in
 recommenders additionally implement `RecommendAt(agent, opinion, ..., rng)`.
@@ -417,9 +418,10 @@ The result contains, for each step and grid point:
   analysis;
 - sample count, active count, and population variance.
 
-The `measurements` list can select `force`, `energy`, `landscape`, and
-`counterfactual_neighbor_energy`; an omitted list retains the original `force`
-measurement. Energy uses the truncated quadratic kernel and actual directed
+The `measurements` list can select `force`, `energy`, `pathway`, `bins`, `terminal`,
+`landscape`, and `counterfactual_neighbor_energy`; an omitted list selects
+`force`. Static selections validate only their measurement inputs. Energy uses
+the truncated quadratic kernel and actual directed
 edge count. The landscape reports population energy and negative gradient,
 concordant mass, and edge energy conditioned on current source-opinion bins,
 with counts and validity masks. Counterfactual neighbor energy fixes one
@@ -447,15 +449,12 @@ the Python binding checks before interpreting measurements. Most users should
 call it through the Python binding:
 
 ```python
-from smp_bindings import RawSimulationRecord
+from smp_bindings import run_probe_run
 
-with RawSimulationRecord("./run", metadata) as rec:
-    result = rec.evaluate_probe(
-        steps=[0, 100, 500],
-        h=0.02,
-        replicates=20,
-        binary_path="./smp-probe",
-    )
+result = run_probe_run(
+    "./run/example", [0, 100, 500], measurements=["force"],
+    h=0.02, replicates=20, binary_path="./smp-probe",
+)
 
 print(result["rng"])  # generated or supplied probe RNG
 points = result["results"][0]["points"]
@@ -789,4 +788,5 @@ the branch seeds derived from that hash.
 
 - [`docs/architecture.md`](docs/architecture.md) — package structure, data-flow diagram, serialization schema
 - [`docs/migration.md`](docs/migration.md) — breaking changes and migration scripts
+- [`docs/measurements.md`](docs/measurements.md) — canonical Go measurements and native offline CLI
 - [`docs/ide-setup.md`](docs/ide-setup.md) — VSCode/Pylance configuration for `smp_bindings` development
