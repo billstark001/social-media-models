@@ -1,4 +1,4 @@
-// Package batch implements the no-file JSONL simulation protocol used by
+// Package batch implements the JSONL simulation protocol used by
 // smp-batch and Python scan orchestration.
 package batch
 
@@ -40,6 +40,7 @@ type ExperimentSpec struct {
 	ObserveAt    []int          `json:"observe_at"`
 	CheckpointAt map[int]string `json:"checkpoint_at,omitempty"`
 	StopOnHalt   bool           `json:"stop_on_halt,omitempty"`
+	PolicyChange *PolicyChange  `json:"policy_change,omitempty"`
 }
 
 type OutputOptions struct {
@@ -48,29 +49,38 @@ type OutputOptions struct {
 	Energy        bool             `json:"energy,omitempty"`
 	Bins          []float64        `json:"bins,omitempty"`
 	FullState     bool             `json:"full_state,omitempty"`
+	Pathway       bool             `json:"pathway,omitempty"`
+	ExposureTrace string           `json:"exposure_trace,omitempty"`
 }
 
 func (output OutputOptions) empty() bool {
-	return !output.FinalOpinions && output.Terminal == nil && len(output.Bins) == 0 && !output.Energy && !output.FullState
+	return !output.FinalOpinions && output.Terminal == nil && len(output.Bins) == 0 &&
+		!output.Energy && !output.FullState && !output.Pathway && output.ExposureTrace == ""
 }
 
 type EdgePair [2]int64
 type Endpoint struct {
-	Step         int                      `json:"step"`
-	RelativeStep int                      `json:"relative_step"`
-	Energy       *observables.Energy      `json:"energy,omitempty"`
-	Binned       *observables.BinnedState `json:"binned,omitempty"`
-	Opinions     []float64                `json:"opinions,omitempty"`
-	Edges        []EdgePair               `json:"edges,omitempty"`
-	Checkpoint   string                   `json:"checkpoint,omitempty"`
+	Step         int                       `json:"step"`
+	RelativeStep int                       `json:"relative_step"`
+	Energy       *observables.Energy       `json:"energy,omitempty"`
+	Binned       *observables.BinnedState  `json:"binned,omitempty"`
+	Opinions     []float64                 `json:"opinions,omitempty"`
+	Edges        []EdgePair                `json:"edges,omitempty"`
+	Checkpoint   string                    `json:"checkpoint,omitempty"`
+	Pathway      *observables.PathwayState `json:"pathway,omitempty"`
+	Exposure     *Exposure                 `json:"exposure,omitempty"`
 }
 type ReplicateResult struct {
-	Index      int              `json:"index"`
-	RNG        smprng.Spec      `json:"rng"`
-	Endpoints  []Endpoint       `json:"endpoints"`
-	Terminal   *terminal.Result `json:"terminal,omitempty"`
-	StopReason string           `json:"stop_reason"`
-	StoppedAt  int              `json:"stopped_at"`
+	Index          int              `json:"index"`
+	RNG            smprng.Spec      `json:"rng"`
+	Endpoints      []Endpoint       `json:"endpoints"`
+	Terminal       *terminal.Result `json:"terminal,omitempty"`
+	StopReason     string           `json:"stop_reason"`
+	StoppedAt      int              `json:"stopped_at"`
+	SwitchStep     *int             `json:"switch_step,omitempty"`
+	SwitchFallback bool             `json:"switch_fallback,omitempty"`
+	FinalOpinions  []float64        `json:"final_opinions,omitempty"`
+	ExposureTrace  *TraceReceipt    `json:"exposure_trace,omitempty"`
 }
 
 type TerminalOptions struct {
@@ -167,8 +177,7 @@ func decodeMetadata(raw json.RawMessage) (*simulation.ScenarioMetadata, error) {
 		}
 		return nil, err
 	}
-	// The batch protocol never serializes histories or events. Collection flags
-	// are observational only and can be disabled without changing RNG streams.
+	// Batch has its own opt-in observations. Disable the persistent-run channels.
 	metadata.AgentNumber = false
 	metadata.OpinionSum = false
 	metadata.RewiringEvent = false
@@ -259,7 +268,7 @@ func summarizeOpinions(values []float64) OpinionSummary {
 	return result
 }
 
-func endpoint(scenario *simulation.Scenario, relative int, output OutputOptions) (Endpoint, error) {
+func endpoint(scenario *simulation.Scenario, relative int, output OutputOptions, measure *observables.PathwayMeasurer) (Endpoint, error) {
 	step := scenario.Model.GetCurStep() - 1
 	result := Endpoint{Step: step, RelativeStep: relative}
 	opinions := scenario.Model.GetOpinions()
@@ -281,6 +290,13 @@ func endpoint(scenario *simulation.Scenario, relative int, output OutputOptions)
 			return result, err
 		}
 		result.Binned = &binned
+	}
+	if output.Pathway {
+		state, err := measure.Measure(opinions, graph, scenario.Metadata.HKParams.Tolerance)
+		if err != nil {
+			return result, err
+		}
+		result.Pathway = &state
 	}
 	if output.FullState {
 		result.Opinions = opinions
@@ -363,6 +379,9 @@ func processRequest(ctx context.Context, line string, options Options) (Response
 		return errorResponse(request.RequestID, "invalid_output", err), nil, nil
 	}
 	if request.Experiment == nil {
+		if request.Output.Pathway || request.Output.ExposureTrace != "" {
+			return errorResponse(request.RequestID, "invalid_output", errors.New("pathway requires experiment observations")), nil, nil
+		}
 		response, err := runNormal(ctx, metadata, request, options)
 		if err != nil || response.Result == nil {
 			return response, nil, err

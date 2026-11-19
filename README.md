@@ -331,8 +331,8 @@ progress decoder and versioned batch request/response codecs.
 and safe termination helpers used by both built-in runners.
 
 For repeated continuations of one exact research checkpoint, include an
-`experiment` object. `mode: "resume"` reuses its saved RNG and requires one
-replicate. `mode: "branch"` derives stable independent future streams from the
+`experiment` object. `mode: "resume"` reuses the checkpoint RNG and requires one
+replicate. Omit the request RNG or supply the checkpoint’s root seed. `mode: "branch"` derives stable independent future streams from the
 explicit base RNG, checkpoint hash, and replicate index. `observe_at` values
 are relative steps and may include zero. A branch advances only once to its
 largest requested time. For example, the following fields can be added to a
@@ -362,11 +362,36 @@ for multiple replicates its paths need a `{replicate}` placeholder. Otherwise
 checkpoint experiments write no output files. `stop_on_halt` can stop long
 branches early and leaves later requested observations absent.
 
+An experiment can also use `mode: "fresh"` with one replicate and no source
+checkpoint. HK experiments can request `output.pathway` for post-commit state
+and feed counters accumulated between observations. `policy_change` can change
+the active recommender after a completed step or at a concordance threshold,
+with an optional fixed duration. The response reports the switch step and
+whether a threshold trigger reached its fallback. Scheduled interventions
+require a fixed observation window. They do not save intermediate checkpoints.
+
 For offline pathway measurements, send `measure_pathway` with `epsilon`,
 `opinions` and a directed `edges` list. Each request returns `result.pathway`
 from the online measurement kernel. The Python binding
 `smp_bindings.pathway.measure_pathways` streams observations through one
 worker.
+
+HK batch pathway windows include requested and displayed slots, with
+exploration, policy and bridge counts. Set `output.exposure_trace` to a
+`.jsonl.gz` destination in a one-replicate experiment to write one feed row per
+agent update. The record carries the update step, recipient, pre-update opinion,
+requested recommendation count, and ordered `neighbors` and `recommendations`.
+Each slot has its post, source, and placement holder/round. Neighbor slots include
+every current followee, with `post: null` when no post is available; this preserves
+the full eligibility context. Confidence, repost status and rewiring eligibility
+are derived from these facts and the run metadata rather than stored again.
+The trace receipt's `slots` counts recommendations. In a persistent `smp` run, enable `ViewPostsDetails`
+to record full feed details in the existing event log. `ViewPostsEvent`
+collects the original confidence buckets. Both switches default to false.
+Older ViewPosts logs retain unknown placement details as missing.
+Both channels support all four dynamics; persistent bool opinions use the same
+numeric 0/1 representation as post events.
+Run `smp-migrate events <events.db>` first for the obsolete ViewTweets schema.
 
 ## Frozen-state probe
 
