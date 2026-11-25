@@ -83,7 +83,7 @@ func TestBooleanViewEventsPersistAsNumericOpinionData(t *testing.T) {
 				}
 			}
 
-			// A HEAD-era reader can still decode the four confidence buckets.
+			// Readers without feed-detail fields can still decode the four confidence buckets.
 			var payload []byte
 			if err := db.db.QueryRow("SELECT data FROM view_posts_events").Scan(&payload); err != nil {
 				t.Fatal(err)

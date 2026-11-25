@@ -15,7 +15,7 @@ type Dynamics[O any, P any] interface {
 
 // PreStepDynamics is an optional interface for Dynamics implementations that
 // can batch pre-generate random numbers before a full round of agent steps.
-// RandomActivation calls PrepareStep(agentCount) once before iterating agents.
+// RandomActivation calls PrepareStep once before iterating agents.
 type PreStepDynamics interface {
 	PrepareStep(agentCount int, rng *rand.Rand)
 }

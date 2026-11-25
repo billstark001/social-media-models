@@ -31,15 +31,9 @@ func NewStructureRandom[O any, P any](
 	}
 }
 
-// Recommend implements model.SMPModelRecommendationSystem.
-// It computes common-neighbor scores on demand (or from cache), applies the
-// steepness transform, normalises, mixes with a uniform random component,
-// then samples without replacement.
-//
-// Cache enabled (useCache=true):
-//   - Cache hit:  O(D² + N) – skips graph traversal, rebuilds probability
-//     vector from cached raw scores and re-samples.
-//   - Cache miss: full O(D²) graph traversal then as above.
+// Recommend transforms common-neighbor scores, mixes them with a uniform
+// component, and samples without replacement. Cached raw scores avoid a
+// repeated graph traversal; probabilities and samples are computed per call.
 func (s *StructureRandom[O, P]) Recommend(
 	agent *model.SMPAgent[O, P],
 	neighborIDs map[int64]bool,

@@ -101,6 +101,8 @@ func (o *OpinionRandom[O, P]) PreStep() {
 					o.RateMat[i][j] = rawRateMat[i][j] / sum
 				}
 			}
+		} else {
+			clear(o.RateMat[i])
 		}
 		o.RateMat[i][i] = 0
 	}

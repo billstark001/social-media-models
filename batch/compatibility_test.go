@@ -11,8 +11,8 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 )
 
-// These fixtures were generated from HEAD 1cc68da. New opt-in observation
-// fields must not change existing request identities or persistent encodings.
+// Fixtures from commit 1cc68da preserve request identities and persistent
+// encodings when optional observation fields are omitted.
 func TestHEADProtocolHashes(t *testing.T) {
 	for _, tc := range []struct {
 		spec *ExperimentSpec

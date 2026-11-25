@@ -2,8 +2,6 @@ package model
 
 import smprng "smp/rng"
 
-// events & records
-
 type EventRecord struct {
 	Type    string
 	AgentID int64

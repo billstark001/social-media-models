@@ -43,9 +43,7 @@ Snapshot files (`.msgpack`) contain a serialized `SMPModelDumpData`. The relevan
 
 ### One-time msgpack migration script (Python)
 
-Bare `SMPModelDumpData` dumps need a `RawSnapshotData{DynamicsType, Data}`
-envelope. The maintained migration handles both bare and already enveloped
-snapshots, `.msgpack` and `.msgpack.lz4`, and conflicting old/new field names:
+Bare `SMPModelDumpData` dumps need a `RawSnapshotData{DynamicsType, Data}` envelope. The maintained migration handles both bare and already enveloped snapshots, `.msgpack` and `.msgpack.lz4`, and conflicting old/new field names:
 
 ```bash
 # HK is the default for a bare dump; use --dynamics for other dynamics
@@ -53,9 +51,7 @@ smp-migrate snapshot ./run/my-sim/snapshot-*.msgpack
 smp-migrate snapshot --dynamics Deffuant ./run/my-sim/snapshot-*.msgpack
 ```
 
-Existing physical state, RNG positions and recommender state are preserved.
-Rewriting bytes changes the checkpoint SHA-256, including branch seeds derived
-from that hash. Already canonical files are left untouched.
+Existing physical state, RNG positions and recommender state are preserved. Rewriting bytes changes the checkpoint SHA-256, including branch seeds derived from that hash. Already canonical files are left untouched.
 
 ### Metadata JSON
 
@@ -97,43 +93,30 @@ The table and column names changed. To migrate:
 smp-migrate events ./run/my-sim/events.db
 ```
 
-The migration transactionally renames or merges old tables, normalizes event
-types, and backfills rewiring actors from `events.agent_id`. Conflicting duplicate
-rows abort the transaction. Runtime readers require canonical table names.
+The migration transactionally renames or merges old tables, normalizes event types, and backfills rewiring actors from `events.agent_id`. Conflicting duplicate rows abort the transaction. Runtime readers require canonical table names.
 
 ### Recommendation parameter aliases
 
-Use canonical `RecSysParams` keys such as `NoiseStd`, `MixRate`, `UseCache` and
-`LogRecommendations` for all dynamics. Lowercase/camelcase aliases are rejected
-with migration guidance instead of silently selecting a default:
+Use canonical `RecSysParams` keys such as `NoiseStd`, `MixRate`, `UseCache` and `LogRecommendations` for all dynamics. Lowercase/camelcase aliases are rejected with migration guidance instead of silently selecting a default:
 
 ```bash
 smp-migrate metadata ./run/my-sim/metadata.json
 smp-migrate snapshot ./run/my-sim/checkpoint-*.msgpack.lz4
 ```
 
-Both commands are idempotent; conflicting aliases leave the file unchanged.
-The unused Go alias `GetDefaultRecsysFactoryDefs()` has been removed; use
-`GetFloat64RecsysFactories[dynamics.HKParams]()` in callers.
+Both commands are idempotent; conflicting aliases leave the file unchanged. The unused Go alias `GetDefaultRecsysFactoryDefs()` has been removed; use `GetFloat64RecsysFactories[dynamics.HKParams]()` in callers.
 
 ### Historical integer overrides
 
-Numeric recommendation parameters now interpret equivalent integer and floating
-values identically across Go, JSON and MsgPack. The old Go factory accepted only
-`float64` (or `bool`) overrides; integer overrides used its defaults instead. Ordinary JSON
-simulation requests decoded their numbers as `float64` and are unaffected.
+Numeric recommendation parameters now interpret equivalent integer and floating values identically across Go, JSON and MsgPack. The old Go factory accepted only `float64` (or `bool`) overrides; integer overrides used its defaults instead. Ordinary JSON simulation requests decoded their numbers as `float64` and are unaffected.
 
-For a checkpoint produced by the old Go API with ignored integer overrides,
-explicitly remove those overrides to preserve its historical continuation:
+For a checkpoint produced by the old Go API with ignored integer overrides, explicitly remove those overrides to preserve its historical continuation:
 
 ```bash
 smp-migrate snapshot ./old.msgpack.lz4 --drop-legacy-integer-overrides
 ```
 
-This option is only for those old producers. It leaves floating parameters,
-physical model bytes and RNG states unchanged. It rewrites metadata and changes
-the file SHA-256 and hash-derived branch seeds. No runtime fallback selects the
-old rule. Metadata-only migrations preserve the opaque model bytes.
+This option is only for those old producers. It leaves floating parameters, physical model bytes and RNG states unchanged. It rewrites metadata and changes the file SHA-256 and hash-derived branch seeds. No runtime fallback selects the old rule. Metadata-only migrations preserve the opaque model bytes.
 
 ---
 
@@ -152,22 +135,26 @@ params := &dynamics.HKParams{Tolerance: 0.3, Influence: 0.5, RepostRate: 0.2, Re
 
 ### 2. Pass a `Dynamics` implementation to `NewSMPModel`
 
+These are alternative constructor calls. Supply a non-nil RNG pool (`smprng` below imports `smp/rng`), with a separate pool for each independent simulation.
+
 ```go
+rngPool := smprng.MustNewPool(smprng.FixedSpec(1, 2))
+
 // HK (float64 opinions)
-m := model.NewSMPModelFloat64(graph, nil, modelParams, agentParams, &dynamics.HK{}, collectOpts, nil)
+m := model.NewSMPModelFloat64(graph, nil, modelParams, agentParams, &dynamics.HK{}, collectOpts, nil, rngPool)
 
 // Deffuant (float64 opinions)
 dParams := dynamics.DefaultDeffuantParams()
-m := model.NewSMPModelFloat64(graph, nil, modelParams, dParams, &dynamics.Deffuant{}, collectOpts, nil)
+m := model.NewSMPModelFloat64(graph, nil, modelParams, dParams, &dynamics.Deffuant{}, collectOpts, nil, rngPool)
 
 // Galam (bool opinions)
 gParams := dynamics.DefaultGalamParams()
 ops := make([]bool, nodeCount)  // initialize with random booleans as needed
-m := model.NewSMPModel(graph, &ops, modelParams, gParams, &dynamics.Galam{}, collectOpts, nil)
+m := model.NewSMPModel(graph, &ops, modelParams, gParams, &dynamics.Galam{}, collectOpts, nil, rngPool)
 
 // Voter (bool opinions)
 vParams := dynamics.DefaultVoterParams()
-m := model.NewSMPModel(graph, &ops, modelParams, vParams, &dynamics.Voter{}, collectOpts, nil)
+m := model.NewSMPModel(graph, &ops, modelParams, vParams, &dynamics.Voter{}, collectOpts, nil, rngPool)
 ```
 
 ### 3. Rename `TweetRetainCount` → `PostRetainCount`
@@ -262,6 +249,8 @@ meta := &simulation.ScenarioMetadata{
 package mydynamics
 
 import (
+    "math/rand/v2"
+
     "smp/model"
 )
 
@@ -282,7 +271,7 @@ func (d *MyDynamics) Concordant(my, other float64, p *MyParams) bool {
     return my == other // example: exact agreement only
 }
 
-func (d *MyDynamics) Step(my float64, cN, cR, dN, dR []float64, p *MyParams) (float64, model.AgentOpinionSumRecord) {
+func (d *MyDynamics) Step(my float64, cN, cR, dN, dR []float64, p *MyParams, rng *rand.Rand) (float64, model.AgentOpinionSumRecord) {
     // custom update rule
     return my, model.AgentOpinionSumRecord{}
 }
@@ -290,15 +279,6 @@ func (d *MyDynamics) Step(my float64, cN, cR, dN, dR []float64, p *MyParams) (fl
 
 ## Persistent research checkpoints (DataVersion 3)
 
-Persistent online research jobs now save policy and observation recovery state
-alongside the microscopic snapshot. These jobs use `DataVersion=3`; their
-`metadata.json` continues to identify the reference recommender, while the
-snapshot records the currently active policy. Use a version-3-capable SMP binary
-to resume them. Do not remove the version marker or rewrite their recommender
-field to make an older binary accept them. Ordinary simulations still default to
-`DataVersion=2` and preserve their existing encoding.
+Persistent online research jobs now save policy and observation recovery state alongside the microscopic snapshot. These jobs use `DataVersion=3`; their `metadata.json` continues to identify the reference recommender, while the snapshot records the currently active policy. Use a version-3-capable SMP binary to resume them. Do not remove the version marker or rewrite their recommender field to make an older binary accept them. Ordinary simulations still default to `DataVersion=2` and preserve their existing encoding.
 
-Go callers now use `simulation.PolicyChange`, `simulation.Exposure`, and
-`simulation.SlotCounts` directly instead of the former batch-local types.
-`batch.ExperimentSpec` and endpoint wire field names are unchanged. There are no
-forwarding aliases for those moved Go types.
+Go callers now use `simulation.PolicyChange`, `simulation.Exposure`, and `simulation.SlotCounts` directly instead of the former batch-local types. `batch.ExperimentSpec` and endpoint wire field names are unchanged. There are no forwarding aliases for those moved Go types.

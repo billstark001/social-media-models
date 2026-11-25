@@ -45,15 +45,15 @@ Every core type carries two type parameters:
 ### Dynamics Interface
 
 ```go
+import "math/rand/v2"
+
 type Dynamics[O any, P any] interface {
     Concordant(myOpinion, otherOpinion O, params *P) bool
-    Step(myOpinion O, cN, cR, dN, dR []O, params *P) (O, AgentOpinionSumRecord)
+    Step(myOpinion O, cN, cR, dN, dR []O, params *P, rng *rand.Rand) (O, AgentOpinionSumRecord)
 }
 ```
 
-`cN` / `cR` = concordant neighbor / recommended opinion slices.  
-`dN` / `dR` = discordant equivalents.  
-Returns the next opinion and four-slot statistics.
+`cN` / `cR` = concordant neighbor / recommended opinion slices. `dN` / `dR` = discordant equivalents. Returns the next opinion and four-slot statistics.
 
 ### Agent Behavior Parameters
 
@@ -89,8 +89,8 @@ Four dynamics are provided. HK and Deffuant use `O = float64`; Galam and Voter u
 |---|---|---|---|
 | `HK` | `HKParams` | `float64` | Mean-field bounded confidence |
 | `Deffuant` | `DeffuantParams` | `float64` | Pairwise bounded confidence |
-| `Galam` | `GalamParams` | `bool` | Majority rule |
-| `Voter` | `VoterParams` | `bool` | Copy a random neighbor |
+| `Galam` | `GalamParams` | `bool` | Flip conditioned on summed opinion differences |
+| `Voter` | `VoterParams` | `bool` | Stochastic flip from normalized opinion differences |
 
 ### Hegselmann-Krause (`HK`)
 
@@ -114,23 +114,23 @@ Statistics are computed over _all_ concordant/discordant opinions regardless of 
 
 ### Galam (`Galam`)
 
-**Params**: `GalamParams{RewiringRate, RepostRate}`
+**Params**: `GalamParams{Influence, RewiringRate, RepostRate}`
 
 **Opinion type**: `bool`
 
 **Concordant**: `myOp == otherOp`
 
-**Update**: if discordant neighbors + recommended outnumber concordant ones, flip opinion.
+**Update**: if the summed discordant opinion differences are positive, flip with probability `Influence`. See [`dynamics/galam.go`](../dynamics/galam.go) for the implemented rule.
 
 ### Voter (`Voter`)
 
-**Params**: `VoterParams{RewiringRate, RepostRate}`
+**Params**: `VoterParams{Influence, RewiringRate, RepostRate}`
 
 **Opinion type**: `bool`
 
 **Concordant**: `myOp == otherOp`
 
-**Update**: copy the opinion of one randomly selected post from the concordant or discordant pool.
+**Update**: compare a uniform draw with `Influence × discordant-difference sum / total-difference sum`. See [`dynamics/voter.go`](../dynamics/voter.go) for the implemented rule.
 
 ---
 
@@ -147,7 +147,7 @@ All recommendation systems implement `model.SMPModelRecommendationSystem[O, P]`.
 | `StructureRandom` | Structure-similarity weighted random sampling |
 | `Mix` | Blend two systems with a fixed ratio |
 
-All are generic `[O, P]`; `Opinion` and `OpinionRandom` are specialized to `O = float64` because they perform arithmetic on opinions. For `bool`-opinion dynamics (Galam, Voter) only `Random` is available.
+All are generic `[O, P]`. `Opinion` and `OpinionRandom` convert supported opinions to `float64` for scoring, including `false → 0` and `true → 1` for boolean dynamics.
 
 ---
 
@@ -159,7 +159,7 @@ All are generic `[O, P]`; `Opinion` and `OpinionRandom` are specialized to `O = 
 
 ```
 Init()          build graph, create model (dispatched by DynamicsType), open DB
-Load()          restore from latest raw snapshot + acc-state
+Load()          restore the latest model snapshot and matching stored trajectory
 StepTillEnd()   run until MaxSimulationStep or context cancel
 ```
 
@@ -177,6 +177,7 @@ type IModel interface {
     Accumulate(*AccumulativeModelState)
     ValidateAcc(*AccumulativeModelState) bool
     RawDump() ([]byte, error)
+    GetOpinions() []float64
 }
 ```
 
@@ -203,8 +204,11 @@ The string field `DynamicsType` selects which dynamics (and matching params) to 
 | File pattern | Format | Content |
 |---|---|---|
 | `snapshot-*.msgpack` | msgpack | `RawSnapshotData{DynamicsType, Data}` wrapping a msgpack-encoded `SMPModelDumpData[O,P]` |
-| `acc-state-*.lz4` | binary + LZ4 | `AccumulativeModelState` (opinions, counts, sums over all steps) |
-| `graph-<step>.msgpack` | msgpack | Graph at specific step |
+| `trajectory.json` | JSON | Precision, block ranges, filenames, and checksums |
+| `trajectory-*.smpc` | binary + channel compression | Bounded blocks of opinions, counts, and opinion sums |
+| `acc-state-*.lz4` | binary + LZ4 | Legacy accumulated opinions, counts, and sums |
+| `graph-<step>.msgpack.lz4` | msgpack + LZ4 | Graph at a completed step; legacy uncompressed files remain readable |
+| `checkpoint-<step>.msgpack.lz4` | msgpack + LZ4 | Exact model state and physical metadata for research branches |
 | `finished-*.msgpack` | msgpack | Completion marker |
 | `metadata.json` | JSON | `ScenarioMetadata` |
 | `events.db` | SQLite | Optional per-event log |
@@ -213,7 +217,7 @@ The string field `DynamicsType` selects which dynamics (and matching params) to 
 
 ```sql
 events          (id, type TEXT, agent_id, step)
-rewiring_events (event_id FK, unfollow, follow)
+rewiring_events (event_id FK, agent_id, unfollow, follow)
 post_events     (event_id FK, agent_id, step, opinion REAL, is_repost BOOL)
 view_posts_events (event_id FK, data BLOB)  -- msgpack-encoded ViewPostsEventBody
 ```
@@ -240,8 +244,9 @@ NewSMPModel[O,P] ─────────────────────
         │     ├── PartitionPosts (Concordant)                 │
         │     ├── Dynamics.Step → nextOpinion, opSum          │
         │     └── repost / rewire decisions                   │
-        ├── Recsys.PostStep(changed)                          │
-        └── commit opinions, posts, rewirings                 │
+        ├── Recsys.PreCommit()                               │
+        ├── commit opinions, posts, rewirings                 │
+        └── Recsys.PostStep(changed)                          │
                                                               │
 Simulation.Scenario  (Model field: IModel)                    │
         ├── IModel.Accumulate → AccumulativeModelState        │

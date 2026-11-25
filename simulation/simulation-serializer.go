@@ -54,8 +54,6 @@ func (s *SimulationSerializer) ensureSimulationDir() error {
 	return nil
 }
 
-// #region serialize
-
 func (s *SimulationSerializer) _list(fileType string, suffixName string) ([]string, error) {
 	dir := s.getSimulationDir()
 	entries, err := os.ReadDir(dir)
@@ -102,7 +100,6 @@ func (s *SimulationSerializer) _write(fileType string, snapshot any) error {
 		return err
 	}
 
-	// serialize
 	data, err := msgpack.Marshal(snapshot)
 	if err != nil {
 		return err
@@ -115,7 +112,6 @@ func (s *SimulationSerializer) _write(fileType string, snapshot any) error {
 		return err
 	}
 
-	// clean old ones
 	return s._clean(fileType, false, ".msgpack")
 }
 
@@ -148,10 +144,6 @@ func (s *SimulationSerializer) _clean(fileType string, all bool, suffixName stri
 	return nil
 }
 
-// #endregion
-
-// #region snapshot
-
 // RawSnapshotData wraps a dynamics-type tag and the msgpack-encoded model dump.
 type RawSnapshotData struct {
 	DynamicsType  string
@@ -182,10 +174,6 @@ func (s *SimulationSerializer) GetLatestRawSnapshot() (*RawSnapshotData, error) 
 func (s *SimulationSerializer) SaveRawSnapshot(snapshot *RawSnapshotData) error {
 	return s._write("snapshot", snapshot)
 }
-
-// #endregion
-
-// #region finished mark
 
 type FinishMark struct {
 	DataVersion int
@@ -221,10 +209,6 @@ func (s *SimulationSerializer) GetFinishMark() (*FinishMark, error) {
 	return ret.(*FinishMark), nil
 }
 
-// #endregion
-
-// #region acc-state
-
 func (s *SimulationSerializer) GetLatestAccumulativeState() (*AccumulativeModelState, error) {
 	if !s.Exists() {
 		return nil, nil
@@ -244,23 +228,16 @@ func (s *SimulationSerializer) GetLatestAccumulativeState() (*AccumulativeModelS
 
 func (s *SimulationSerializer) SaveAccumulativeState(snapshot *AccumulativeModelState) error {
 
-	// declare
 	fileType := "acc-state"
 	filePath := s._getFilePath(fileType, ".lz4")
 
-	// save
 	err := SaveAccumulativeModelState(filePath, snapshot)
 	if err != nil {
 		return err
 	}
 
-	// clean old ones
 	return s._clean(fileType, false, ".lz4")
 }
-
-// #endregion
-
-// #region graph
 
 // SaveGraph persists the directed graph at a completed step.
 func (s *SimulationSerializer) SaveGraph(graph *utils.NetworkXGraph, step int) error {
@@ -360,8 +337,6 @@ func (s *SimulationSerializer) DeleteGraphsAfterStep(step int, ignoreStepParsing
 
 	return nil
 }
-
-// #endregion
 
 // SaveMetadata persists the resolved simulation configuration.
 func (s *SimulationSerializer) SaveMetadata(metadata *ScenarioMetadata) error {

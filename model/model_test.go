@@ -47,8 +47,6 @@ func makeHKModel(n int, opinions []float64) *model.SMPModel[float64, dynamics.HK
 	)
 }
 
-// ---- PostRecord tests ----
-
 func TestPostRecordFields(t *testing.T) {
 	pr := model.PostRecord[float64]{AgentID: 7, Step: 3, Opinion: 0.42}
 	if pr.AgentID != 7 || pr.Step != 3 || pr.Opinion != 0.42 {
@@ -62,8 +60,6 @@ func TestPostRecordGenericBool(t *testing.T) {
 		t.Error("bool PostRecord opinion should be true")
 	}
 }
-
-// ---- AgentSumRecord tests ----
 
 func TestAgentSumRecordGeneric(t *testing.T) {
 	var r model.AgentSumRecord[int]
@@ -79,8 +75,6 @@ func TestAgentSumRecordGeneric(t *testing.T) {
 		t.Error("AgentOpinionSumRecord (float64) failed")
 	}
 }
-
-// ---- PartitionPosts tests ----
 
 func TestPartitionPostsAllConcordant(t *testing.T) {
 	hk := &dynamics.HK{}
@@ -161,8 +155,6 @@ func TestPartitionPostsMixed(t *testing.T) {
 		t.Errorf("expected 1 discordant recommended, got %d", len(dR))
 	}
 }
-
-// ---- SMPModel creation & step tests ----
 
 func TestModelCreation(t *testing.T) {
 	opinions := []float64{0.1, -0.2, 0.3, -0.4}
@@ -252,8 +244,6 @@ func TestModelCollectPosts(t *testing.T) {
 	}
 }
 
-// ---- NetworkGrid tests ----
-
 func TestNetworkGridPlaceAndGet(t *testing.T) {
 	g := utils.CreateRandomNetwork(5, 0.5, testPool().Stream(smprng.StreamNetwork))
 	mp := model.DefaultSMPModelParams[float64, dynamics.HKParams]()
@@ -326,8 +316,6 @@ func TestNetworkGridGetNeighbors(t *testing.T) {
 	}
 }
 
-// ---- EventRecord / body types tests ----
-
 func TestEventBodyTypes(t *testing.T) {
 	pr := &model.PostRecord[float64]{AgentID: 1, Opinion: 0.5}
 	body := model.PostEventBody[float64]{Record: pr, IsRepost: false}
@@ -345,8 +333,6 @@ func TestEventBodyTypes(t *testing.T) {
 		t.Error("ViewPostsEventBody: wrong NeighborConcordant length")
 	}
 }
-
-// ---- DumpData round-trip test ----
 
 func TestModelDumpLoad(t *testing.T) {
 	n := 6

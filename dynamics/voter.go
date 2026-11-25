@@ -20,8 +20,8 @@ func (p *VoterParams) GetRepostRate() float64   { return p.RepostRate }
 func (p *VoterParams) GetRewiringRate() float64 { return p.RewiringRate }
 
 // Voter implements model.Dynamics[bool, VoterParams].
-// At each step it picks one concordant opinion at random and moves toward it
-// by Tolerance × opinion-difference. All statistics are still recorded.
+// The flip threshold is Influence times the discordant opinion-difference sum
+// divided by the total recorded opinion-difference sum.
 type Voter struct {
 	rndVals []float64
 	stepIdx int

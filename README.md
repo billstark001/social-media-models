@@ -102,35 +102,17 @@ Each agent per step:
 
 ## Serialization
 
-Recovery snapshots are stored as **msgpack** files. New accumulated time-series
-data uses bounded binary blocks with channel-specific LZ4 or Zstd compression.
-Events (posts, rewirings, view-posts) are optionally logged to **SQLite**.
+Recovery snapshots are stored as **msgpack** files. New accumulated time-series data uses bounded binary blocks with channel-specific LZ4 or Zstd compression. Events (posts, rewirings, view-posts) are optionally logged to **SQLite**.
 
-The current on-disk data format is `DataVersion: 2`; metadata without
-`DataVersion` is interpreted as legacy version 0. Version 1 remains readable
-and introduced the resolved root RNG specification in `metadata.json` and the
-`finished-*.msgpack` marker. Version 2 adds bounded trajectory blocks,
-independent opinion and opinion-sum precision, and exact research checkpoints.
-New runs use version 2, including when given version 1 metadata. Model
-snapshots store the current states of the named RNG streams, so a resumed run
-produces the same continuation as an uninterrupted run.
+Ordinary runs default to `DataVersion: 2`; persistent research observations and interventions use version 3. Metadata without `DataVersion` is interpreted as legacy version 0. Version 1 remains readable and introduced the resolved root RNG specification in `metadata.json` and the `finished-*.msgpack` marker. Version 2 adds bounded trajectory blocks, independent opinion and opinion-sum precision, and exact research checkpoints. New ordinary runs use version 2, including when given version 1 metadata. Model snapshots store the current states of the named RNG streams, so a resumed run produces the same continuation as an uninterrupted run.
 
 See [`docs/architecture.md`](docs/architecture.md) for the full file layout.
 
 ## Extended-HK experiment integration
 
-This repository owns the microscopic Go dynamics/recommenders, the `smp`,
-`smp-batch` and `smp-probe` commands, and the `smp_bindings` reader/launcher.
-The theory experiment adapters link its public Go packages directly. The native
-Go reader handles saved histories; Python bindings provide orchestration and
-raw plotting channels.
+This repository owns the microscopic Go dynamics/recommenders, the `smp`, `smp-batch` and `smp-probe` commands, and the `smp_bindings` reader/launcher. The theory experiment adapters link its public Go packages directly. The native Go reader handles saved histories; Python bindings provide orchestration and raw plotting channels.
 
-[extended-hk-model](https://github.com/billstark001/extended-hk-model) owns the
-paper's parameter designs, generation orchestration, fitting, analysis and
-figures. Its complementary runtime is
-[social-media-mesoscopic-models](https://github.com/billstark001/social-media-mesoscopic-models).
-Keep all three checkouts separate. Neither runtime needs to import the model
-experiment repository or the paper checkout to build.
+[extended-hk-model](https://github.com/billstark001/extended-hk-model) owns the paper's parameter designs, generation orchestration, fitting, analysis and figures. Its complementary runtime is [social-media-mesoscopic-models](https://github.com/billstark001/social-media-mesoscopic-models). Keep all three checkouts separate. Neither runtime needs to import the model experiment repository or the paper checkout to build.
 
 For sibling checkouts, run from `extended-hk-model`:
 
@@ -138,23 +120,9 @@ For sibling checkouts, run from `extended-hk-model`:
 python -m pip install -e . -e ../social-media-models -e ../social-media-mesoscopic-models
 ```
 
-Use the command-build instructions below for the executables. Configure
-`EHK_MICRO_SOURCE_DIR`, `EHK_MESO_SOURCE_DIR` and `EHK_KINETIC_BINARY` in the model
-repository's ignored `.env`; `SMP_BINARY_PATH` and `SMP_PROBE_BINARY` select the
-microscopic command products. The model's experiment build commands create
-Go module replacements and binaries in its ignored `outputs/` tree, linking
-the actual runtime sources without copying solvers. The model uses one shared
-experiment adapter for validation, conditional ensembles and matched population
-studies. Its active `python -m experiments.paper_theory run` command builds
-verified executables and runs the main/main_smoke plan; `resume` restores the
-original bound executables. Study orchestration remains in the model repository;
-this runtime remains independent.
+Use the command-build instructions below for the executables. Configure `EHK_MICRO_SOURCE_DIR`, `EHK_MESO_SOURCE_DIR` and `EHK_KINETIC_BINARY` in the model repository's ignored `.env`; `SMP_BINARY_PATH` and `SMP_PROBE_BINARY` select the microscopic command products. The model's experiment build commands create Go module replacements and binaries in its ignored `outputs/` tree, linking the actual runtime sources without copying solvers. The model uses one shared experiment adapter for validation, conditional ensembles and matched population studies. Its active `python -m experiments.paper_theory run` command builds verified executables and runs the main/main_smoke plan; `resume` restores the original bound executables. Study orchestration remains in the model repository; this runtime remains independent.
 
-See the model's [complete installation and output/data-link guide](https://github.com/billstark001/extended-hk-model/blob/main/docs/runtime-dependencies.md)
-and [paper-code migration guide](https://github.com/billstark001/extended-hk-model/blob/main/experiments/paper_theory/MIGRATION.md).
-Large raw datasets remain external and generated products remain ignored. CAS
-2026 is a literature citation in the theory workflow, not an input dataset or
-a required replay of the conference simulation.
+See the model's [complete installation and output/data-link guide](https://github.com/billstark001/extended-hk-model/blob/main/docs/runtime-dependencies.md) and [paper-code migration guide](https://github.com/billstark001/extended-hk-model/blob/main/experiments/paper_theory/MIGRATION.md). Large raw datasets remain external and generated products remain ignored. CAS 2026 is a literature citation in the theory workflow, not an input dataset or a required replay of the conference simulation.
 
 ## Build
 
@@ -206,9 +174,7 @@ Windows PowerShell example:
 ./smp.exe ./run '{"UniqueName":"run-001","DynamicsType":"HK",...}' 1
 ```
 
-Machine progress uses the same compact JSONL codec as `smp-batch`. The
-persistent command rate-limits step events to at most four per second, so
-encoding cost does not grow with simulation step rate. A progress line is:
+Machine progress uses the same compact JSONL codec as `smp-batch`. The persistent command rate-limits step events to at most four per second, so encoding cost does not grow with simulation step rate. A progress line is:
 
 ```json
 { "v": 1, "id": "run-001", "t": "progress", "s": 1200, "m": 5000 }
@@ -220,36 +186,15 @@ The resolved RNG parameters are also emitted once at startup:
 { "v": 1, "id": "run-001", "t": "rng", "a": "pcg64-dxsm-v1", "x": "<seed1>", "y": "<seed2>" }
 ```
 
-The short wire keys expand to `version`, `request_id`, `type`, `step`,
-`max_step`, `stop_reason`, `algorithm`, `seed1`, and `seed2`. Event types are
-`rng`, `start`, `progress`, and `done`. The Python codec exposes descriptive
-field names; callers do not need to interpret the short keys directly.
+The short wire keys expand to `version`, `request_id`, `type`, `step`, `max_step`, `stop_reason`, `algorithm`, `seed1`, and `seed2`. Event types are `rng`, `start`, `progress`, and `done`. The Python codec exposes descriptive field names; callers do not need to interpret the short keys directly.
 
-The `smp` command persists graph checkpoints, events, recovery snapshots, and
-the three accumulated per-agent channels. New runs write bounded time chunks
-instead of rewriting the full history at every save. Each channel keeps its
-selected stored precision (default `float32` opinions, `float16` opinion sums,
-and exact `int16` counts). Set `TrajectoryPrecision` in metadata to choose
-`float16`, `float32`, or `float64` independently for opinions and sums.
-Chunks select a lossless LZ4 codec or byte/bit shuffle with Zstd per channel;
-graph checkpoints are compressed too. The format is described in
-[docs/trajectory.md](docs/trajectory.md), including measured space use in two
-slow-convergence runs.
+The `smp` command persists graph checkpoints, events, recovery snapshots, and the three accumulated per-agent channels. New runs write bounded time chunks instead of rewriting the full history at every save. Each channel keeps its selected stored precision (default `float32` opinions, `float16` opinion sums, and exact `int16` counts). Set `TrajectoryPrecision` in metadata to choose `float16`, `float32`, or `float64` independently for opinions and sums. Chunks select a lossless LZ4 codec or byte/bit shuffle with Zstd per channel; graph checkpoints are compressed too. The format is described in [docs/trajectory.md](docs/trajectory.md), including measured space use in two slow-convergence runs.
 
-`CheckpointSteps` in scenario metadata requests exact, named `float64` research
-checkpoints at completed steps, including step zero. They retain the graph,
-posts, recommender state, RNG streams, and halt counter. Historical rows are
-for analysis; they are not exact branch starting points. Library callers that
-only need an in-memory run can use
-`NewScenarioWithOptions(..., ScenarioOptions{EnableDumps: false})`. In that
-mode the scenario performs no filesystem I/O, creates no serializer/event
-database, and does not allocate or update `AccumulativeModelState`. It is not
-resumable; callers must retain the returned summaries themselves.
+`CheckpointSteps` in scenario metadata requests exact, named `float64` research checkpoints at completed steps, including step zero. They retain the graph, posts, recommender state, RNG streams, and halt counter. Historical rows are for analysis; they are not exact branch starting points. Library callers that only need an in-memory run can use `NewScenarioWithOptions(..., ScenarioOptions{EnableDumps: false})`. In that mode the scenario performs no filesystem I/O, creates no serializer/event database, and does not allocate or update `AccumulativeModelState`. It is not resumable; callers must retain the returned summaries themselves.
 
 ## No-file batch simulations and checkpoint experiments
 
-`smp-batch` keeps one Go process alive for a JSONL stream and runs every item
-entirely in memory. Each non-empty input line has this shape:
+`smp-batch` keeps one Go process alive for a JSONL stream and runs every item entirely in memory. Each non-empty input line has this shape:
 
 ```json
 {
@@ -281,18 +226,7 @@ entirely in memory. Each non-empty input line has this shape:
 }
 ```
 
-Missing metadata fields receive the same defaults as `smp`. The batch runner
-forces all history/event collection flags off because its current summaries
-need only the final in-memory state. A successful response reports the
-resolved RNG, protocol SHA-256, step/stop reason, and final opinion count,
-mean, population variance, minimum, and maximum. The optional `terminal` block
-applies the common atomic-measure component classifier and returns status,
-category, both component counts, component masses, and threshold margins.
-`major_mass=0` is normalized to the version-1 default `0.02`; production
-protocols should still send it explicitly. For an empirical population of
-size `N`, use `mass_resolution=1/N` and `position_resolution=0`; a binned
-comparison should instead report its bin width. Set `final_opinions` only when
-a downstream analysis genuinely needs the raw terminal row.
+Missing metadata fields receive the same defaults as `smp`. The batch runner forces all history/event collection flags off because its current summaries need only the final in-memory state. A successful response reports the resolved RNG, protocol SHA-256, step/stop reason, and final opinion count, mean, population variance, minimum, and maximum. The optional `terminal` block applies the common atomic-measure component classifier and returns status, category, both component counts, component masses, and threshold margins. `major_mass=0` is normalized to the version-1 default `0.02`; production protocols should still send it explicitly. For an empirical population of size `N`, use `mass_resolution=1/N` and `position_resolution=0`; a binned comparison should instead report its bin width. Set `final_opinions` only when a downstream analysis genuinely needs the raw terminal row.
 
 ```bash
 ./smp-batch < requests.jsonl > results.jsonl
@@ -300,13 +234,7 @@ a downstream analysis genuinely needs the raw terminal row.
   < requests.jsonl > results.jsonl 2> progress.jsonl
 ```
 
-Progress is opt-in and always uses stderr, leaving stdout result-only JSONL.
-Its JSONL events use the same compact `v/id/t/s/m/r` envelope documented
-above. Step events are disabled unless `--progress-step-interval` is positive.
-Malformed request lines yield an error response and do not abort subsequent
-items. Every response is flushed before the next request, so an orchestrator
-can resume by protocol hash/request id after interruption. The no-file runner
-itself deliberately creates no resume markers.
+Progress is opt-in and always uses stderr, leaving stdout result-only JSONL. Its JSONL events use the same compact `v/id/t/s/m/r` envelope documented above. Step events are disabled unless `--progress-step-interval` is positive. Malformed request lines yield an error response and do not abort subsequent items. Every response is flushed before the next request, so an orchestrator can resume by protocol hash/request id after interruption. The no-file runner itself deliberately creates no resume markers.
 
 Python can run a complete request list through one process:
 
@@ -321,23 +249,11 @@ responses = run_batch(
 )
 ```
 
-Use `BatchClient` when requests are generated incrementally, or
-`run_batch_parallel(..., processes=N)` to load-balance them over multiple
-long-lived Go processes. `smp-batch` itself remains sequential so that each
-stdin line has exactly one immediately flushed stdout response.
+Use `BatchClient` when requests are generated incrementally, or `run_batch_parallel(..., processes=N)` to load-balance them over multiple long-lived Go processes. `smp-batch` itself remains sequential so that each stdin line has exactly one immediately flushed stdout response.
 
-For custom orchestration, `smp_bindings.codec` publicly exposes the shared
-progress decoder and versioned batch request/response codecs.
-`smp_bindings.process` exposes executable validation, process-group creation,
-and safe termination helpers used by both built-in runners.
+For custom orchestration, `smp_bindings.codec` publicly exposes the shared progress decoder and versioned batch request/response codecs. `smp_bindings.process` exposes executable validation, process-group creation, and safe termination helpers used by both built-in runners.
 
-For repeated continuations of one exact research checkpoint, include an
-`experiment` object. `mode: "resume"` reuses the checkpoint RNG and requires one
-replicate. Omit the request RNG or supply the checkpoint’s root seed. `mode: "branch"` derives stable independent future streams from the
-explicit base RNG, checkpoint hash, and replicate index. `observe_at` values
-are relative steps and may include zero. A branch advances only once to its
-largest requested time. For example, the following fields can be added to a
-normal batch request with matching complete physical metadata:
+For repeated continuations of one exact research checkpoint, include an `experiment` object. `mode: "resume"` reuses the checkpoint RNG and requires one replicate. Omit the request RNG or supply the checkpoint’s root seed. `mode: "branch"` derives stable independent future streams from the explicit base RNG, checkpoint hash, and replicate index. `observe_at` values are relative steps and may include zero. A branch advances only once to its largest requested time. For example, the following fields can be added to a normal batch request with matching complete physical metadata:
 
 ```json
 {
@@ -354,99 +270,34 @@ normal batch request with matching complete physical metadata:
 }
 ```
 
-Each replicate returns its own observations, stop reason, and completed step.
-Binned population masses sum to one; the row-major directed-edge matrix sums
-to the observed mean out-degree. Retain per-replicate vectors for joint drift
-and covariance estimates. `full_state` adds exact opinions and edges at each
-endpoint. `checkpoint_at` optionally writes complete endpoint checkpoints;
-for multiple replicates its paths need a `{replicate}` placeholder. Otherwise
-checkpoint experiments write no output files. `stop_on_halt` can stop long
-branches early and leaves later requested observations absent.
+Each replicate returns its own observations, stop reason, and completed step. Binned population masses sum to one; the row-major directed-edge matrix sums to the observed mean out-degree. Retain per-replicate vectors for joint drift and covariance estimates. `full_state` adds exact opinions and edges at each endpoint. `checkpoint_at` optionally writes complete endpoint checkpoints; for multiple replicates its paths need a `{replicate}` placeholder. Otherwise checkpoint experiments write no output files. `stop_on_halt` can stop long branches early and leaves later requested observations absent.
 
-An experiment can also use `mode: "fresh"` with one replicate and no source
-checkpoint. HK experiments can request `output.pathway` for post-commit state
-and feed counters accumulated between observations. `policy_change` can change
-the active recommender after a completed step or at a concordance threshold,
-with an optional fixed duration. The response reports the switch step and
-whether a threshold trigger reached its fallback. Scheduled interventions
-require a fixed observation window. They do not save intermediate checkpoints.
+An experiment can also use `mode: "fresh"` with one replicate and no source checkpoint. HK experiments can request `output.pathway` for post-commit state and feed counters accumulated between observations. `policy_change` can change the active recommender after a completed step or at a concordance threshold, with an optional fixed duration. The response reports the switch step and whether a threshold trigger reached its fallback. Scheduled interventions require a fixed observation window. They do not save intermediate checkpoints.
 
-Offline pathway measurements use `smp-probe` with `measurements: ["pathway"]`
-and an explicit `epsilon`, a saved-run directory, or a checkpoint. Python's
-`run_probe_jobs` streams independent observations through one worker. See
-[`docs/measurements.md`](docs/measurements.md) for source and job examples.
+Offline pathway measurements use `smp-probe` with `measurements: ["pathway"]` and an explicit `epsilon`, a saved-run directory, or a checkpoint. Python's `run_probe_jobs` streams independent observations through one worker. See [`docs/measurements.md`](docs/measurements.md) for source and job examples.
 
-HK batch pathway windows include requested and displayed slots, with
-exploration, policy and bridge counts. Set `output.exposure_trace` to a
-`.jsonl.gz` destination in a one-replicate experiment to write one feed row per
-agent update. The record carries the update step, recipient, pre-update opinion,
-requested recommendation count, and ordered `neighbors` and `recommendations`.
-Each slot has its post, source, and placement holder/round. Neighbor slots include
-every current followee, with `post: null` when no post is available; this preserves
-the full eligibility context. Confidence, repost status and rewiring eligibility
-are derived from these facts and the run metadata rather than stored again.
-The trace receipt's `slots` counts recommendations. In a persistent `smp` run, enable `ViewPostsDetails`
-to record full feed details in the existing event log. `ViewPostsEvent`
-collects the original confidence buckets. Both switches default to false.
-Older ViewPosts logs retain unknown placement details as missing.
-Both channels support all four dynamics; persistent bool opinions use the same
-numeric 0/1 representation as post events.
-Run `smp-migrate events <events.db>` first for the obsolete ViewTweets schema.
+HK batch pathway windows include requested and displayed slots, with exploration, policy and bridge counts. Set `output.exposure_trace` to a `.jsonl.gz` destination in a one-replicate experiment to write one feed row per agent update. The record carries the update step, recipient, pre-update opinion, requested recommendation count, and ordered `neighbors` and `recommendations`. Each slot has its post, source, and placement holder/round. Neighbor slots include every current followee, with `post: null` when no post is available; this preserves the full eligibility context. Confidence, repost status and rewiring eligibility are derived from these facts and the run metadata rather than stored again. The trace receipt's `slots` counts recommendations. In a persistent `smp` run, enable `ViewPostsDetails` to record full feed details in the existing event log. `ViewPostsEvent` collects the original confidence buckets. Both switches default to false. Older ViewPosts logs retain unknown placement details as missing. Both channels support all four dynamics; persistent bool opinions use the same numeric 0/1 representation as post events. Run `smp-migrate events <events.db>` first for the obsolete ViewTweets schema.
 
 ## Frozen-state probe
 
-`smp-probe` measures frozen states and evaluates the recommender for a hypothetical
-agent opinion `x ∈ [-1, 1]`. It reads persistent run directories and checkpoints
-directly in Go, without resuming the simulation. Explicit frozen inputs remain
-available for synthetic analyses. Native JSON/JSONL and direct source flags
-provide the same calculations without Python; see
-[`docs/measurements.md`](docs/measurements.md) for the Go API, CLI, input coverage
-and batch examples.
+`smp-probe` measures frozen states and evaluates the recommender for a hypothetical agent opinion `x ∈ [-1, 1]`. It reads persistent run directories and checkpoints directly in Go, without resuming the simulation. Explicit frozen inputs remain available for synthetic analyses. Native JSON/JSONL and direct source flags provide the same calculations without Python; see [`docs/measurements.md`](docs/measurements.md) for the Go API, CLI, input coverage and batch examples.
 
-The original `Recommend` method and simulation path are unchanged. Built-in
-recommenders additionally implement `RecommendAt(agent, opinion, ..., rng)`.
-The explicit probe RNG is independent of the simulation RNG, so analysis cannot
-change a later simulation continuation. Opinion-independent recommenders reuse
-one recommendation sample across all grid points in a replicate.
+The original `Recommend` method and simulation path are unchanged. Built-in recommenders additionally implement `RecommendAt(agent, opinion, ..., rng)`. The explicit probe RNG is independent of the simulation RNG, so analysis cannot change a later simulation continuation. Opinion-independent recommenders reuse one recommendation sample across all grid points in a replicate.
 
 The result contains, for each step and grid point:
 
 - `f_probe`: the expected one-step opinion drift;
-- `f_neighbor` and `f_recommendation`: additive components whose means sum to
-  `f_probe`;
-- concordant neighbor/recommendation counts for node-only or node-edge
-  analysis;
+- `f_neighbor` and `f_recommendation`: additive components whose means sum to `f_probe`;
+- concordant neighbor/recommendation counts for node-only or node-edge analysis;
 - sample count, active count, and population variance.
 
-The `measurements` list can select `force`, `energy`, `pathway`, `bins`, `terminal`,
-`landscape`, and `counterfactual_neighbor_energy`; an omitted list selects
-`force`. Static selections validate only their measurement inputs. Energy uses
-the truncated quadratic kernel and actual directed
-edge count. The landscape reports population energy and negative gradient,
-concordant mass, and edge energy conditioned on current source-opinion bins,
-with counts and validity masks. Counterfactual neighbor energy fixes one
-anchor's neighbors while changing its query opinion; it is separate from the
-current source-conditioned edge landscape. The `force` output reports opinion
-drift and includes the update second moment, total update variance, and
-zero-update probability. Set
-`per_anchor` to get each anchor's statistics across recommendation replicates.
+The `measurements` list can select `force`, `energy`, `pathway`, `bins`, `terminal`, `landscape`, and `counterfactual_neighbor_energy`; an omitted list selects `force`. Static selections validate only their measurement inputs. Energy uses the truncated quadratic kernel and actual directed edge count. The landscape reports population energy and negative gradient, concordant mass, and edge energy conditioned on current source-opinion bins, with counts and validity masks. Counterfactual neighbor energy fixes one anchor's neighbors while changing its query opinion; it is separate from the current source-conditioned edge landscape. The `force` output reports opinion drift and includes the update second moment, total update variance, and zero-update probability. Set `per_anchor` to get each anchor's statistics across recommendation replicates.
 
-`run_probe_checkpoints([...], measurements=[...])` reads exact `float64`
-research checkpoints directly in Go. Measurements from reconstructed
-`RawSimulationRecord` steps are marked `history_f16`, `history_f32`, or
-`history_f64` according to the stored opinion row. Static energy requests
-do not initialize the recommender or consume an RNG stream.
+`run_probe_checkpoints([...], measurements=[...])` reads exact `float64` research checkpoints directly in Go. Measurements from reconstructed `RawSimulationRecord` steps are marked `history_f16`, `history_f32`, or `history_f64` according to the stored opinion row. Static energy requests do not initialize the recommender or consume an RNG stream.
 
-For HK, `f_probe` is its deterministic bounded-confidence drift. For Deffuant,
-it is the exact conditional expectation of uniformly selecting one concordant
-post and applying `Influence × Δ`. The command intentionally rejects
-boolean-opinion Galam/Voter states.
+For HK, `f_probe` is its deterministic bounded-confidence drift. For Deffuant, it is the exact conditional expectation of uniformly selecting one concordant post and applying `Influence × Δ`. The command intentionally rejects boolean-opinion Galam/Voter states.
 
-The binary protocol is msgpack on stdin/stdout. Its current version is 1.
-Requests without `version` are treated as version 0 and remain accepted;
-new clients send `version: 1`. Responses always include `version: 1`, which
-the Python binding checks before interpreting measurements. Most users should
-call it through the Python binding:
+The binary protocol is msgpack on stdin/stdout. Its current version is 1. Requests without `version` are treated as version 0 and remain accepted; new clients send `version: 1`. Responses always include `version: 1`, which the Python binding checks before interpreting measurements. Most users should call it through the Python binding:
 
 ```python
 from smp_bindings import run_probe_run
@@ -461,12 +312,7 @@ points = result["results"][0]["points"]
 f_probe = [point["f_probe"]["mean"] for point in points]
 ```
 
-When `rng` is omitted, the binding uses the resolved RNG in `metadata.json`
-when available; old data without one receives a generated RNG returned in the
-response. If `RepostRate` is nonzero, `PostEvent` collection must have been
-enabled because repost history cannot otherwise be reconstructed exactly. If
-`RewiringRate` is nonzero, intermediate steps likewise require
-`RewiringEvent`, unless that exact step already has a graph dump.
+When `rng` is omitted, the binding uses the resolved RNG in `metadata.json` when available; old data without one receives a generated RNG returned in the response. If `RepostRate` is nonzero, `PostEvent` collection must have been enabled because repost history cannot otherwise be reconstructed exactly. If `RewiringRate` is nonzero, intermediate steps likewise require `RewiringEvent`, unless that exact step already has a graph dump.
 
 ### Parameter Types
 
@@ -632,32 +478,9 @@ pip install -e .          # editable install from repo root
 pip install .             # regular install
 ```
 
-Dependencies: `msgpack`, `numpy`, `networkx`, `lz4`.
+Dependencies: `msgpack`, `numpy`, `networkx`, `lz4`, `zstandard`.
 
-### IDE Configuration (VSCode/Pylance)
-
-After installing `smp_bindings`, VSCode's Pylance linter may not immediately recognize the package even though the Python interpreter can import it normally. To fix this:
-
-1. **Select the correct Python interpreter in VSCode**
-   - Press `Cmd+Shift+P` (macOS) or `Ctrl+Shift+P` (Linux/Windows)
-   - Search for "Python: Select Interpreter"
-   - Choose your conda/virtual environment (e.g., `./miniconda3/envs/your-env/bin/python`)
-
-2. **Install in editable mode** (recommended for development)
-
-   ```bash
-   pip install -e /path/to/social-media-models
-   ```
-
-3. **Restart VSCode** to allow Pylance to re-index packages
-
-The project is preconfigured with:
-
-- `.vscode/settings.json` — Pylance type-checking mode and Python environment detection
-- `pyproject.toml` — `[tool.pyright]` configuration for type checking
-- `smp_bindings/py.typed` — marker file indicating type support
-
-These configurations ensure that Pylance correctly discovers and analyzes the `smp_bindings` package alongside your code.
+For editor development, select the Python environment containing the editable install. The package includes a `py.typed` marker for type checking.
 
 ### Loading simulation output
 
@@ -715,8 +538,7 @@ with RawSimulationRecord("./run", metadata) as rec:
 
 ### Running simulations from Python
 
-`smp_bindings` can launch the compiled Go binary as a subprocess, parse its
-per-step progress output, and run multiple simulations concurrently.
+`smp_bindings` can launch the compiled Go binary as a subprocess, parse its per-step progress output, and run multiple simulations concurrently.
 
 ```python
 from smp_bindings import run_simulations, is_simulation_finished
@@ -749,10 +571,7 @@ print("Completed:", completed)
 print(is_simulation_finished("./run", scenarios[0]))
 ```
 
-`show_progress=None` (default) auto-detects whether stdout is a terminal:
-in interactive sessions each simulation prints live step counts; in batch /
-CI runs it falls back to a `tqdm` overall bar if available, or plain print
-counts otherwise.
+`show_progress=None` (default) auto-detects whether stdout is a terminal: in interactive sessions each simulation prints live step counts; in batch / CI runs it falls back to a `tqdm` overall bar if available, or plain print counts otherwise.
 
 ### Migration CLI
 
@@ -775,12 +594,7 @@ python -m smp_bindings.migrate snapshot ./run/my-sim/snapshot-*.msgpack
 python -m smp_bindings.migrate events   ./run/my-sim/events.db
 ```
 
-Historical recommendation parameter names such as `mixRate` require explicit
-conversion with `smp-migrate metadata <metadata.json>`. Use
-`smp-migrate snapshot <snapshot.msgpack[.lz4]>` to convert embedded metadata
-and old post field names. Conflicting aliases stop migration without replacing
-the input. Rewriting checkpoint bytes changes their file hash and therefore
-the branch seeds derived from that hash.
+Historical recommendation parameter names such as `mixRate` require explicit conversion with `smp-migrate metadata <metadata.json>`. Use `smp-migrate snapshot <snapshot.msgpack[.lz4]>` to convert embedded metadata and old post field names. Conflicting aliases stop migration without replacing the input. Rewriting checkpoint bytes changes their file hash and therefore the branch seeds derived from that hash.
 
 ---
 
@@ -789,4 +603,3 @@ the branch seeds derived from that hash.
 - [`docs/architecture.md`](docs/architecture.md) — package structure, data-flow diagram, serialization schema
 - [`docs/migration.md`](docs/migration.md) — breaking changes and migration scripts
 - [`docs/measurements.md`](docs/measurements.md) — canonical Go measurements and native offline CLI
-- [`docs/ide-setup.md`](docs/ide-setup.md) — VSCode/Pylance configuration for `smp_bindings` development

@@ -21,9 +21,7 @@ type StructureDump struct {
 }
 
 // Structure implements a recommendation system based on network structure.
-// Scores are computed on demand per Recommend call by traversing the 2-hop
-// neighborhood, so no pre-built matrix is maintained. This makes the system
-// efficient even when the graph rewires very frequently (e.g. voter model).
+// Scores are computed on demand by traversing the two-hop neighborhood.
 //
 // When useCache is true, row-level lazy caching is enabled: each agent's
 // candidate list is reused across steps and only invalidated when its 1-hop
@@ -197,7 +195,7 @@ func nextEpoch(epoch *uint32, seen []uint32) uint32 {
 }
 
 // computeRawScores counts unique undirected two-hop paths using reusable dense
-// scratch arrays. It replaces the nested per-neighbor maps on the hot path.
+// scratch arrays.
 func (s *Structure[O, P]) computeRawScores(agentID int64) map[int64]float64 {
 	g := s.Model.Graph
 	neighborEpoch := nextEpoch(&s.neighborEpoch, s.neighborSeen)
@@ -249,13 +247,8 @@ func (s *Structure[O, P]) computeRawScores(agentID int64) map[int64]float64 {
 	return result
 }
 
-// Recommend implements model.SMPModelRecommendationSystem.
-//
-// Cache enabled (useCache=true):
-//   - Cache hit:  O(count) – iterate cached sorted candidate IDs, call selectPost.
-//   - Cache miss: O(D²) graph traversal + sort, result cached for future calls.
-//
-// Cache disabled (useCache=false): always O(D²) on-demand computation.
+// Recommend selects posts from candidates ranked by common-neighbor score.
+// With caching enabled, sorted candidate IDs are reused until invalidated.
 func (s *Structure[O, P]) Recommend(agent *model.SMPAgent[O, P], neighborIDs map[int64]bool, count int) []*model.PostRecord[O] {
 	rng := s.Model.RNG.Stream(smprng.StreamRecommendation)
 	return s.recommend(agent, neighborIDs, count, rng, s.useCache)

@@ -44,8 +44,6 @@ func ObserveAgentNumbers(m IModel) ([]model.AgentNumberRecord, error) {
 	return observer.GetAgentNumbers(), nil
 }
 
-// ---- Float64ModelWrapper ----
-
 // Float64ModelWrapper wraps SMPModel[float64, P] and implements IModel.
 type Float64ModelWrapper[P any] struct {
 	M *model.SMPModel[float64, P]
@@ -85,8 +83,6 @@ func (w *Float64ModelWrapper[P]) GetOpinions() []float64 {
 func (w *Float64ModelWrapper[P]) GetAgentNumbers() []model.AgentNumberRecord {
 	return w.M.CollectAgentNumbers()
 }
-
-// ---- BoolModelWrapper ----
 
 // BoolModelWrapper wraps SMPModel[bool, P] and implements IModel.
 // Boolean opinions are stored as 0.0 (false) / 1.0 (true) in AccumulativeModelState.

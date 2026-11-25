@@ -29,11 +29,6 @@ except ImportError:
   _TQDM_AVAILABLE = False
 
 
-# ---------------------------------------------------------------------------
-# Public helpers
-# ---------------------------------------------------------------------------
-
-
 def is_simulation_finished(base_path: str, metadata: dict) -> bool:
   """Return True if *base_path/<UniqueName>* contains a ``finished-*`` file.
 
@@ -46,11 +41,6 @@ def is_simulation_finished(base_path: str, metadata: dict) -> bool:
   if not os.path.isdir(sim_dir):
     return False
   return any(f.startswith("finished") for f in os.listdir(sim_dir))
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 
 def run_simulation(

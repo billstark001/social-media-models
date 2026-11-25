@@ -43,8 +43,7 @@ func sampleWithoutReplacement(population []int, n int, probabilities []float64, 
 	}
 
 	result := make([]int, len(selected))
-	// Pop from smallest to largest into the slice backwards, yielding the same
-	// descending-key order the previous full sort used.
+	// Pop into the slice backwards to return candidates in descending-key order.
 	for i := len(result) - 1; i >= 0; i-- {
 		result[i] = population[heap.Pop(&selected).(weightedItem).index]
 	}

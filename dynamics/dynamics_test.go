@@ -13,8 +13,6 @@ func testRNG() *rand.Rand {
 	return rand.New(rand.NewPCG(42, 0))
 }
 
-// ---- HK tests ----
-
 func TestHKConcordant(t *testing.T) {
 	hk := &dynamics.HK{}
 	p := &dynamics.HKParams{Tolerance: 0.3}
@@ -114,8 +112,6 @@ func TestHKDefaultParams(t *testing.T) {
 	}
 }
 
-// ---- Deffuant tests ----
-
 func TestDeffuantConcordant(t *testing.T) {
 	d := &dynamics.Deffuant{}
 	p := &dynamics.DeffuantParams{Tolerance: 0.25}
@@ -208,8 +204,6 @@ func TestDeffuantDefaultParams(t *testing.T) {
 	}
 }
 
-// ---- Voter tests ----
-
 func TestVoterDefaultParams(t *testing.T) {
 	p := dynamics.DefaultVoterParams()
 	if p.Influence != 1.0 {
@@ -221,8 +215,7 @@ func TestVoterDefaultParams(t *testing.T) {
 }
 
 func TestVoterInfluenceOne_FlipsWithDiscordantNeighbors(t *testing.T) {
-	// With Influence=1 and discordant neighbors, the voter always flips
-	// (rnd is set to 0.0 via PrepareStep with a fixed slice trick).
+	// Influence=1 guarantees a flip when discordant neighbors are present.
 	v := &dynamics.Voter{}
 	p := &dynamics.VoterParams{Influence: 1.0}
 	v.PrepareStep(1, testRNG())
@@ -257,8 +250,6 @@ func TestVoterInfluence_NoDiscordantNeighbors_NoFlip(t *testing.T) {
 		t.Error("expected opinion to remain true with no discordant neighbors")
 	}
 }
-
-// ---- Galam tests ----
 
 func TestGalamDefaultParams(t *testing.T) {
 	p := dynamics.DefaultGalamParams()
@@ -313,8 +304,6 @@ func TestGalamInfluence_NoDiscordantNeighbors_NoFlip(t *testing.T) {
 		t.Error("expected opinion to remain true with no discordant neighbors")
 	}
 }
-
-// ---- Interface compile-time checks ----
 
 func TestInterfaceCompliance(t *testing.T) {
 	var _ model.Dynamics[float64, dynamics.HKParams] = (*dynamics.HK)(nil)

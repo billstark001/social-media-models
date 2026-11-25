@@ -19,9 +19,9 @@ func DefaultGalamParams() *GalamParams {
 func (p *GalamParams) GetRepostRate() float64   { return p.RepostRate }
 func (p *GalamParams) GetRewiringRate() float64 { return p.RewiringRate }
 
-// Galam implements model.Dynamics[float64, GalamParams].
-// At each step it picks one concordant opinion at random and moves toward it
-// by Tolerance × opinion-difference. All statistics are still recorded.
+// Galam implements model.Dynamics[bool, GalamParams].
+// A positive summed discordant opinion difference permits a flip with
+// probability Influence. All opinion-difference statistics are recorded.
 type Galam struct{}
 
 var _ model.Dynamics[bool, GalamParams] = (*Galam)(nil)

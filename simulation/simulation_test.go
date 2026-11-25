@@ -10,8 +10,6 @@ import (
 	"smp/simulation"
 )
 
-// ---- AccumulativeModelState serialization tests ----
-
 func makeTestAccState(steps, agents int) *simulation.AccumulativeModelState {
 	s := simulation.NewAccumulativeModelState()
 	for step := range steps {
@@ -79,8 +77,6 @@ func TestSaveAccumulativeModelStateEmpty(t *testing.T) {
 		t.Error("expected error for empty state, got nil")
 	}
 }
-
-// ---- SimulationSerializer tests ----
 
 func TestSimulationSerializerExists(t *testing.T) {
 	dir := t.TempDir()
