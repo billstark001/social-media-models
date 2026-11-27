@@ -19,6 +19,7 @@ from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from smp_bindings.codec import decode_progress_line
+from smp_bindings.domain import ScenarioMetadata, ProgressEvent, ProgressLineState, parse_dataclass, to_wire
 from smp_bindings.process import process_group_kwargs, terminate_process
 
 try:
@@ -29,14 +30,14 @@ except ImportError:
   _TQDM_AVAILABLE = False
 
 
-def is_simulation_finished(base_path: str, metadata: dict) -> bool:
+def is_simulation_finished(base_path: str, metadata: ScenarioMetadata) -> bool:
   """Return True if *base_path/<UniqueName>* contains a ``finished-*`` file.
 
   This mirrors the Go ``SimulationSerializer.IsFinished()`` check, which
   looks for any file whose name starts with ``finished`` inside the
   simulation sub-directory.
   """
-  unique_name = metadata.get("UniqueName", "")
+  unique_name = metadata.UniqueName
   sim_dir = os.path.join(base_path, unique_name)
   if not os.path.isdir(sim_dir):
     return False
@@ -46,7 +47,7 @@ def is_simulation_finished(base_path: str, metadata: dict) -> bool:
 def run_simulation(
     binary_path: str,
     base_path: str,
-    metadata: dict,
+    metadata: ScenarioMetadata,
     show_progress: bool,
     print_lock: threading.Lock,
     sim_index: int | None = None,
@@ -54,7 +55,7 @@ def run_simulation(
     stop_event: threading.Event | None = None,
     active_procs: set | None = None,
     active_procs_lock: threading.Lock | None = None,
-    progress_line_state: dict | None = None,
+    progress_line_state: ProgressLineState | None = None,
 ) -> str:
   """Run one simulation subprocess and return its unique name on completion.
 
@@ -63,36 +64,28 @@ def run_simulation(
   to stdout; otherwise they are silently consumed so that the subprocess
   stdout pipe never blocks.
   """
-  unique_name = metadata.get("UniqueName", "<unknown>")
-  metadata_json = json.dumps(metadata)
-  max_step = metadata.get("MaxSimulationStep", 0)
+  unique_name = metadata.UniqueName
+  metadata_json = json.dumps(to_wire(metadata))
+  max_step = metadata.MaxSimulationStep
   if sim_index is not None and sim_total is not None:
     progress_prefix = f"[{sim_index}/{sim_total}] "
   else:
     progress_prefix = ""
   if progress_line_state is None:
-    progress_line_state = {"active": False, "last_len": 0}
+    progress_line_state = ProgressLineState()
 
   def _clear_inline_progress_line() -> None:
-    if not progress_line_state.get("active", False):
+    if not progress_line_state.active:
       return
-    last_len = int(progress_line_state.get("last_len", 0))
+    last_len = int(progress_line_state.last_len)
     print("\r" + (" " * last_len) + "\r", end="", flush=True)
-    progress_line_state["active"] = False
-    progress_line_state["last_len"] = 0
-
-  popen_kwargs = {
-      "stdout": subprocess.PIPE,
-      "stderr": subprocess.PIPE,
-      "text": True,
-      "encoding": "utf-8",
-      "bufsize": 1,
-  }
-  popen_kwargs.update(process_group_kwargs())
+    progress_line_state.active = False
+    progress_line_state.last_len = 0
 
   proc = subprocess.Popen(
       [binary_path, base_path, metadata_json, "1"],
-      **popen_kwargs,
+      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+      encoding="utf-8", bufsize=1, **process_group_kwargs(),
   )
   if active_procs is not None and active_procs_lock is not None:
     with active_procs_lock:
@@ -123,12 +116,13 @@ def run_simulation(
           unexpected_stdout = line
         continue
 
-      msg_type = event["type"]
+      event = parse_dataclass(ProgressEvent, event)
+      msg_type = event.type
       if msg_type == "rng":
-        metadata["RNG"] = event["rng"]
+        metadata.RNG = event.rng
       if not show_progress:
         continue
-      step = int(event.get("step", 0))
+      step = int(event.step or 0)
 
       with print_lock:
         if msg_type == "start":
@@ -142,14 +136,14 @@ def run_simulation(
           progress_text = (
               f"{progress_prefix}[{unique_name}] step {step}{suffix}"
           )
-          last_len = int(progress_line_state.get("last_len", 0))
+          last_len = int(progress_line_state.last_len)
           padding = " " * max(0, last_len - len(progress_text))
           print("\r" + progress_text + padding, end="", flush=True)
-          progress_line_state["active"] = True
-          progress_line_state["last_len"] = len(progress_text)
+          progress_line_state.active = True
+          progress_line_state.last_len = len(progress_text)
         elif msg_type == "done":
           _clear_inline_progress_line()
-          done_type = event.get("stop_reason", "?")
+          done_type = event.stop_reason or "?"
           print(
               f"{progress_prefix}[{unique_name}] done ({done_type}) at step {step}",
               flush=True,
@@ -184,7 +178,7 @@ def run_simulation(
 def run_simulations(
     binary_path: str,
     base_path: str,
-    scenarios: list[dict] | Iterable[dict] | Iterator[dict],
+    scenarios: list[ScenarioMetadata] | Iterable[ScenarioMetadata] | Iterator[ScenarioMetadata],
     *,
     max_concurrent: int = 4,
     show_progress: bool | None = None,
@@ -226,13 +220,13 @@ def run_simulations(
     show_progress = sys.stdout.isatty()
 
   # Materialize the iterable so we can compute totals upfront.
-  scenario_list: list[dict] = list(scenarios)
+  scenario_list: list[ScenarioMetadata] = list(scenarios)
 
-  pending: list[dict] = []
+  pending: list[ScenarioMetadata] = []
   skipped: list[str] = []
   for meta in scenario_list:
     if skip_finished and is_simulation_finished(base_path, meta):
-      skipped.append(meta.get("UniqueName", ""))
+      skipped.append(meta.UniqueName)
     else:
       pending.append(meta)
 
@@ -249,7 +243,7 @@ def run_simulations(
   active_procs_lock = threading.Lock()
   active_procs = set()
   stop_event = threading.Event()
-  progress_line_state = {"active": False, "last_len": 0}
+  progress_line_state = ProgressLineState()
   completed_names: list[str] = []
   pending_total = len(pending)
   interrupted = False
@@ -267,7 +261,7 @@ def run_simulations(
   try:
     if max_concurrent <= 1:
       for index, meta in enumerate(pending, start=1):
-        name = meta.get("UniqueName", "?")
+        name = meta.UniqueName
         try:
           result_name = run_simulation(
               binary_path,
@@ -313,7 +307,7 @@ def run_simulations(
                 active_procs,
                 active_procs_lock,
                 progress_line_state,
-            ): meta.get("UniqueName", "?")
+            ): meta.UniqueName
             for index, meta in enumerate(pending, start=1)
         }
         for future in as_completed(futures):

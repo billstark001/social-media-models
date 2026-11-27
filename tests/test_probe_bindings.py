@@ -7,6 +7,7 @@ import networkx as nx
 from smp_bindings.events_db import PostRecord
 from smp_bindings.probe import FrozenSimulationState, run_probe
 from smp_bindings.record import RawSimulationRecord
+from smp_bindings.domain import parse_metadata
 
 
 def synthetic_state():
@@ -45,9 +46,20 @@ class ProbeBindingsTest(unittest.TestCase):
                 "Seed2": "0x2",
             },
         }, metadata_file)
-      record = RawSimulationRecord(base_dir, {"UniqueName": "run"})
-      self.assertEqual(record.metadata["DataVersion"], 1)
-      self.assertEqual(record.metadata["RNG"]["Seed1"], "0x1")
+      record = RawSimulationRecord(base_dir, parse_metadata({"UniqueName": "run"}))
+      self.assertEqual(record.metadata.DataVersion, 1)
+      self.assertEqual(record.metadata.RNG.Seed1, "0x1")
+
+  def test_requested_flags_never_fill_missing_recorded_collection_evidence(self):
+    with tempfile.TemporaryDirectory() as base_dir:
+      run_dir = os.path.join(base_dir, "run")
+      os.makedirs(run_dir)
+      with open(os.path.join(run_dir, "metadata.json"), "w", encoding="utf8") as stream:
+        json.dump({"UniqueName": "run"}, stream)
+      record = RawSimulationRecord(base_dir, parse_metadata({"UniqueName": "run", "AgentNumber": True,
+                                                            "RewiringEvent": True}))
+      self.assertIsNone(record.metadata.AgentNumber)
+      self.assertIsNone(record.metadata.RewiringEvent)
 
   @unittest.skipUnless(
       os.path.isfile(os.environ.get("SMP_PROBE_TEST_BINARY", "")),

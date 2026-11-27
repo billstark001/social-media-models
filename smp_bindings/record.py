@@ -4,6 +4,8 @@ import re
 import sqlite3
 from bisect import bisect_left, bisect_right, insort
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import datetime, timezone
+from smp_bindings.domain import AccumulatedState, ScenarioMetadata, ProbeResponse, parse_metadata, parse_dataclass, to_wire
 from typing import Any
 
 import networkx as nx
@@ -16,26 +18,52 @@ from smp_bindings.model_state import (
 )
 
 re_graph = re.compile(r'graph-(\d+)\.msgpack(?:\.lz4)?$')
-re_acc_state = re.compile(r'acc-state-(\d+)\.lz4$')
+re_acc_state = re.compile(r'acc-state-(\d+|\d{4}-\d{2}-\d{2}T\d{6}Z)\.lz4$')
+
+
+def _accumulated_state_files(file_list):
+  """Order one explicit filename scheme by step or by its UTC timestamp."""
+  records = []
+  schemes = set()
+  for name in file_list:
+    if not (name.startswith("acc-state-") and name.endswith(".lz4")):
+      continue
+    match = re_acc_state.fullmatch(name)
+    if match is None:
+      raise ValueError(f"unsupported accumulated-state filename: {name}")
+    stamp = match.group(1)
+    if stamp.isdigit():
+      schemes.add("step")
+      key = int(stamp)
+    else:
+      schemes.add("utc")
+      key = datetime.strptime(stamp, "%Y-%m-%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    records.append((key, name))
+  if len(schemes) > 1:
+    raise ValueError("mixed step and UTC accumulated-state filenames have no common ordering")
+  if len({key for key, _ in records}) != len(records):
+    raise ValueError("multiple accumulated-state files have the same generation")
+  return sorted(records)
 
 
 class RawSimulationRecord:
 
-  def __init__(self, base_dir: str, metadata: dict):
-    self.unique_name = metadata['UniqueName']
+  def __init__(self, base_dir: str, metadata: ScenarioMetadata):
+    self.unique_name = metadata.UniqueName
     full_path = os.path.join(base_dir, self.unique_name)
     self.directory = full_path
     self.events_db: sqlite3.Connection | None = None
     self.graph_paths: dict[int, str] = {}
     self.max_step = 0
     persisted_metadata_path = os.path.join(full_path, "metadata.json")
-    resolved_metadata = dict(metadata)
+    resolved_metadata = metadata
     if os.path.isfile(persisted_metadata_path):
       with open(persisted_metadata_path, "r", encoding="utf-8") as metadata_file:
-        persisted_metadata = json.load(metadata_file)
-      if isinstance(persisted_metadata, dict):
-        resolved_metadata.update(persisted_metadata)
-    self.metadata: dict = resolved_metadata
+        persisted_metadata = parse_metadata(json.load(metadata_file))
+      if persisted_metadata.UniqueName != self.unique_name:
+        raise ValueError("persisted metadata UniqueName differs from the requested run directory")
+      resolved_metadata = persisted_metadata
+    self.metadata = resolved_metadata
 
     file_list = os.listdir(full_path)
     file_list.sort()
@@ -43,10 +71,7 @@ class RawSimulationRecord:
     has_events_db = 'events.db' in file_list
     self.trajectory_path = os.path.join(full_path, 'trajectory.json')
     self.has_trajectory = 'trajectory.json' in file_list
-    acc_state_list = sorted(
-        (int(match.group(1)), name)
-        for name in file_list if (match := re_acc_state.fullmatch(name))
-    )
+    acc_state_list = _accumulated_state_files(file_list)
     graph_list = [x for x in file_list if re_graph.fullmatch(x)]
 
     self.is_sanitized = has_events_db and (self.has_trajectory or len(
@@ -83,29 +108,30 @@ class RawSimulationRecord:
     if self.has_trajectory:
       from smp_bindings.trajectory import TrajectoryReader
       self.trajectory = TrajectoryReader(os.path.dirname(self.trajectory_path))
-      acc_state = {
-          'steps': self.trajectory.steps - 1,
-          'agents': self.trajectory.agents,
-          'opinions': self.trajectory.channel('opinions'),
-          'agent_numbers': self.trajectory.channel('agent_numbers'),
-          'agent_opinion_sums': self.trajectory.channel('agent_opinion_sums'),
-      }
+      acc_state = AccumulatedState(
+          steps=self.trajectory.steps - 1, agents=self.trajectory.agents,
+          opinions=self.trajectory.channel('opinions'),
+          agent_numbers=self.trajectory.channel('agent_numbers'),
+          agent_opinion_sums=self.trajectory.channel('agent_opinion_sums'),
+      )
     else:
       acc_state = load_accumulative_model_state(
         self.acc_state_path,
         with_agent_numbers=True,
         with_agent_opinion_sums=True,
       )
+    declared_agents = self.metadata.NodeCount
+    if declared_agents is not None and declared_agents != int(acc_state.agents):
+      raise ValueError("metadata NodeCount differs from the raw state population")
     events_db = load_events_db(self.events_db_path)
 
     self.acc_state = acc_state
     self.events_db = events_db
-    self.opinions = self.acc_state['opinions']
-    self.agent_numbers = self.acc_state['agent_numbers']
-    self.agent_opinion_sums = self.acc_state['agent_opinion_sums']
-    self.agents = int(self.acc_state['agents'])
-    self.max_step = int(acc_state['steps'])
-    self._count_channel_available = self.metadata.get('AgentNumber')
+    self.opinions = self.acc_state.opinions
+    self.agent_numbers = self.acc_state.agent_numbers
+    self.agent_opinion_sums = self.acc_state.agent_opinion_sums
+    self.agents = int(self.acc_state.agents)
+    self.max_step = int(acc_state.steps)
 
     try:
       if 0 not in self.graph_paths:
@@ -158,11 +184,10 @@ class RawSimulationRecord:
     return nearest_available_graph
 
   def _advance_graph(self, graph: nx.DiGraph, start: int, step: int) -> None:
-    dynamics = self.metadata.get("DynamicsType", "HK")
-    params = self.metadata.get(f"{dynamics}Params")
-    if isinstance(params, Mapping) and params.get("RewiringRate") == 0:
+    params = self.metadata.dynamics_parameters()
+    if params is not None and params.RewiringRate == 0:
       return
-    if self.metadata.get("RewiringEvent") is not True:
+    if self.metadata.RewiringEvent is not True:
       raise ValueError(
           f"cannot reconstruct graph at step {step}: rewiring-event collection "
           "is disabled or unknown and no exact graph snapshot is available"
@@ -171,13 +196,11 @@ class RawSimulationRecord:
       raise ValueError("raw simulation record is not loaded")
     # Legacy logs can include attempts blocked by an existing target edge.
     for event_id, agent_id, unfollow, follow in iter_rewiring_events(self.events_db, start + 1, step + 1):
-      has_unfollow = graph.has_edge(agent_id, unfollow)
-      if not has_unfollow and self.has_trajectory:
-        raise ValueError(f"rewiring event {event_id} removes a missing edge")
       if graph.has_edge(agent_id, follow):
         continue
-      if has_unfollow:
-        graph.remove_edge(agent_id, unfollow)
+      if not graph.has_edge(agent_id, unfollow):
+        raise ValueError(f"rewiring event {event_id} removes a missing edge")
+      graph.remove_edge(agent_id, unfollow)
       graph.add_edge(agent_id, follow)
 
   def iter_graphs(self, steps: Iterable[int]):
@@ -215,17 +238,11 @@ class RawSimulationRecord:
     """Return one agent-count row, or None if feeds were not counted."""
     if step <= 0 or step > self.max_step:
       return None
-    collected = self.metadata.get("AgentNumber")
-    if collected is None:
-      collected = getattr(self, "_count_channel_available", None)
-      if collected is None:
-        # A missing historical flag provides no guarantee that a zero channel
-        # was collected. Scan once with bounded memory for positive evidence.
-        collected = any(np.any(self.agent_numbers[i] > 0) for i in range(1, self.max_step + 1))
-        self._count_channel_available = collected
-    if collected is True:
+    if self.metadata.AgentNumber is True:
       return self.agent_numbers[step]
-    # Old view logs retain the confidence buckets even without AgentNumbers.
+    if not (self.metadata.ViewPostsEvent is True or self.metadata.ViewPostsDetails is True):
+      return None
+    # An explicitly selected view-log channel records the same confidence bins.
     rows = {}
     for event in self.iter_feed_events(step, step+1):
       if event.agent_id in rows:
@@ -257,16 +274,16 @@ class RawSimulationRecord:
       epsilon: float | None = None,
       bins: Sequence[float] | None = None,
       terminal: Mapping[str, Any] | None = None,
-  ) -> dict[str, Any]:
+  ) -> ProbeResponse:
     """Evaluate selected saved steps through the native Go run reader."""
     from smp_bindings.probe import run_probe_run
     requested_steps = sorted({int(step) for step in steps})
     if not requested_steps:
       raise ValueError("at least one probe step is required")
-    return run_probe_run(
+    return parse_dataclass(ProbeResponse, run_probe_run(
         self.directory,
         requested_steps,
-        metadata=self.metadata if not os.path.isfile(os.path.join(self.directory, "metadata.json")) else None,
+        metadata=to_wire(self.metadata) if not os.path.isfile(os.path.join(self.directory, "metadata.json")) else None,
         h=h,
         minimum=minimum,
         maximum=maximum,
@@ -281,4 +298,4 @@ class RawSimulationRecord:
         epsilon=epsilon,
         bins=bins,
         terminal=terminal,
-    )
+    ))

@@ -18,7 +18,7 @@ func usage(program string) {
 func main() {
 	if len(os.Args) == 3 && os.Args[1] == "--job" {
 		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-		code, err := runJob(ctx, os.Args[2])
+		code, err := runJob(ctx, os.Args[2], os.Stdout)
 		cancel()
 		if err != nil {
 			log.Printf("Persistent run failed: %v", err)

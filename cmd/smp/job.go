@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"smp/simulation"
 	"smp/utils"
@@ -16,14 +17,20 @@ import (
 // persistentJob is the file protocol for reproducible full-history runs.
 // Policy and observer state share the model's recovery snapshot.
 type persistentJob struct {
-	BasePath      string                       `json:"base_path"`
-	Metadata      *simulation.ScenarioMetadata `json:"metadata"`
-	PolicyChange  *simulation.PolicyChange     `json:"policy_change,omitempty"`
-	FixedHorizon  bool                         `json:"fixed_horizon"`
-	ObserveAt     []int                        `json:"observe_at"`
-	SummaryPath   string                       `json:"summary_path"`
-	ExposureTrace string                       `json:"exposure_trace,omitempty"`
-	TraceStart    int                          `json:"trace_start,omitempty"`
+	BasePath       string                       `json:"base_path"`
+	Metadata       *simulation.ScenarioMetadata `json:"metadata"`
+	PolicyChange   *simulation.PolicyChange     `json:"policy_change,omitempty"`
+	FixedHorizon   bool                         `json:"fixed_horizon"`
+	ObserveAt      []int                        `json:"observe_at"`
+	ResultProtocol string                       `json:"result_protocol"`
+	ExposureTrace  string                       `json:"exposure_trace,omitempty"`
+	TraceStart     int                          `json:"trace_start,omitempty"`
+}
+
+type researchResultFrame struct {
+	Type     string                     `json:"type"`
+	Protocol string                     `json:"protocol"`
+	Result   *simulation.ResearchResult `json:"result"`
 }
 
 func readJob(path string) (*persistentJob, error) {
@@ -41,8 +48,8 @@ func readJob(path string) (*persistentJob, error) {
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return nil, fmt.Errorf("job file must contain exactly one JSON object")
 	}
-	if job.BasePath == "" || job.Metadata == nil || job.SummaryPath == "" {
-		return nil, fmt.Errorf("job requires base_path, metadata and summary_path")
+	if job.BasePath == "" || job.Metadata == nil || job.ResultProtocol != "smp-research-result-v1" {
+		return nil, fmt.Errorf("job requires base_path, metadata and result_protocol=smp-research-result-v1; migrate frozen file-output jobs explicitly")
 	}
 	if job.Metadata.RNG.IsZero() {
 		return nil, fmt.Errorf("persistent jobs require explicit RNG seeds")
@@ -58,27 +65,19 @@ func readJob(path string) (*persistentJob, error) {
 		return nil, err
 	}
 	directory := filepath.Join(job.BasePath, job.Metadata.UniqueName)
-	summary, err := filepath.Abs(job.SummaryPath)
-	if err != nil {
-		return nil, err
-	}
-	expected, err := filepath.Abs(filepath.Join(directory, "observations.json"))
-	if err != nil || summary != expected {
-		return nil, fmt.Errorf("summary_path must be the run's observations.json")
-	}
 	if job.ExposureTrace != "" {
 		trace, err := filepath.Abs(job.ExposureTrace)
 		if err != nil {
 			return nil, err
 		}
-		if filepath.Dir(trace) != filepath.Dir(expected) {
+		if filepath.Dir(trace) != directory {
 			return nil, fmt.Errorf("exposure_trace must be inside its run directory")
 		}
 	}
 	return job, nil
 }
 
-func runJob(ctx context.Context, path string) (int, error) {
+func runJob(ctx context.Context, path string, output io.Writer) (int, error) {
 	job, err := readJob(path)
 	if err != nil {
 		return 2, err
@@ -96,11 +95,29 @@ func runJob(ctx context.Context, path string) (int, error) {
 		return 1, fmt.Errorf("persistent run is already active: %w", err)
 	}
 	defer unlockJob(lock)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	// File cancellation works for detached Windows processes as well as POSIX.
+	go func() {
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if _, err := os.Stat(path + ".cancel"); err == nil {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
 	if err := freezeJob(filepath.Join(directory, "job.json"), job); err != nil {
 		return 1, err
 	}
 	scenario := simulation.NewScenarioWithOptions(job.BasePath, job.Metadata, simulation.ScenarioOptions{
-		EnableDumps: true, Quiet: true, OutputJSONProgress: true,
+		EnableDumps: true, Quiet: true, OutputJSONProgress: false,
 		FixedHorizon: job.FixedHorizon,
 		Research: &simulation.ResearchOptions{ObserveAt: job.ObserveAt, PolicyChange: job.PolicyChange,
 			ExposureTrace: job.ExposureTrace, TraceStart: job.TraceStart},
@@ -133,11 +150,9 @@ func runJob(ctx context.Context, path string) (int, error) {
 	if err != nil {
 		return 1, err
 	}
-	data, err := json.Marshal(result)
-	if err != nil {
-		return 1, err
-	}
-	if err := utils.AtomicWriteFile(job.SummaryPath, data, 0644); err != nil {
+	if err := json.NewEncoder(output).Encode(researchResultFrame{
+		Type: "research_result", Protocol: job.ResultProtocol, Result: result,
+	}); err != nil {
 		return 1, err
 	}
 	return 0, nil
@@ -150,7 +165,17 @@ func freezeJob(path string, job *persistentJob) error {
 	}
 	saved, err := os.ReadFile(path)
 	if err == nil {
-		if !bytes.Equal(saved, data) {
+		var frozen persistentJob
+		decoder := json.NewDecoder(bytes.NewReader(saved))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&frozen); err != nil {
+			return fmt.Errorf("frozen job uses an unsupported protocol; migrate explicitly: %w", err)
+		}
+		if err := decoder.Decode(new(any)); err != io.EOF {
+			return fmt.Errorf("frozen job must contain exactly one object")
+		}
+		canonical, err := json.Marshal(&frozen)
+		if err != nil || !bytes.Equal(canonical, data) {
 			return fmt.Errorf("persistent job differs from the existing run")
 		}
 		return nil

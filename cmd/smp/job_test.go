@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,7 +28,7 @@ func fixtureJob(t *testing.T) (string, *persistentJob) {
 	metadata.RecSysParams = map[string]any{"LogRecommendations": false}
 	return filepath.Join(root, "input.json"), &persistentJob{
 		BasePath: root, Metadata: metadata, ObserveAt: []int{2, 4, 6}, FixedHorizon: true,
-		SummaryPath: filepath.Join(root, "fixture", "observations.json"),
+		ResultProtocol: "smp-research-result-v1",
 	}
 }
 
@@ -44,29 +46,23 @@ func writeJob(t *testing.T, path string, job *persistentJob) {
 func TestPersistentJobFreezesNativeConfigurationAndRebuildsSummary(t *testing.T) {
 	path, job := fixtureJob(t)
 	writeJob(t, path, job)
-	if code, err := runJob(context.Background(), path); code != 0 || err != nil {
+	var first bytes.Buffer
+	if code, err := runJob(context.Background(), path, &first); code != 0 || err != nil {
 		t.Fatalf("first run: code=%d err=%v", code, err)
 	}
-	first, err := os.ReadFile(job.SummaryPath)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(filepath.Join(job.BasePath, "fixture", "observations.json")); !os.IsNotExist(err) {
+		t.Fatal("native runner created obsolete observations.json")
 	}
-	if err := os.Remove(job.SummaryPath); err != nil {
-		t.Fatal(err)
-	}
-	if code, err := runJob(context.Background(), path); code != 0 || err != nil {
+	var second bytes.Buffer
+	if code, err := runJob(context.Background(), path, &second); code != 0 || err != nil {
 		t.Fatalf("restore: code=%d err=%v", code, err)
 	}
-	second, err := os.ReadFile(job.SummaryPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(first) != string(second) {
+	if first.String() != second.String() {
 		t.Fatal("finished-run summary changed after recovery")
 	}
 	job.Metadata.HKParams.Influence = .3
 	writeJob(t, path, job)
-	if code, err := runJob(context.Background(), path); code == 0 || err == nil || !strings.Contains(err.Error(), "differs") {
+	if code, err := runJob(context.Background(), path, io.Discard); code == 0 || err == nil || !strings.Contains(err.Error(), "differs") {
 		t.Fatalf("native job accepted changed dynamics: code=%d err=%v", code, err)
 	}
 }
@@ -76,7 +72,7 @@ func TestCancelledPersistentJobHasRecoverySnapshotAndNoFinishMark(t *testing.T) 
 	writeJob(t, path, job)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if code, err := runJob(ctx, path); code != 130 || err != nil {
+	if code, err := runJob(ctx, path, io.Discard); code != 130 || err != nil {
 		t.Fatalf("cancel: code=%d err=%v", code, err)
 	}
 	files, err := filepath.Glob(filepath.Join(job.BasePath, job.Metadata.UniqueName, "snapshot-*.msgpack"))
@@ -87,7 +83,7 @@ func TestCancelledPersistentJobHasRecoverySnapshotAndNoFinishMark(t *testing.T) 
 	if len(finished) != 0 {
 		t.Fatal("cancelled run was marked finished")
 	}
-	if code, err := runJob(context.Background(), path); code != 0 || err != nil {
+	if code, err := runJob(context.Background(), path, io.Discard); code != 0 || err != nil {
 		t.Fatalf("resume: code=%d err=%v", code, err)
 	}
 }
@@ -102,17 +98,17 @@ func TestPersistentJobRejectsInvalidVersionsAndPaths(t *testing.T) {
 		}
 	}
 	path, job := fixtureJob(t)
-	job.SummaryPath = filepath.Join(job.BasePath, "fixture", "metadata.json")
+	job.ResultProtocol = "obsolete-file-output"
 	writeJob(t, path, job)
 	if _, err := readJob(path); err == nil {
-		t.Fatal("accepted summary overwriting metadata")
+		t.Fatal("accepted obsolete result protocol")
 	}
 }
 
 func TestPositionalEntryRefusesResearchHistoryWithoutOptions(t *testing.T) {
 	path, job := fixtureJob(t)
 	writeJob(t, path, job)
-	if code, err := runJob(context.Background(), path); code != 0 || err != nil {
+	if code, err := runJob(context.Background(), path, io.Discard); code != 0 || err != nil {
 		t.Fatalf("first run: %d %v", code, err)
 	}
 	metadataPath := filepath.Join(job.BasePath, job.Metadata.UniqueName, "metadata.json")
@@ -131,5 +127,22 @@ func TestPositionalEntryRefusesResearchHistoryWithoutOptions(t *testing.T) {
 	}
 	if string(before) != string(after) {
 		t.Fatal("failed positional load changed metadata")
+	}
+}
+
+func TestPersistentCancelFilePreservesRecoveryState(t *testing.T) {
+	path, job := fixtureJob(t)
+	job.Metadata.MaxSimulationStep = 100000
+	job.ObserveAt = []int{0, 100000}
+	writeJob(t, path, job)
+	if err := os.WriteFile(path+".cancel", nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := runJob(context.Background(), path, io.Discard); code != 130 || err != nil {
+		t.Fatalf("file cancel: %d %v", code, err)
+	}
+	files, _ := filepath.Glob(filepath.Join(job.BasePath, job.Metadata.UniqueName, "snapshot-*.msgpack"))
+	if len(files) == 0 {
+		t.Fatal("file cancellation lost the complete recovery snapshot")
 	}
 }

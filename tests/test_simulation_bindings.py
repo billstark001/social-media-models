@@ -5,6 +5,7 @@ import unittest
 
 from smp_bindings.simulation import is_simulation_finished, run_simulation
 from smp_bindings.trajectory import TrajectoryReader
+from smp_bindings.domain import parse_metadata
 
 SMP_BINARY = os.environ.get("SMP_TEST_BINARY", "")
 
@@ -16,7 +17,7 @@ SMP_BINARY = os.environ.get("SMP_TEST_BINARY", "")
 class SimulationBindingsTest(unittest.TestCase):
 
   def test_persistent_runner_decodes_shared_json_progress(self):
-    metadata = {
+    metadata = parse_metadata({
         "UniqueName": "json-progress",
         "DynamicsType": "HK",
         "HKParams": {
@@ -28,7 +29,7 @@ class SimulationBindingsTest(unittest.TestCase):
         "NodeCount": 20,
         "NodeFollowCount": 5,
         "MaxSimulationStep": 4,
-    }
+    })
     with tempfile.TemporaryDirectory() as base_path:
       name = run_simulation(
           SMP_BINARY,
@@ -38,7 +39,7 @@ class SimulationBindingsTest(unittest.TestCase):
           threading.Lock(),
       )
       self.assertEqual(name, "json-progress")
-      self.assertEqual(metadata["RNG"]["Algorithm"], "pcg64-dxsm-v1")
+      self.assertEqual(metadata.RNG.Algorithm, "pcg64-dxsm-v1")
       self.assertTrue(is_simulation_finished(base_path, metadata))
       trajectory = TrajectoryReader(os.path.join(base_path, name))
       self.assertEqual(str(trajectory.channel("opinions").dtype), "float32")

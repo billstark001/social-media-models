@@ -21,6 +21,7 @@ from smp_bindings.probe import (
     run_probe_run,
 )
 from smp_bindings.record import RawSimulationRecord
+from smp_bindings.domain import parse_metadata, to_wire
 
 
 @pytest.fixture(scope="module")
@@ -36,7 +37,7 @@ def probe_binary(tmp_path_factory):
 @pytest.fixture
 def legacy_run(tmp_path):
   metadata = {
-      "DynamicsType": "HK", "UniqueName": "legacy", "NodeCount": 2,
+      "DynamicsType": "HK", "UniqueName": tmp_path.name, "NodeCount": 2,
       "HKParams": {"Tolerance": 0.45, "Influence": 0.1, "RewiringRate": 0, "RepostRate": 0},
       "PostRetainCount": 2, "RecsysCount": 1, "RecsysFactoryType": "Random",
       "RNG": {"Algorithm": "pcg64-dxsm-v1", "Seed1": "0x1", "Seed2": "0x2"},
@@ -64,9 +65,9 @@ def test_native_run_source_without_python_freeze(probe_binary, legacy_run):
   assert all(row["terminal"] is not None and row["binned"] is not None for row in result["results"])
   force = run_probe_run(legacy_run, [2], measurements=["force"], h=1, binary_path=probe_binary)
   assert len(force["results"][0]["points"]) == 3
-  record = RawSimulationRecord(str(legacy_run.parent), {"UniqueName": legacy_run.name})
+  record = RawSimulationRecord(str(legacy_run.parent), parse_metadata({"UniqueName": legacy_run.name}))
   static = record.evaluate_probe([2], measurements=["pathway"], binary_path=probe_binary)
-  assert static["results"][0]["pathway"] == result["results"][-1]["pathway"]
+  assert to_wire(static.results[0].pathway) == result["results"][-1]["pathway"]
 
 
 def test_independent_native_jobs_share_one_transport(probe_binary, legacy_run):
@@ -97,9 +98,9 @@ def test_explicit_archived_metadata_keeps_native_run_read_only(probe_binary, leg
   assert result["source_max_step"] == 2
   assert result["results"][0]["pathway"]["separation"] == 1
   assert len(result["results"][0]["points"]) == 3
-  record = RawSimulationRecord(str(legacy_run.parent), {**metadata, "UniqueName": legacy_run.name})
+  record = RawSimulationRecord(str(legacy_run.parent), parse_metadata({**metadata, "UniqueName": legacy_run.name}))
   observed = record.evaluate_probe([2], measurements=["pathway"], binary_path=probe_binary)
-  assert observed["results"][0]["pathway"] == result["results"][0]["pathway"]
+  assert to_wire(observed.results[0].pathway) == result["results"][0]["pathway"]
   assert not metadata_path.exists()
 
 
@@ -124,7 +125,7 @@ def test_multistep_legacy_static_run_matches_python_graphs_and_native_jobs(probe
     return {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in legacy_run.iterdir()}
   before = hashes()
   steps = [0, 1, 2]
-  with RawSimulationRecord(str(legacy_run.parent), {"UniqueName": legacy_run.name}) as record:
+  with RawSimulationRecord(str(legacy_run.parent), parse_metadata({"UniqueName": legacy_run.name})) as record:
     states = [FrozenSimulationState(step=step, graph=graph.copy(), opinions=record.opinions[step].copy(),
                                     posts={}, precision="history_f32") for step, graph in record.iter_graphs(steps)]
   options = {"measurements": ["energy", "pathway", "bins", "terminal"], "epsilon": .45,
