@@ -1,6 +1,10 @@
 package model
 
-import smprng "smp/rng"
+import (
+	"slices"
+
+	smprng "smp/rng"
+)
 
 type EventRecord struct {
 	Type    string
@@ -51,7 +55,6 @@ type SMPAgent[O any, P any] struct {
 	ID int64 // to align with gonum/graph
 
 	Model          *SMPModel[O, P]
-	hasEventLogger bool
 	Params         *P
 	CollectOptions *CollectItemOptions
 
@@ -74,7 +77,6 @@ func NewSMPAgent[O any, P any](uniqueID int64, m *SMPModel[O, P], opinion O) *SM
 		CurOpinion:  opinion,
 		NextOpinion: opinion,
 	}
-	agent.hasEventLogger = m.EventLogger != nil
 	agent.Params = m.AgentParams
 	agent.CollectOptions = m.CollectItems
 	return agent
@@ -96,35 +98,67 @@ func PartitionPosts[O any, P any](
 	discordantNeighborPosts []*PostRecord[O],
 	discordantRecommended []*PostRecord[O],
 ) {
+	// Fill concordant entries from the front and discordant entries from the
+	// back, then restore the latter's input order. Partitions share backing
+	// arrays with disjoint, capped regions so appending cannot affect a sibling.
+	n := len(neighborPosts)
+	posts := make([]*PostRecord[O], n+len(recommended))
+	agents := make([]*SMPAgent[O, P], n)
+	cN, dN := 0, n
 	for i, np := range neighborPosts {
 		if np == nil {
 			continue
 		}
 		a := neighbors[i]
 		if dynamics.Concordant(opinion, np.Opinion, params) {
-			concordantNeighborAgents = append(concordantNeighborAgents, a)
-			concordantNeighborPosts = append(concordantNeighborPosts, np)
+			agents[cN], posts[cN] = a, np
+			cN++
 		} else {
-			discordantNeighborAgents = append(discordantNeighborAgents, a)
-			discordantNeighborPosts = append(discordantNeighborPosts, np)
+			dN--
+			agents[dN], posts[dN] = a, np
 		}
 	}
+	if cN > 0 {
+		concordantNeighborAgents = agents[:cN:cN]
+		concordantNeighborPosts = posts[:cN:cN]
+	}
+	if dN < n {
+		discordantNeighborAgents = agents[dN:n:n]
+		discordantNeighborPosts = posts[dN:n:n]
+		slices.Reverse(discordantNeighborAgents)
+		slices.Reverse(discordantNeighborPosts)
+	}
+	cR, dR := n, len(posts)
 	for _, rp := range recommended {
 		if dynamics.Concordant(opinion, rp.Opinion, params) {
-			concordantRecommended = append(concordantRecommended, rp)
+			posts[cR] = rp
+			cR++
 		} else {
-			discordantRecommended = append(discordantRecommended, rp)
+			dR--
+			posts[dR] = rp
 		}
+	}
+	if cR > n {
+		concordantRecommended = posts[n:cR:cR]
+	}
+	if dR < len(posts) {
+		discordantRecommended = posts[dR:len(posts):len(posts)]
+		slices.Reverse(discordantRecommended)
 	}
 	return
 }
 
-func extractOpinions[O any](posts []*PostRecord[O]) []O {
-	ops := make([]O, len(posts))
-	for i, p := range posts {
-		ops[i] = p.Opinion
+func feedOpinions[O any](cN, cR, dN, dR []*PostRecord[O]) ([]O, []O, []O, []O) {
+	ops := make([]O, len(cN)+len(cR)+len(dN)+len(dR))
+	offset := 0
+	for _, posts := range [4][]*PostRecord[O]{cN, cR, dN, dR} {
+		for _, p := range posts {
+			ops[offset] = p.Opinion
+			offset++
+		}
 	}
-	return ops
+	n, r, d := len(cN), len(cN)+len(cR), len(cN)+len(cR)+len(dN)
+	return ops[:n:n], ops[n:r:r], ops[r:d:d], ops[d:len(ops):len(ops)]
 }
 
 // Step performs a single step for this agent.
@@ -160,10 +194,7 @@ func (a *SMPAgent[O, P]) Step() {
 		a.Params,
 	)
 
-	cNOps := extractOpinions(cNP)
-	cROps := extractOpinions(cR)
-	dNOps := extractOpinions(dNP)
-	dROps := extractOpinions(dR)
+	cNOps, cROps, dNOps, dROps := feedOpinions(cNP, cR, dNP, dR)
 
 	nextOpinion, opSum := a.Model.Dynamics.Step(
 		a.CurOpinion,

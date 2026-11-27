@@ -1,7 +1,8 @@
 package model
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 	"sync"
 
 	"gonum.org/v1/gonum/graph/simple"
@@ -55,13 +56,20 @@ func (ng *NetworkGrid[O, P]) GetNeighbors(nodeID int64, includeCenter bool) []*S
 	ng.mu.RLock()
 	defer ng.mu.RUnlock()
 
-	var result []*SMPAgent[O, P]
 	neighbors := ng.Graph.From(nodeID)
+	var result []*SMPAgent[O, P]
+	if count := neighbors.Len(); count > 0 || includeCenter {
+		capacity := count
+		if includeCenter {
+			capacity++
+		}
+		result = make([]*SMPAgent[O, P], 0, capacity)
+	}
 	for neighbors.Next() {
 		neighborID := neighbors.Node().ID()
 		result = append(result, ng.AgentMap[neighborID])
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	slices.SortFunc(result, func(a, b *SMPAgent[O, P]) int { return cmp.Compare(a.ID, b.ID) })
 	if includeCenter {
 		result = append(result, ng.AgentMap[nodeID])
 	}

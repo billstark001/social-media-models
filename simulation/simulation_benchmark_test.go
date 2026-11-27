@@ -54,7 +54,7 @@ func newBenchmarkHKModel(recsysName string) *model.SMPModel[float64, dynamics.HK
 }
 
 func BenchmarkSimulationStep(b *testing.B) {
-	for _, recsysName := range []string{"Random", "OpinionM9", "StructureM9"} {
+	for _, recsysName := range []string{"Random", "OpinionM9", "StructureM9", "OpinionRandom", "StructureRandom"} {
 		b.Run(fmt.Sprintf("HK/%s", recsysName), func(b *testing.B) {
 			m := newBenchmarkHKModel(recsysName)
 			b.ReportAllocs()
