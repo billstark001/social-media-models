@@ -66,7 +66,7 @@ Graph reconstruction uses exact graph dumps and ordered rewiring events. When re
 
 Force reconstruction uses opinion rows for original posts and logged reposts for their original author, opinion and publication step. A nonzero or unknown repost rate requires explicit `PostEvent=true`. Missing histories produce errors. No synthetic posts are substituted for unavailable force inputs.
 
-The reader decodes one trajectory block at a time. Legacy accumulated files retain their opinion rows and skip unused count/sum channels while validating the full compressed payload. `probe.Evaluate` retains the selected frozen states and their results, so memory also scales with the number of selected steps. States within a job share one probe RNG lifecycle; splitting a force job into separate jobs changes that sampling lifecycle.
+The reader decodes one trajectory block at a time. Saved-run static requests measure each reconstructed state inside the read callback, reuse the canonical measurement workspace, and retain only measurement results; selected graphs and opinion states are not accumulated in the request. Legacy accumulated files still retain their opinion rows and skip unused count/sum channels while validating the full compressed payload. Requests including force retain the selected frozen states and their results. States within a force job share one probe RNG lifecycle; splitting that job into separate jobs changes the sampling lifecycle.
 
 For modern blocks, unused counts and opinion sums are skipped entirely while the block checksum and framing remain verified. Post and rewiring histories use one filtered ordered query each, including when selected steps cross many graph anchors. Old channel-major files still retain `8*N*T` bytes of decoded opinions.
 

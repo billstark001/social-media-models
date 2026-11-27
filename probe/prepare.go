@@ -200,39 +200,44 @@ func paramsForRequest(request *Request) (driftParams, error) {
 	return params, nil
 }
 
-func prepareEvaluation(request *Request) (map[string]bool, []float64, driftParams, error) {
+func prepareMeasurements(request *Request) (map[string]bool, []float64, error) {
 	if request == nil {
-		return nil, nil, driftParams{}, errNilRequest
+		return nil, nil, errNilRequest
 	}
 	selected, err := selectMeasurements(request.Measurements)
 	if err != nil {
-		return nil, nil, driftParams{}, err
+		return nil, nil, err
 	}
 	if selected["bins"] {
 		if err := observables.ValidateBinBoundaries(request.Bins); err != nil {
-			return nil, nil, driftParams{}, err
+			return nil, nil, err
 		}
 	}
 	var grid []float64
 	if selected["force"] || selected["landscape"] || selected["counterfactual_neighbor_energy"] {
 		grid, err = gridValues(request.Grid)
 		if err != nil {
-			return nil, nil, driftParams{}, err
+			return nil, nil, err
 		}
 	}
+	return selected, grid, nil
+}
+
+func prepareStates(request *Request, selected map[string]bool) (driftParams, error) {
 	if err := loadSources(request, selected); err != nil {
-		return nil, nil, driftParams{}, err
+		return driftParams{}, err
 	}
 	if err := validateRequest(request, selected); err != nil {
-		return nil, nil, driftParams{}, err
+		return driftParams{}, err
 	}
 	var params driftParams
+	var err error
 	if selected["force"] {
 		params, err = paramsForRequest(request)
 	} else {
 		params.tolerance, err = staticEpsilon(request, selected)
 	}
-	return selected, grid, params, err
+	return params, err
 }
 
 func staticEpsilon(request *Request, selected map[string]bool) (float64, error) {
@@ -289,7 +294,7 @@ func validateRunDefaults(request *Request, selected map[string]bool, fields map[
 	return nil
 }
 
-func loadSources(request *Request, selected map[string]bool) error {
+func validateSourceSelection(request *Request) error {
 	sources := 0
 	for _, present := range []bool{len(request.States) > 0, len(request.CheckpointPaths) > 0, request.RunDirectory != ""} {
 		if present {
@@ -306,35 +311,64 @@ func loadSources(request *Request, selected map[string]bool) error {
 		if len(request.Steps) > 0 {
 			return errors.New("steps are supported only with run_directory")
 		}
+	}
+	return nil
+}
+
+func loadSources(request *Request, selected map[string]bool) error {
+	if err := validateSourceSelection(request); err != nil {
+		return err
+	}
+	if request.RunDirectory == "" {
 		return loadCheckpointStates(request, selected)
 	}
-	run, err := record.OpenRun(request.RunDirectory, request.RunMetadata)
+	run, err := openRunSource(request, selected)
 	if err != nil {
 		return err
 	}
 	defer run.Close()
+	return run.ReadStates(runSteps(request, run), record.Requirements{Graph: requiresGraph(selected), Posts: selected["force"]}, func(state record.State) error {
+		request.States = append(request.States, frozenRunState(state))
+		return nil
+	})
+}
+
+func openRunSource(request *Request, selected map[string]bool) (*record.Reader, error) {
+	run, err := record.OpenRun(request.RunDirectory, request.RunMetadata)
+	if err != nil {
+		return nil, err
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			run.Close()
+		}
+	}()
 	if selected["force"] && run.Metadata.DataVersion >= 3 {
-		return errors.New("force reconstruction from research runs requires explicit frozen states and an explicitly chosen recommender; static measurements remain available")
+		return nil, errors.New("force reconstruction from research runs requires explicit frozen states and an explicitly chosen recommender; static measurements remain available")
 	}
 	if request.DynamicsType != "" && request.DynamicsType != run.Metadata.DynamicsType {
-		return errors.New("run dynamics differ from request")
+		return nil, errors.New("run dynamics differ from request")
 	}
 	applySourceMetadata(request, run.Metadata)
 	if err := validateRunDefaults(request, selected, run.MetadataFields); err != nil {
-		return err
+		return nil, err
 	}
 	maxStep := run.MaxStep
 	request.sourceMaxStep = &maxStep
-	steps := request.Steps
-	if len(steps) == 0 {
-		steps = []int{run.MaxStep}
+	ok = true
+	return run, nil
+}
+
+func runSteps(request *Request, run *record.Reader) []int {
+	if len(request.Steps) == 0 {
+		return []int{run.MaxStep}
 	}
-	return run.ReadStates(steps, record.Requirements{Graph: requiresGraph(selected), Posts: selected["force"]}, func(state record.State) error {
-		request.States = append(request.States, FrozenState{
-			Step: state.Step, Graph: state.Graph, Opinions: state.Opinions, Posts: state.Posts, Precision: state.Precision,
-		})
-		return nil
-	})
+	return request.Steps
+}
+
+func frozenRunState(state record.State) FrozenState {
+	return FrozenState{Step: state.Step, Graph: state.Graph, Opinions: state.Opinions, Posts: state.Posts, Precision: state.Precision}
 }
 
 func selectMeasurements(names []string) (map[string]bool, error) {

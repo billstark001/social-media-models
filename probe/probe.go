@@ -121,8 +121,17 @@ func Evaluate(request *Request) (*Response, error) {
 		return nil, fmt.Errorf("unsupported probe protocol version %d", request.Version)
 	}
 	prepared := *request
+	selected, grid, err := prepareMeasurements(&prepared)
+	if err != nil {
+		return nil, err
+	}
+	// Static run measurements consume each reconstructed state before reading
+	// the next one. Force jobs retain their shared RNG and state lifecycle.
+	if prepared.RunDirectory != "" && !selected["force"] {
+		return evaluateStaticRun(&prepared, selected, grid)
+	}
 	prepared.States = append([]FrozenState(nil), request.States...)
-	selected, grid, params, err := prepareEvaluation(&prepared)
+	params, err := prepareStates(&prepared, selected)
 	if err != nil {
 		return nil, err
 	}

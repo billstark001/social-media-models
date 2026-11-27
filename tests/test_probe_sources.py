@@ -1,11 +1,13 @@
 """The binding forwards native sources and jobs without rebuilding states."""
 
+import hashlib
 import json
 import os
-from pathlib import Path
+import sqlite3
 import struct
 import subprocess
 from contextlib import closing
+from pathlib import Path
 
 import lz4.frame
 import msgpack
@@ -108,3 +110,37 @@ def test_native_jobs_allow_early_first_passage_stop(probe_binary):
 
   with closing(run_probe_jobs(requests(), binary_path=probe_binary)) as results:
     assert next(results)["results"][0]["terminal"]["k_major"] == 1
+
+
+def test_multistep_legacy_static_run_matches_python_graphs_and_native_jobs(probe_binary, legacy_run, monkeypatch):
+  # Historical metadata omitted these fields; explicit HKParams still establish
+  # that no rewiring replay is required. The native reader must not write defaults.
+  metadata = {"UniqueName": legacy_run.name, "HKParams": {"Tolerance": .45, "RewiringRate": 0}, "AgentNumber": True}
+  (legacy_run / "metadata.json").write_text(json.dumps(metadata))
+  (legacy_run / "finished").touch()
+  with sqlite3.connect(legacy_run / "events.db"):
+    pass
+  def hashes():
+    return {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in legacy_run.iterdir()}
+  before = hashes()
+  steps = [0, 1, 2]
+  with RawSimulationRecord(str(legacy_run.parent), {"UniqueName": legacy_run.name}) as record:
+    states = [FrozenSimulationState(step=step, graph=graph.copy(), opinions=record.opinions[step].copy(),
+                                    posts={}, precision="history_f32") for step, graph in record.iter_graphs(steps)]
+  options = {"measurements": ["energy", "pathway", "bins", "terminal"], "epsilon": .45,
+             "bins": [-1, 0, 1], "binary_path": probe_binary}
+  explicit = run_probe(states, {"DynamicsType": "HK"}, **options)
+
+  def forbidden(*args, **kwargs):
+    pytest.fail("saved-run static measurement must not reconstruct Python graphs or inline state payloads")
+  monkeypatch.setattr(RawSimulationRecord, "iter_graphs", forbidden)
+  monkeypatch.setattr(FrozenSimulationState, "to_wire", forbidden)
+  native = run_probe_run(legacy_run, steps, **options)
+  assert native["source_max_step"] == 2
+  assert native["version"] == 1 and native["dynamics_type"] == "HK"
+  assert native["results"] == explicit["results"]
+  assert all(row["precision"] == "history_f32" for row in native["results"])
+  request = {"request_id": "whole-run", "run_directory": str(legacy_run), "steps": steps,
+             "measurements": options["measurements"], "epsilon": .45, "bins": [-1, 0, 1]}
+  assert list(run_probe_jobs([request, {**request, "request_id": "repeat-run"}], binary_path=probe_binary)) == [native, native]
+  assert hashes() == before
