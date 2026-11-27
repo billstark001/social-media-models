@@ -173,10 +173,16 @@ func (edb *EventDB) flushLocked() error {
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
+	// Bind each prepared statement once per batch. Rebinding for every event
+	// retains another transaction-owned sql.Stmt until commit.
+	eventStmt := tx.Stmt(edb.eventStmt)
+	rewiringStmt := tx.Stmt(edb.rewiringStmt)
+	postStmt := tx.Stmt(edb.postStmt)
+	viewPostsStmt := tx.Stmt(edb.viewPostsStmt)
 
 	eventIDs := make([]int64, len(edb.cache))
 	for i, event := range edb.cache {
-		res, err := tx.Stmt(edb.eventStmt).Exec(event.Type, event.AgentID, event.Step)
+		res, err := eventStmt.Exec(event.Type, event.AgentID, event.Step)
 		if err != nil {
 			tx.Rollback()
 			return fmt.Errorf("failed to insert event: %w", err)
@@ -193,7 +199,7 @@ func (edb *EventDB) flushLocked() error {
 		switch event.Type {
 		case "Rewiring":
 			if body, ok := event.Body.(model.RewiringEventBody); ok {
-				_, err := tx.Stmt(edb.rewiringStmt).Exec(eventIDs[i], body.AgentID, body.Unfollow, body.Follow)
+				_, err := rewiringStmt.Exec(eventIDs[i], body.AgentID, body.Unfollow, body.Follow)
 				if err != nil {
 					tx.Rollback()
 					return fmt.Errorf("failed to insert rewiring event: %w", err)
@@ -231,7 +237,7 @@ func (edb *EventDB) flushLocked() error {
 				tx.Rollback()
 				return fmt.Errorf("invalid PostEventBody type")
 			}
-			_, err := tx.Stmt(edb.postStmt).Exec(eventIDs[i], agentID, step, opinion, isRepost)
+			_, err := postStmt.Exec(eventIDs[i], agentID, step, opinion, isRepost)
 			if err != nil {
 				tx.Rollback()
 				return fmt.Errorf("failed to insert post event: %w", err)
@@ -252,7 +258,7 @@ func (edb *EventDB) flushLocked() error {
 				tx.Rollback()
 				return fmt.Errorf("failed to marshal ViewPostsEventBody: %w", err)
 			}
-			if _, err := tx.Stmt(edb.viewPostsStmt).Exec(eventIDs[i], data); err != nil {
+			if _, err := viewPostsStmt.Exec(eventIDs[i], data); err != nil {
 				tx.Rollback()
 				return fmt.Errorf("failed to insert view posts event: %w", err)
 			}
@@ -266,6 +272,7 @@ func (edb *EventDB) flushLocked() error {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
+	clear(edb.cache)
 	edb.cache = edb.cache[:0]
 	return nil
 }
