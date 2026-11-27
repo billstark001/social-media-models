@@ -221,7 +221,10 @@ func (s *SimulationSerializer) GetLatestAccumulativeState() (*AccumulativeModelS
 		return nil, nil
 	}
 
-	latestFile := files[len(files)-1]
+	latestFile, err := utils.LatestAccumulatedState(files)
+	if err != nil {
+		return nil, err
+	}
 	ret, err := LoadAccumulativeModelState(latestFile)
 	return ret, err
 }

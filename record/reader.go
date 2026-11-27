@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 
 	"smp/model"
 	"smp/simulation"
@@ -58,7 +59,6 @@ type Reader struct {
 }
 
 var graphName = regexp.MustCompile(`^graph-(\d+)\.msgpack(?:\.lz4)?$`)
-var accumName = regexp.MustCompile(`^acc-state-.+\.lz4$`)
 
 // OpenRun opens one output directory, not its parent. Collection flags retain
 // their persisted values; MetadataFields distinguishes missing fields from false.
@@ -117,7 +117,7 @@ func OpenRun(dir string, metadata map[string]any) (*Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	latest := ""
+	var accumulated []string
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -134,8 +134,8 @@ func OpenRun(dir string, metadata map[string]any) (*Reader, error) {
 			r.graphs[step] = filepath.Join(dir, name)
 			r.anchors = append(r.anchors, step)
 		}
-		if accumName.MatchString(name) && name > latest {
-			latest = name
+		if strings.HasPrefix(name, "acc-state-") && strings.HasSuffix(name, ".lz4") {
+			accumulated = append(accumulated, name)
 		}
 	}
 	sort.Ints(r.anchors)
@@ -152,6 +152,10 @@ func OpenRun(dir string, metadata map[string]any) (*Reader, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	} else {
+		latest, err := utils.LatestAccumulatedState(accumulated)
+		if err != nil {
+			return nil, err
+		}
 		if latest == "" {
 			return nil, errors.New("run has no trajectory or accumulated state")
 		}

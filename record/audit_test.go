@@ -43,6 +43,73 @@ func TestOpenRunExplicitMetadataOnlyWhenMissing(t *testing.T) {
 	}
 }
 
+func TestLegacyReaderOrdersAccumulatedGenerations(t *testing.T) {
+	for _, names := range [][]string{
+		{"acc-state-2.lz4", "acc-state-10.lz4"},
+		{"acc-state-2026-03-22T050705Z.lz4", "acc-state-2026-11-02T000000Z.lz4"},
+	} {
+		t.Run(names[1], func(t *testing.T) {
+			dir, _ := writeRun(t, true, trajectory.Precision{})
+			if err := os.Remove(filepath.Join(dir, "acc-state-2026-11-19T010000Z.lz4")); err != nil {
+				t.Fatal(err)
+			}
+			for i, count := range []int{3, 11} {
+				state := &simulation.AccumulativeModelState{
+					Opinions:     make([][]float64, count),
+					AgentNumbers: make([][][4]int16, count), AgentOpinionSums: make([][][4]float64, count),
+				}
+				for step := range state.Opinions {
+					state.Opinions[step] = historyOpinions[step%len(historyOpinions)]
+					state.AgentNumbers[step] = make([][4]int16, 3)
+					state.AgentOpinionSums[step] = make([][4]float64, 3)
+				}
+				if err := simulation.SaveAccumulativeModelState(filepath.Join(dir, names[i]), state); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := fingerprints(t, dir)
+			reader, err := record.OpenRun(dir, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reader.MaxStep != 10 {
+				t.Fatalf("selected an earlier history: MaxStep=%d", reader.MaxStep)
+			}
+			if err := reader.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(before, fingerprints(t, dir)) {
+				t.Fatal("generation selection changed saved history")
+			}
+		})
+	}
+}
+
+func TestLegacyReaderRejectsAmbiguousAccumulatedGenerations(t *testing.T) {
+	for _, names := range [][]string{
+		{"acc-state-2.lz4", "acc-state-02.lz4"},
+		{"acc-state-2.lz4", "acc-state-2026-03-22T050705Z.lz4"},
+		{"acc-state-2026-02-30T050705Z.lz4"},
+		{"acc-state-other.lz4"},
+	} {
+		t.Run(strings.Join(names, "+"), func(t *testing.T) {
+			dir := t.TempDir()
+			writeJSON(t, filepath.Join(dir, "metadata.json"), metadata())
+			for _, name := range names {
+				if err := os.WriteFile(filepath.Join(dir, name), nil, 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if reader, err := record.OpenRun(dir, nil); err == nil {
+				reader.Close()
+				t.Fatal("accepted ambiguous or invalid accumulated generations")
+			} else if !strings.Contains(err.Error(), "accumulated-state") {
+				t.Fatalf("read a history before validating its generation: %v", err)
+			}
+		})
+	}
+}
+
 func TestHistoricalHKWithoutDynamicsTypeUsesExplicitParametersReadOnly(t *testing.T) {
 	dir, meta := writeRun(t, true, trajectory.Precision{})
 	delete(meta, "DynamicsType")
