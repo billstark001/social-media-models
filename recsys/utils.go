@@ -1,12 +1,9 @@
 package recsys
 
 import (
-	"container/heap"
 	"math"
 	"math/rand/v2"
 	"smp/model"
-
-	"gonum.org/v1/gonum/graph"
 )
 
 func makeRawMat[T any](h int, w int) [][]T {
@@ -35,17 +32,20 @@ func sampleWithoutReplacement(population []int, n int, probabilities []float64, 
 			index: i,
 		}
 		if len(selected) < n {
-			heap.Push(&selected, item)
+			selected = append(selected, item)
+			selected.up(len(selected) - 1)
 		} else if item.key > selected[0].key {
 			selected[0] = item
-			heap.Fix(&selected, 0)
+			selected.down(0, len(selected))
 		}
 	}
 
 	result := make([]int, len(selected))
 	// Pop into the slice backwards to return candidates in descending-key order.
 	for i := len(result) - 1; i >= 0; i-- {
-		result[i] = population[heap.Pop(&selected).(weightedItem).index]
+		selected[0], selected[i] = selected[i], selected[0]
+		selected.down(0, i)
+		result[i] = population[selected[i].index]
 	}
 	return result
 }
@@ -57,15 +57,34 @@ type weightedItem struct {
 
 type weightedMinHeap []weightedItem
 
-func (h weightedMinHeap) Len() int           { return len(h) }
-func (h weightedMinHeap) Less(i, j int) bool { return h[i].key < h[j].key }
-func (h weightedMinHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
-func (h *weightedMinHeap) Push(x any)        { *h = append(*h, x.(weightedItem)) }
-func (h *weightedMinHeap) Pop() any {
-	old := *h
-	last := old[len(old)-1]
-	*h = old[:len(old)-1]
-	return last
+// These are the same strict comparisons and swaps as container/heap, including
+// its tie order, without boxing each weightedItem through heap.Interface.
+func (h weightedMinHeap) up(j int) {
+	for j > 0 {
+		i := (j - 1) / 2
+		if !(h[j].key < h[i].key) {
+			break
+		}
+		h[i], h[j] = h[j], h[i]
+		j = i
+	}
+}
+
+func (h weightedMinHeap) down(i, n int) {
+	for {
+		j := 2*i + 1
+		if j >= n {
+			break
+		}
+		if right := j + 1; right < n && h[right].key < h[j].key {
+			j = right
+		}
+		if !(h[j].key < h[i].key) {
+			break
+		}
+		h[i], h[j] = h[j], h[i]
+		i = j
+	}
 }
 
 // forEachRandomIndex visits a uniformly random permutation lazily, stopping
@@ -144,37 +163,4 @@ func selectPost[O any, P any](
 	}
 	m.RecordRecommendationPlacement(agentPickedID, placementRound)
 	return el
-}
-
-// commonNeighborsCount calculates the number of common neighbors between two nodes
-func commonNeighborsCount(g graph.Directed, u, v int) int {
-	uPred := nodesSet(g.To(int64(u)))
-	uSucc := nodesSet(g.From(int64(u)))
-	vPred := nodesSet(g.To(int64(v)))
-	vSucc := nodesSet(g.From(int64(v)))
-
-	count := 0
-
-	for w := range uPred {
-		if vPred[w] || vSucc[w] {
-			count++
-		}
-	}
-
-	for w := range uSucc {
-		if vPred[w] || vSucc[w] {
-			count++
-		}
-	}
-
-	return count
-}
-
-// nodesSet converts a nodes iterator to a set (map)
-func nodesSet(iter graph.Nodes) map[int64]bool {
-	result := make(map[int64]bool)
-	for iter.Next() {
-		result[iter.Node().ID()] = true
-	}
-	return result
 }

@@ -52,7 +52,7 @@ func benchmarkRecommendationModel(recsysName string) *model.SMPModel[float64, dy
 }
 
 func BenchmarkRecommend(b *testing.B) {
-	for _, recsysName := range []string{"Random", "Opinion", "OpinionRandom", "Structure"} {
+	for _, recsysName := range []string{"Random", "Opinion", "OpinionRandom", "Structure", "StructureRandom"} {
 		b.Run(fmt.Sprintf("%s/Recommend", recsysName), func(b *testing.B) {
 			m := benchmarkRecommendationModel(recsysName)
 			agent := m.Schedule.Agents[0]
@@ -80,5 +80,14 @@ func BenchmarkRecommend(b *testing.B) {
 				benchmarkPosts = posts
 			}
 		})
+	}
+}
+
+func BenchmarkOpinionRandomPreStep(b *testing.B) {
+	m := benchmarkRecommendationModel("OpinionRandom")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		m.Recsys.PreStep()
 	}
 }

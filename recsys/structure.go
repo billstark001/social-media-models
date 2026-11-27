@@ -49,6 +49,8 @@ type Structure[O any, P any] struct {
 	neighborSeen   []uint32
 	candidateSeen  []uint32
 	rawCounts      []float64
+	neighborIDs    []int64
+	touchedIDs     []int64
 	neighborEpoch  uint32
 	candidateEpoch uint32
 }
@@ -111,7 +113,6 @@ func (s *Structure[O, P]) initWorkspace() {
 	s.neighborSeen = make([]uint32, s.NumNodes)
 	s.candidateSeen = make([]uint32, s.NumNodes)
 	s.rawCounts = make([]float64, s.NumNodes)
-
 }
 
 type preparedStructureState struct{ dump StructureDump }
@@ -154,20 +155,16 @@ func (s *Structure[O, P]) PreStep() {}
 // neighborhood could have changed due to a rewiring touching that node).
 func (s *Structure[O, P]) invalidateAffected(nodes []int64) {
 	g := s.Model.Graph
-	toInvalidate := make(map[int64]struct{}, len(nodes)*8)
 	for _, v := range nodes {
-		toInvalidate[v] = struct{}{}
+		s.cacheValid[v] = false
 		it := g.From(v)
 		for it.Next() {
-			toInvalidate[it.Node().ID()] = struct{}{}
+			s.cacheValid[it.Node().ID()] = false
 		}
 		it = g.To(v)
 		for it.Next() {
-			toInvalidate[it.Node().ID()] = struct{}{}
+			s.cacheValid[it.Node().ID()] = false
 		}
-	}
-	for id := range toInvalidate {
-		s.cacheValid[id] = false
 	}
 }
 
@@ -199,7 +196,7 @@ func nextEpoch(epoch *uint32, seen []uint32) uint32 {
 func (s *Structure[O, P]) computeRawScores(agentID int64) map[int64]float64 {
 	g := s.Model.Graph
 	neighborEpoch := nextEpoch(&s.neighborEpoch, s.neighborSeen)
-	neighbors := make([]int64, 0, 32)
+	neighbors := s.neighborIDs[:0]
 	addNeighbor := func(id int64) {
 		if id == agentID || s.neighborSeen[id] == neighborEpoch {
 			return
@@ -216,7 +213,7 @@ func (s *Structure[O, P]) computeRawScores(agentID int64) map[int64]float64 {
 		addNeighbor(it.Node().ID())
 	}
 
-	touched := make([]int64, 0, len(neighbors)*8)
+	touched := s.touchedIDs[:0]
 	for _, neighborID := range neighbors {
 		candidateEpoch := nextEpoch(&s.candidateEpoch, s.candidateSeen)
 		addCandidate := func(id int64) {
@@ -244,6 +241,8 @@ func (s *Structure[O, P]) computeRawScores(agentID int64) map[int64]float64 {
 		result[id] = s.rawCounts[id]
 		s.rawCounts[id] = 0
 	}
+	s.neighborIDs = neighbors
+	s.touchedIDs = touched
 	return result
 }
 

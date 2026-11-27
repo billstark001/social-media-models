@@ -24,6 +24,8 @@ type OpinionRandom[O any, P any] struct {
 	Agents     []*model.SMPAgent[O, P]
 	AllIndices []int
 	RateMat    [][]float64
+	opinions   []float64
+	rateVec    []float64
 }
 
 // NewOpinionRandom creates a new random opinion-based recommendation system.
@@ -56,21 +58,23 @@ func (o *OpinionRandom[O, P]) PostInit(dumpData []byte) {
 	}
 	o.Agents = o.Model.Schedule.Agents
 	o.RateMat = makeRawMat[float64](o.NumNodes, o.NumNodes)
+	o.opinions = make([]float64, o.NumNodes)
+	o.rateVec = make([]float64, o.NumNodes)
 }
 
 // PreStep implements model.SMPModelRecommendationSystem
 func (o *OpinionRandom[O, P]) PreStep() {
-	opinions := make([]float64, o.NumNodes)
 	for i, agent := range o.Agents {
-		opinions[i] = toFloat64(agent.CurOpinion)
+		o.opinions[i] = toFloat64(agent.CurOpinion)
+		o.RateMat[i][i] = 0
 	}
 
-	rawRateMat := makeRawMat[float64](o.NumNodes, o.NumNodes)
-
+	// Fill every raw pair before normalizing any row, so the existing matrix
+	// can also serve as the raw workspace without a fresh N² allocation.
 	rng := o.Model.RNG.Stream(smprng.StreamRecommendation)
 	for i := range o.NumNodes {
 		for j := i + 1; j < o.NumNodes; j++ {
-			diff := math.Abs(opinions[i] - opinions[j])
+			diff := math.Abs(o.opinions[i] - o.opinions[j])
 			rate := max(1.0-diff/o.Tolerance, 0)
 
 			if o.NoiseStd > 0 {
@@ -82,29 +86,30 @@ func (o *OpinionRandom[O, P]) PreStep() {
 				rate = math.Pow(rate, o.Steepness)
 			}
 
-			rawRateMat[i][j] = rate
-			rawRateMat[j][i] = rate
+			o.RateMat[i][j] = rate
+			o.RateMat[j][i] = rate
 		}
 	}
 
 	for i := range o.NumNodes {
+		row := o.RateMat[i]
 		sum := 0.0
 		for j := range o.NumNodes {
-			sum += rawRateMat[i][j]
+			sum += row[j]
 		}
 		if sum > 0 {
 			for j := range o.NumNodes {
 				if o.RandomRatio > 0 {
-					o.RateMat[i][j] = (1-o.RandomRatio)*rawRateMat[i][j]/sum +
+					row[j] = (1-o.RandomRatio)*row[j]/sum +
 						o.RandomRatio/(float64(o.NumNodes)-1)
 				} else {
-					o.RateMat[i][j] = rawRateMat[i][j] / sum
+					row[j] /= sum
 				}
 			}
 		} else {
-			clear(o.RateMat[i])
+			clear(row)
 		}
-		o.RateMat[i][i] = 0
+		row[i] = 0
 	}
 }
 
@@ -116,9 +121,8 @@ func (o *OpinionRandom[O, P]) Recommend(
 ) []*model.PostRecord[O] {
 	rng := o.Model.RNG.Stream(smprng.StreamRecommendation)
 
-	rateVec := make([]float64, o.NumNodes)
-	copy(rateVec, o.RateMat[agent.ID])
-	return o.recommendFromRates(agent, neighborIDs, count, rateVec, rng)
+	copy(o.rateVec, o.RateMat[agent.ID])
+	return o.recommendFromRates(agent, neighborIDs, count, o.rateVec, rng)
 }
 
 // RecommendAt evaluates the weighted opinion recommender for a hypothetical
@@ -155,7 +159,8 @@ func (o *OpinionRandom[O, P]) RecommendAt(
 		rawTotal += rate
 	}
 
-	rateVec := make([]float64, o.NumNodes)
+	// The raw scores are no longer needed after their total is known.
+	rateVec := rawRates
 	for i, rawRate := range rawRates {
 		if int64(i) == agent.ID {
 			continue
@@ -165,6 +170,8 @@ func (o *OpinionRandom[O, P]) RecommendAt(
 				o.RandomRatio/float64(max(o.NumNodes-1, 1))
 		} else if o.RandomRatio > 0 {
 			rateVec[i] = 1 / float64(max(o.NumNodes-1, 1))
+		} else {
+			rateVec[i] = 0
 		}
 	}
 	return o.recommendFromRates(agent, neighborIDs, count, rateVec, rng)
