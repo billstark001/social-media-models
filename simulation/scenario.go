@@ -491,8 +491,7 @@ func (s *Scenario) StepTillEndResult(ctx context.Context) RunResult {
 			return false, didDump
 		}
 
-		timeInterval := time.Since(lastSaveTime)
-		if s.EnableDumps && timeInterval.Seconds() >= SAVE_INTERVAL {
+		if s.EnableDumps && time.Since(lastSaveTime) >= SAVE_INTERVAL*time.Second {
 			lastSaveTime = time.Now()
 			persistenceError = s.DumpError()
 			if persistenceError != nil {

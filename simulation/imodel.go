@@ -62,6 +62,16 @@ func (w *Float64ModelWrapper[P]) InitPosts() {
 }
 
 func (w *Float64ModelWrapper[P]) Accumulate(acc *AccumulativeModelState) {
+	if acc.Packed != nil {
+		opinions, counts, sums := acc.sampleBuffers(len(w.M.Schedule.Agents))
+		for _, agent := range w.M.Schedule.Agents {
+			opinions[agent.ID] = agent.CurOpinion
+			counts[agent.ID] = agent.AgentNumber
+			sums[agent.ID] = agent.OpinionSum
+		}
+		acc.appendSample(opinions, counts, sums)
+		return
+	}
 	acc.appendSample(w.M.CollectOpinions(), w.M.CollectAgentNumbers(), w.M.CollectAgentOpinions())
 }
 
@@ -103,6 +113,20 @@ func (w *BoolModelWrapper[P]) InitPosts() {
 }
 
 func (w *BoolModelWrapper[P]) Accumulate(acc *AccumulativeModelState) {
+	if acc.Packed != nil {
+		opinions, counts, sums := acc.sampleBuffers(len(w.M.Schedule.Agents))
+		for _, agent := range w.M.Schedule.Agents {
+			opinion := 0.0
+			if agent.CurOpinion {
+				opinion = 1.0
+			}
+			opinions[agent.ID] = opinion
+			counts[agent.ID] = agent.AgentNumber
+			sums[agent.ID] = agent.OpinionSum
+		}
+		acc.appendSample(opinions, counts, sums)
+		return
+	}
 	opinions := w.M.CollectOpinions()
 	row := make([]float64, len(opinions))
 	for i, v := range opinions {

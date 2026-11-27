@@ -16,6 +16,12 @@ type AccumulativeModelState struct {
 	AgentOpinionSums [][][4]float64
 	Packed           *trajectory.Buffer
 
+	// Packed.Append copies samples into its byte channels immediately. Reuse
+	// these temporary rows without changing ownership of legacy decoded rows.
+	sampleOpinions []float64
+	sampleCounts   []model.AgentNumberRecord
+	sampleSums     []model.AgentOpinionSumRecord
+
 	UnsafePostEvent int
 }
 
@@ -40,6 +46,15 @@ func (s *AccumulativeModelState) appendSample(opinions []float64, counts []model
 	s.Opinions = append(s.Opinions, opinions)
 	s.AgentNumbers = append(s.AgentNumbers, int32sToInt16s4(counts))
 	s.AgentOpinionSums = append(s.AgentOpinionSums, agentOpinionSumsToFloat64s(sums))
+}
+
+func (s *AccumulativeModelState) sampleBuffers(agents int) ([]float64, []model.AgentNumberRecord, []model.AgentOpinionSumRecord) {
+	if len(s.sampleOpinions) != agents {
+		s.sampleOpinions = make([]float64, agents)
+		s.sampleCounts = make([]model.AgentNumberRecord, agents)
+		s.sampleSums = make([]model.AgentOpinionSumRecord, agents)
+	}
+	return s.sampleOpinions, s.sampleCounts, s.sampleSums
 }
 
 func NewAccumulativeModelState() *AccumulativeModelState {
