@@ -105,6 +105,22 @@ func TestPersistentJobRejectsInvalidVersionsAndPaths(t *testing.T) {
 	}
 }
 
+func TestPersistentJobTraceAcceptsRelativeBasePath(t *testing.T) {
+	path, job := fixtureJob(t)
+	t.Chdir(job.BasePath)
+	job.BasePath = "."
+	job.ExposureTrace = filepath.Join(job.BasePath, job.Metadata.UniqueName, "feed.jsonl")
+	writeJob(t, path, job)
+	if _, err := readJob(path); err != nil {
+		t.Fatalf("rejected a trace inside its relative run directory: %v", err)
+	}
+	job.ExposureTrace = filepath.Join(job.BasePath, "feed.jsonl")
+	writeJob(t, path, job)
+	if _, err := readJob(path); err == nil || !strings.Contains(err.Error(), "inside its run directory") {
+		t.Fatalf("accepted a trace outside its run directory: %v", err)
+	}
+}
+
 func TestPositionalEntryRefusesResearchHistoryWithoutOptions(t *testing.T) {
 	path, job := fixtureJob(t)
 	writeJob(t, path, job)

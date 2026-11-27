@@ -66,6 +66,10 @@ func readJob(path string) (*persistentJob, error) {
 	}
 	directory := filepath.Join(job.BasePath, job.Metadata.UniqueName)
 	if job.ExposureTrace != "" {
+		directory, err := filepath.Abs(directory)
+		if err != nil {
+			return nil, err
+		}
 		trace, err := filepath.Abs(job.ExposureTrace)
 		if err != nil {
 			return nil, err
