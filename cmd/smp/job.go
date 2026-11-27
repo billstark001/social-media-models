@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"syscall"
 
 	"smp/simulation"
 	"smp/utils"
@@ -93,10 +92,10 @@ func runJob(ctx context.Context, path string) (int, error) {
 		return 1, err
 	}
 	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := lockJob(lock); err != nil {
 		return 1, fmt.Errorf("persistent run is already active: %w", err)
 	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	defer unlockJob(lock)
 	if err := freezeJob(filepath.Join(directory, "job.json"), job); err != nil {
 		return 1, err
 	}

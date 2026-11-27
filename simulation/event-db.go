@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path/filepath"
 	model "smp/model"
+	"smp/utils"
 	"sync"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -34,7 +35,7 @@ func OpenEventDB(filename string, batchSize int) (*EventDB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve event database path: %w", err)
 	}
-	uri := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
+	uri := utils.FileURI(path)
 	uri.RawQuery = url.Values{
 		"_journal_mode": {"WAL"},
 		"_foreign_keys": {"on"},

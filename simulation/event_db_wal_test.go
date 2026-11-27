@@ -6,10 +6,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"smp/model"
+	"smp/utils"
 )
 
 func eventDBTestDirectory(t *testing.T) string {
@@ -32,7 +34,7 @@ func eventDBTestDirectory(t *testing.T) string {
 
 func readOnlyEventDB(t *testing.T, path string) *sql.DB {
 	t.Helper()
-	uri := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
+	uri := utils.FileURI(path)
 	uri.RawQuery = url.Values{"mode": {"ro"}, "_query_only": {"1"}}.Encode()
 	db, err := sql.Open("sqlite3", uri.String())
 	if err != nil {
@@ -43,7 +45,11 @@ func readOnlyEventDB(t *testing.T, path string) *sql.DB {
 }
 
 func TestEventDBWALSettingsCoverEveryPooledConnection(t *testing.T) {
-	path := filepath.Join(eventDBTestDirectory(t), "events ? #&.db")
+	name := "events ? #&.db"
+	if runtime.GOOS == "windows" {
+		name = "events #&.db" // '?' is not a legal Windows filename character.
+	}
+	path := filepath.Join(eventDBTestDirectory(t), name)
 	db, err := OpenEventDB(path, 100)
 	if err != nil {
 		t.Fatal(err)

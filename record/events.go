@@ -26,7 +26,7 @@ func (r *Reader) eventDB() (*sql.DB, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("required event database is unavailable: %w", err)
 	}
-	uri := url.URL{Scheme: "file", Path: path}
+	uri := utils.FileURI(path)
 	query := url.Values{"mode": {"ro"}, "_query_only": {"1"}}
 	uri.RawQuery = query.Encode()
 	db, err := sql.Open("sqlite3", uri.String())
