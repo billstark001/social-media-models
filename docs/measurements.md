@@ -70,6 +70,8 @@ The reader decodes one trajectory block at a time. Legacy accumulated files reta
 
 For modern blocks, unused counts and opinion sums are skipped entirely while the block checksum and framing remain verified. Post and rewiring histories use one filtered ordered query each, including when selected steps cross many graph anchors. Old channel-major files still retain `8*N*T` bytes of decoded opinions.
 
+Historical metadata lacking `DynamicsType` is interpreted as HK only when it contains an explicit `HKParams` object. Explicit dynamics values are preserved; the inferred interpretation is not written to disk. Thus an explicit historical zero rewiring rate can avoid unused event replay without inventing collection flags.
+
 Actual exposure comes from recorded `ViewPosts` events or batch feed traces. Checkpoints supply a physical state and counterfactual measurements; past actual slot order and attribution require the corresponding simulation-time records. Obsolete names such as `ViewTweets` and parameter spelling aliases require an explicit migration. The reader never migrates data while observing it.
 
 ## Python orchestration

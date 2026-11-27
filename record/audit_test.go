@@ -43,6 +43,51 @@ func TestOpenRunExplicitMetadataOnlyWhenMissing(t *testing.T) {
 	}
 }
 
+func TestHistoricalHKWithoutDynamicsTypeUsesExplicitParametersReadOnly(t *testing.T) {
+	dir, meta := writeRun(t, true, trajectory.Precision{})
+	delete(meta, "DynamicsType")
+	delete(meta, "NodeCount")
+	delete(meta, "RewiringEvent")
+	meta["AgentNumber"] = true
+	writeJSON(t, filepath.Join(dir, "metadata.json"), meta)
+	before := fingerprints(t, dir)
+	reader, err := record.OpenRun(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reader.Metadata.DynamicsType != "HK" || reader.MetadataFields["DynamicsType"] != nil {
+		t.Fatal("historical HK interpretation changed explicit metadata coverage")
+	}
+	states := readStates(t, reader, []int{0, 2, 4}, record.Requirements{Graph: true})
+	if len(states) != 3 || states[2].Graph.Adjacency[0][1] == nil {
+		t.Fatal("missing dynamics field hid explicit zero rewiring")
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, fingerprints(t, dir)) {
+		t.Fatal("historical HK observation wrote inferred metadata")
+	}
+}
+
+func TestHistoricalHKInferenceDoesNotReplaceExplicitDynamics(t *testing.T) {
+	for _, dynamics := range []string{"", "Deffuant"} {
+		t.Run(dynamics, func(t *testing.T) {
+			dir, meta := writeRun(t, true, trajectory.Precision{})
+			meta["DynamicsType"] = dynamics
+			writeJSON(t, filepath.Join(dir, "metadata.json"), meta)
+			reader, err := record.OpenRun(dir, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reader.Close()
+			if reader.Metadata.DynamicsType != dynamics {
+				t.Fatal("HK parameters replaced an explicitly persisted dynamics type")
+			}
+		})
+	}
+}
+
 func TestReadStatesClosedDuringCallbackReturnsError(t *testing.T) {
 	var empty record.Reader
 	if err := empty.ReadStates([]int{0}, record.Requirements{}, func(record.State) error { return nil }); err == nil {

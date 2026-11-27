@@ -92,6 +92,15 @@ func OpenRun(dir string, metadata map[string]any) (*Reader, error) {
 	if err := json.Unmarshal(data, r.Metadata); err != nil {
 		return nil, fmt.Errorf("decode run metadata: %w", err)
 	}
+	// Historical HK runs predate the DynamicsType field. An explicit HKParams
+	// object supplies that format's interpretation without altering the saved
+	// metadata or replacing an explicitly supplied dynamics type.
+	if _, explicit := r.MetadataFields["DynamicsType"]; !explicit {
+		var hk map[string]json.RawMessage
+		if json.Unmarshal(r.MetadataFields["HKParams"], &hk) == nil && hk != nil {
+			r.Metadata.DynamicsType = simulation.DynamicsTypeHK
+		}
+	}
 	if raw, explicit := r.MetadataFields["DataVersion"]; explicit {
 		var version *int
 		if err := json.Unmarshal(raw, &version); err != nil || version == nil {
