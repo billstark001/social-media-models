@@ -1,9 +1,12 @@
 package batch
 
 import (
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
+	"syscall"
 	"testing"
 
 	"smp/model"
@@ -34,17 +37,23 @@ func TestFailedTracePreservesPublishedFile(t *testing.T) {
 
 func TestTraceRejectsAliasedCheckpointPaths(t *testing.T) {
 	dir := t.TempDir()
+	t.Chdir(dir)
 	checkpoint := filepath.Join(dir, "source.jsonl.gz")
 	if err := os.WriteFile(checkpoint, []byte("checkpoint bytes"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	alias := filepath.Join(dir, "alias.jsonl.gz")
-	if err := os.Symlink(checkpoint, alias); err != nil {
-		t.Fatal(err)
-	}
-	if err := validateTracePath(alias, &ExperimentSpec{Checkpoint: checkpoint}, 0); err == nil {
-		t.Fatal("trace aliases its source checkpoint")
-	}
+	t.Run("symlink", func(t *testing.T) {
+		alias := filepath.Join(dir, "symlink.jsonl.gz")
+		if err := os.Symlink(checkpoint, alias); err != nil {
+			if runtime.GOOS == "windows" && (errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.Errno(1314))) {
+				t.Skipf("creating symlinks requires Windows privileges: %v", err)
+			}
+			t.Fatal(err)
+		}
+		if err := validateTracePath(alias, &ExperimentSpec{Checkpoint: checkpoint}, 0); err == nil {
+			t.Fatal("trace aliases its source checkpoint")
+		}
+	})
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
