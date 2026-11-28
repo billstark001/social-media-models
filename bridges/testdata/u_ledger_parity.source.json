@@ -1,0 +1,10 @@
+{
+  "core_sources_sha256": {
+    "ledger.go": "099e53a58647bf307d3276d79aa270c9e2b235d767d2afd00ecd2a56a38f45dc",
+    "measure.go": "6a579c38fec989e023a436f9d8d81fbc3f9082761fd16f0530ce7830c3649362",
+    "native.go": "b68e8e31071e904cea8bf5b13b43598d47e9500ef6a2580f180e39b659049cfd",
+    "types.go": "54ed820acd3fb16f7a6b7d13d34f44327733b1b592a70247ebca894536df7cc5",
+    "union.go": "102f7dba35ddb1c83bb478ce8642f2a3f6b2d6cd08ef6bbfd19d7c2e08295c4c"
+  },
+  "purpose": "U-only byte golden captured before independent channel ledgers"
+}
