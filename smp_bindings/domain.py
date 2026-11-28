@@ -697,6 +697,7 @@ class BridgeFrame(WireRecord):
     branch_events: tuple[BridgeBranchEvent, ...] | None = None
     branch_episodes: tuple[BridgeBranchEpisode, ...] | None = None
     branch_summaries: tuple[BridgeBranchSummary, ...] | None = None
+    series: tuple[BridgeStepStats, ...] | None = None
 
 
 @dataclass(kw_only=True, slots=True)
@@ -754,6 +755,67 @@ class BridgeUnionFrame(WireRecord):
 
 
 @dataclass(kw_only=True, slots=True)
+class BridgeCollection(WireRecord):
+    profile: str
+    channels: tuple[str, ...]
+    scopes: tuple[str, ...]
+    products: tuple[str, ...]
+
+
+@dataclass(kw_only=True, slots=True)
+class BridgeStepStats(WireRecord):
+    scope: str
+    group_ids: tuple[int, int]
+    epoch: int
+    channel: str
+    step: int
+    interval_start: int
+    interval_end: int
+    closing: bool
+    population: int
+    active: int
+    known: int
+    never_seen: int
+    seen_inactive: int
+    unknown: int
+    initial_present: int
+    formations: int
+    losses: int
+    regenerations: int
+    conversions: int
+    censored_episodes: int
+    uncertain_formations: int
+    uncertain_losses: int
+    uncertain_regenerations: int
+    unknown_entries: int
+    unknown_exits: int
+    active_holder_rounds: int
+    known_holder_rounds: int
+    never_seen_holder_rounds: int
+    seen_inactive_holder_rounds: int
+    unknown_holder_rounds: int
+    side: int | None = None
+
+
+@dataclass(kw_only=True, slots=True)
+class ProbeOutputFile(WireRecord):
+    bytes: int
+    sha256: str
+
+
+@dataclass(kw_only=True, slots=True)
+class ProbeOutputReceipt(WireRecord):
+    schema_version: int
+    directory: str
+    database: str
+    metadata: str
+    completed: bool
+    rows: dict[str, int]
+    files: dict[str, ProbeOutputFile]
+    archive_native: str | None = None
+
+
+@dataclass(kw_only=True, slots=True)
 class ProbeAnalysis(WireRecord):
     definition_version: int
     group_options: GroupOptions
@@ -775,6 +837,9 @@ class ProbeAnalysis(WireRecord):
     branch_events: tuple[BridgeBranchEvent, ...] | None = None
     branch_episodes: tuple[BridgeBranchEpisode, ...] | None = None
     branch_summaries: tuple[BridgeBranchSummary, ...] | None = None
+    population: int | None = None
+    collection: BridgeCollection | None = None
+    series: tuple[BridgeStepStats, ...] | None = None
 
 
 @dataclass(kw_only=True, slots=True)
@@ -799,10 +864,11 @@ class ProbeResponse(WireRecord):
     version: int
     rng: Rng
     dynamics_type: str
-    results: tuple[ProbeState, ...]
+    results: tuple[ProbeState, ...] | None
     source_max_step: int | None = None
     analysis: ProbeAnalysis | None = None
     source_compatibility: str | None = None
+    output: ProbeOutputReceipt | None = None
 
 
 @dataclass(kw_only=True, slots=True)

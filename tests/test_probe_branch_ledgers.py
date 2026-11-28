@@ -41,7 +41,9 @@ def test_p0_ledgers_roundtrip_and_side_zero_are_not_lost(probe_binary, analysis_
 @pytest.mark.parametrize('events,episodes', [(False, True), (True, False), (False, False)])
 def test_output_switches_cover_branch_lists_but_keep_risk_summaries(probe_binary, analysis_run, events, episodes):
   result = analyze_run(analysis_run, epsilon=.65, bridge_cores=[[0], [26]],
-                       include_events=events, include_episodes=episodes, binary_path=probe_binary)
+                       collection={"profile": "audit", "products": ["summaries", "snapshots"]
+                                   + (["events", "conversions", "group_events"] if events else [])
+                                   + (["episodes"] if episodes else [])}, binary_path=probe_binary)
   a = result['analysis']
   assert a['events_included'] is events and a['episodes_included'] is episodes
   assert bool(a.get('bridge_events')) is events and bool(a.get('branch_events')) is events

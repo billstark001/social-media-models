@@ -26,6 +26,56 @@ from smp_bindings.events_db import PostRecord
 
 
 @dataclass(frozen=True)
+class CollectionSpec:
+  """Select bridge products without changing the scientific definition.
+
+  ``None`` collections use the native audit defaults. Omitted fields inherit
+  the selected profile; explicit empty selections are rejected by Go.
+  """
+
+  profile: str = "plot"
+  channels: Sequence[str] | None = None
+  scopes: Sequence[str] | None = None
+  products: Sequence[str] | None = None
+
+  def to_wire(self) -> dict[str, Any]:
+    result: dict[str, Any] = {"profile": self.profile}
+    for name in ("channels", "scopes", "products"):
+      values = getattr(self, name)
+      if values is not None:
+        if isinstance(values, (str, bytes)):
+          raise TypeError(f"collection {name} must be a sequence of names")
+        result[name] = list(values)
+    return result
+
+
+@dataclass(frozen=True)
+class OutputSpec:
+  """Write a collection in Go and return a small completion receipt."""
+
+  directory: str | os.PathLike[str]
+  archive_native: bool = False
+  metadata: Mapping[str, Any] | None = None
+
+  def to_wire(self) -> dict[str, Any]:
+    if type(self.archive_native) is not bool:
+      raise TypeError("archive_native must be boolean")
+    return {"directory": os.path.abspath(os.fspath(self.directory)),
+            "archive_native": self.archive_native,
+            "metadata": dict(self.metadata or {})}
+
+
+def _spec_wire(value: CollectionSpec | OutputSpec | Mapping[str, Any] | None):
+  if value is None:
+    return None
+  if isinstance(value, (CollectionSpec, OutputSpec)):
+    return value.to_wire()
+  if not isinstance(value, Mapping):
+    raise TypeError("collection/output must be a specification or mapping")
+  return dict(value)
+
+
+@dataclass(frozen=True)
 class FrozenSimulationState:
   """Minimal input needed by the Go probe evaluator at one completed step."""
 
@@ -96,6 +146,8 @@ def run_probe(
     groups: Mapping[str, Any] | None = None,
     bridges: Mapping[str, Any] | None = None,
     bridge_cores: Sequence[Sequence[int]] | None = None,
+    collection: CollectionSpec | Mapping[str, Any] | None = None,
+    output: OutputSpec | Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
   """Run the Go evaluator and return its decoded response."""
 
@@ -148,6 +200,8 @@ def run_probe(
       "groups": dict(groups) if groups is not None else None,
       "bridges": dict(bridges) if bridges is not None else None,
       "bridge_cores": None if bridge_cores is None else [list(core) for core in bridge_cores],
+      "collection": _spec_wire(collection),
+      "output": _spec_wire(output),
   }
   return _send_probe_request(request, binary_path)
 
@@ -171,6 +225,8 @@ def run_probe_checkpoints(
     groups: Mapping[str, Any] | None = None,
     bridges: Mapping[str, Any] | None = None,
     bridge_cores: Sequence[Sequence[int]] | None = None,
+    collection: CollectionSpec | Mapping[str, Any] | None = None,
+    output: OutputSpec | Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
   """Measure exact float64 checkpoints directly in Go without Python state copies."""
   if not checkpoint_paths:
@@ -191,6 +247,8 @@ def run_probe_checkpoints(
       "groups": dict(groups) if groups is not None else None,
       "bridges": dict(bridges) if bridges is not None else None,
       "bridge_cores": None if bridge_cores is None else [list(core) for core in bridge_cores],
+      "collection": _spec_wire(collection),
+      "output": _spec_wire(output),
   }
   return _send_probe_request(request, binary_path)
 
@@ -220,6 +278,8 @@ def run_probe_run(
     source_compatibility: str = "",
     bridge_cores: Sequence[Sequence[int]] | None = None,
     client: ProbeClient | None = None,
+    collection: CollectionSpec | Mapping[str, Any] | None = None,
+    output: OutputSpec | Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
   """Measure a saved run in Go; omitted steps select its last recorded state."""
   request = {
@@ -242,6 +302,8 @@ def run_probe_run(
       "scan": dict(scan) if scan is not None else None,
       "source_compatibility": source_compatibility,
       "bridge_cores": None if bridge_cores is None else [list(core) for core in bridge_cores],
+      "collection": _spec_wire(collection),
+      "output": _spec_wire(output),
   }
   if metadata is not None:
     request["run_metadata"] = dict(metadata)
@@ -262,17 +324,18 @@ def analyze_run(
     start: int = 0,
     end: int | None = None,
     output_stride: int = 10,
-    include_events: bool = True,
-    include_episodes: bool = True,
     source_compatibility: str = "",
     binary_path: str | None = None,
     bridge_cores: Sequence[Sequence[int]] | None = None,
     client: ProbeClient | None = None,
+    collection: CollectionSpec | Mapping[str, Any] | None = None,
+    output: OutputSpec | Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
   """Identify group lineages and compatible bridges over one saved simulation.
 
-  Go observes every native state. Snapshot thinning does not thin lifecycle
-  events. Omitted group/bridge options select the native versioned defaults;
+  Go observes every native state. Collection selectors control stored products;
+  output writes SQLite and metadata directly without a full response transfer.
+  Omitted group/bridge options select the native versioned defaults;
   supplied mappings are complete native option objects, not partial overrides.
   With bridge_cores, bridge group IDs name one-based fixed input cohorts;
   snapshot groups still describe independent dynamic detector lineages.
@@ -281,10 +344,9 @@ def analyze_run(
   return run_probe_run(
       directory, measurements=["groups", "bridges"], metadata=metadata,
       epsilon=epsilon, groups=groups, bridges=bridges,
-      scan={"start": start, "end": end, "output_stride": output_stride,
-            "include_events": include_events, "include_episodes": include_episodes},
+      scan={"start": start, "end": end, "output_stride": output_stride},
       source_compatibility=source_compatibility, binary_path=binary_path,
-      bridge_cores=bridge_cores, client=client,
+      bridge_cores=bridge_cores, client=client, collection=collection, output=output,
   )
 
 

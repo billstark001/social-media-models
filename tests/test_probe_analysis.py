@@ -24,13 +24,16 @@ def test_analysis_helpers_forward_complete_options_and_fixed_cohorts(monkeypatch
   binding.run_probe_checkpoints(["checkpoint.msgpack"], measurements=["bridges"], groups=group_opts, bridges=bridge_opts, bridge_cores=cohorts)
   binding.run_probe_run("saved", measurements=["bridges"], groups=group_opts, bridges=bridge_opts, bridge_cores=cohorts)
   binding.analyze_run("saved", groups=group_opts, bridges=bridge_opts, bridge_cores=cohorts,
-                      start=2, end=8, output_stride=5, include_events=False, include_episodes=False,
+                      start=2, end=8, output_stride=5, collection=binding.CollectionSpec(),
+                      output=binding.OutputSpec("output", metadata={"run_id": "example"}),
                       source_compatibility="legacy_header_actor")
   assert all(request["groups"] == group_opts and request["bridges"] == bridge_opts
              and request["bridge_cores"] == [[0, 1], [2, 3]] for request in sent)
   assert sent[2]["steps"] == [] and sent[2]["scan"] is None
-  assert sent[3]["scan"] == {"start": 2, "end": 8, "output_stride": 5,
-                              "include_events": False, "include_episodes": False}
+  assert sent[3]["scan"] == {"start": 2, "end": 8, "output_stride": 5}
+  assert sent[3]["collection"] == {"profile": "plot"}
+  assert sent[3]["output"]["metadata"] == {"run_id": "example"}
+  assert sent[3]["output"]["archive_native"] is False
   assert sent[3]["source_compatibility"] == "legacy_header_actor"
 
 

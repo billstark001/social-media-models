@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 import re
@@ -6,7 +8,10 @@ from bisect import bisect_left, bisect_right, insort
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from smp_bindings.domain import AccumulatedState, ScenarioMetadata, ProbeResponse, parse_metadata, parse_dataclass, to_wire
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+  from smp_bindings.probe import CollectionSpec, OutputSpec
 
 import networkx as nx
 import numpy as np
@@ -279,6 +284,8 @@ class RawSimulationRecord:
       bridge_cores: Sequence[Sequence[int]] | None = None,
       scan: Mapping[str, Any] | None = None,
       source_compatibility: str = "",
+      collection: CollectionSpec | Mapping[str, Any] | None = None,
+      output: OutputSpec | Mapping[str, Any] | None = None,
   ) -> ProbeResponse:
     """Evaluate saved states with typed native measurements.
 
@@ -312,4 +319,6 @@ class RawSimulationRecord:
         bridge_cores=bridge_cores,
         scan=scan,
         source_compatibility=source_compatibility,
+        collection=collection,
+        output=output,
     ))

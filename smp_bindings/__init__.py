@@ -42,6 +42,8 @@ from smp_bindings.model_state import (
 )
 from smp_bindings.probe import (
     analyze_run,
+    CollectionSpec,
+    OutputSpec,
     ProbeClient,
     FrozenSimulationState,
     run_probe,
@@ -64,6 +66,8 @@ from smp_bindings.simulation import (
 
 __all__ = [
     "analyze_run",
+    "CollectionSpec",
+    "OutputSpec",
     "ProbeClient",
     "BATCH_SCHEMA_VERSION",
     "PROGRESS_VERSION",
