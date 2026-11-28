@@ -1,8 +1,10 @@
 package recsys
 
 import (
+	"cmp"
 	"math"
 	"math/rand/v2"
+	"slices"
 	"sort"
 
 	"smp/model"
@@ -17,20 +19,29 @@ type Opinion[O any, P any] struct {
 	NoiseStd            float64
 	HistoricalPostCount int
 
-	NumNodes     int
-	Epsilon      []float64
-	PostIndices  []*PostIndex
-	AgentMap     map[int64]*model.SMPAgent[O, P]
-	AgentIndices map[int64]int
-	groupStarts  []int
-	groupEnds    []int
-	ties         tieSampler
+	NumNodes      int
+	Epsilon       []float64
+	PostIndices   []*PostIndex
+	AgentMap      map[int64]*model.SMPAgent[O, P]
+	AgentIndices  map[int64]int
+	authorIndices []opinionAuthorIndices
+	groupStarts   []int
+	groupEnds     []int
+	ties          tieSampler
 }
 
 type opinionPlacement[O any] struct {
 	post   *model.PostRecord[O]
 	holder int64
 	round  int
+}
+
+// The sorted search index and the per-author preparation index share these
+// slots. Preparing a round reads each author's history once, while sorting only
+// rearranges pointers in PostIndices.
+type opinionAuthorIndices struct {
+	marker  *PostIndex
+	history []PostIndex
 }
 
 // NewOpinion creates a new opinion-based recommendation system.
@@ -50,24 +61,25 @@ func NewOpinion[O any, P any](m *model.SMPModel[O, P], noiseStd float64, histori
 func (o *Opinion[O, P]) PostInit(dumpData []byte) {
 	o.NumNodes = o.Model.Graph.Nodes().Len()
 	normHistCount := max(o.HistoricalPostCount, 0)
-	o.PostIndices = make([]*PostIndex, 0)
+	o.PostIndices = make([]*PostIndex, 0, o.NumNodes*(normHistCount+1))
 	o.AgentMap = make(map[int64]*model.SMPAgent[O, P], o.NumNodes)
 	o.AgentIndices = make(map[int64]int, o.NumNodes)
+	o.authorIndices = make([]opinionAuthorIndices, 0, o.NumNodes)
 	o.Epsilon = make([]float64, o.NumNodes)
 
 	for _, a := range o.Model.Schedule.Agents {
 		o.AgentMap[a.ID] = a
-		o.PostIndices = append(o.PostIndices, &PostIndex{
-			AgentID:   a.ID,
-			HistoryID: -1,
-		})
+		author := opinionAuthorIndices{
+			marker:  &PostIndex{AgentID: a.ID, HistoryID: -1},
+			history: make([]PostIndex, normHistCount),
+		}
+		o.PostIndices = append(o.PostIndices, author.marker)
 		for i := range normHistCount {
-			tIdx := &PostIndex{
-				AgentID:   a.ID,
-				HistoryID: i,
-			}
+			tIdx := &author.history[i]
+			tIdx.AgentID, tIdx.HistoryID = a.ID, i
 			o.PostIndices = append(o.PostIndices, tIdx)
 		}
+		o.authorIndices = append(o.authorIndices, author)
 	}
 	o.groupStarts = make([]int, len(o.PostIndices))
 	o.groupEnds = make([]int, len(o.PostIndices))
@@ -91,47 +103,43 @@ func (o *Opinion[O, P]) PrepareProbe() {
 
 func (o *Opinion[O, P]) prepareIndex() {
 	visiblePosts := o.Model.Grid.PostMap
-	fetchOpinion := func(pi *PostIndex) float64 {
-		tsi := visiblePosts[pi.AgentID]
-		if pi.HistoryID == -1 {
-			return toFloat64(o.AgentMap[pi.AgentID].CurOpinion)
+	for _, author := range o.authorIndices {
+		id := author.marker.AgentID
+		author.marker.TempOpinion = toFloat64(o.AgentMap[id].CurOpinion)
+		if len(author.history) == 0 {
+			continue
 		}
-		if len(tsi) <= pi.HistoryID {
-			return -2
+		history := visiblePosts[id]
+		for index := range author.history {
+			entry := &author.history[index]
+			entry.TempOpinion = -2
+			if index < len(history) {
+				if post := history[index]; post != nil && post.AgentID == id {
+					entry.TempOpinion = toFloat64(post.Opinion)
+				}
+			}
 		}
-		post := tsi[pi.HistoryID]
-		if post == nil || post.AgentID != pi.AgentID {
-			return -2
-		}
-		return toFloat64(tsi[pi.HistoryID].Opinion)
 	}
-
-	for _, pi := range o.PostIndices {
-		pi.TempOpinion = fetchOpinion(pi)
-	}
-	sort.Slice(o.PostIndices, func(i, j int) bool {
-		left, right := o.PostIndices[i], o.PostIndices[j]
+	slices.SortFunc(o.PostIndices, func(left, right *PostIndex) int {
 		if left.TempOpinion != right.TempOpinion {
-			return left.TempOpinion < right.TempOpinion
+			return cmp.Compare(left.TempOpinion, right.TempOpinion)
 		}
 		// Stable enumeration for RNG replay only. recommendAround samples the
 		// complete equal-distance frontier, independently of this ID order.
 		if left.AgentID != right.AgentID {
-			return left.AgentID < right.AgentID
+			return cmp.Compare(left.AgentID, right.AgentID)
 		}
-		return left.HistoryID < right.HistoryID
+		return cmp.Compare(left.HistoryID, right.HistoryID)
 	})
-	for i, a := range o.PostIndices {
-		if a.HistoryID == -1 {
-			o.AgentIndices[a.AgentID] = i
-		}
-	}
 	for start := 0; start < len(o.PostIndices); {
 		end := start + 1
 		for end < len(o.PostIndices) && o.PostIndices[end].TempOpinion == o.PostIndices[start].TempOpinion {
 			end++
 		}
 		for index := start; index < end; index++ {
+			if entry := o.PostIndices[index]; entry.HistoryID == -1 {
+				o.AgentIndices[entry.AgentID] = index
+			}
 			o.groupStarts[index], o.groupEnds[index] = start, end
 		}
 		start = end
@@ -142,8 +150,9 @@ func (o *Opinion[O, P]) prepareIndex() {
 func (o *Opinion[O, P]) Recommend(agent *model.SMPAgent[O, P], neighborIDs map[int64]bool, count int) []*model.PostRecord[O] {
 	opinionWithNoise := toFloat64(agent.CurOpinion) + o.Epsilon[agent.ID]
 
-	iPre := o.AgentIndices[agent.ID] - 1
-	iPost := o.AgentIndices[agent.ID] + 1
+	marker := o.AgentIndices[agent.ID]
+	iPre := marker - 1
+	iPost := marker + 1
 	return o.recommendAround(agent.ID, opinionWithNoise, iPre, iPost, neighborIDs, count,
 		o.Model.RNG.Stream(smprng.StreamRecommendation))
 }
@@ -203,6 +212,17 @@ func (o *Opinion[O, P]) recommendAround(
 		}
 		preStart, preCount := iPre+1, preEnd-(iPre+1)
 		size := preCount + iPost - postStart
+		if size == 1 {
+			index := postStart
+			if preCount == 1 {
+				index = preStart
+			}
+			if placement, ok := o.placement(o.PostIndices[index], agentID, neighborIDs); ok {
+				o.Model.RecordRecommendationPlacement(placement.holder, placement.round)
+				ret = append(ret, placement.post)
+			}
+			continue
+		}
 		indexAt := func(offset int) *PostIndex {
 			if offset < preCount {
 				return o.PostIndices[preStart+offset]

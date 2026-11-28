@@ -6,7 +6,7 @@ import (
 	"maps"
 	"math"
 	"math/rand/v2"
-	"sort"
+	"slices"
 
 	"smp/model"
 	smprng "smp/rng"
@@ -104,6 +104,7 @@ type Structure[O any, P any] struct {
 	neighborEpoch  uint32
 	candidateEpoch uint32
 	ties           tieSampler
+	rankedScratch  []StructureCandidate // private uncached/probe query workspace
 }
 
 // NewStructure creates a structure-based recommendation system.
@@ -243,9 +244,9 @@ func nextEpoch(epoch *uint32, seen []uint32) uint32 {
 	return *epoch
 }
 
-// computeRawScores counts unique undirected two-hop paths using reusable dense
-// scratch arrays.
-func (s *Structure[O, P]) computeRawScores(agentID int64) map[int64]float64 {
+// countTwoHopPaths fills dense query scratch and returns the touched IDs. The
+// consumer must clear those counts after copying or reading them.
+func (s *Structure[O, P]) countTwoHopPaths(agentID int64) []int64 {
 	g := s.Model.Graph
 	neighborEpoch := nextEpoch(&s.neighborEpoch, s.neighborSeen)
 	neighbors := s.neighborIDs[:0]
@@ -288,13 +289,21 @@ func (s *Structure[O, P]) computeRawScores(agentID int64) map[int64]float64 {
 		}
 	}
 
+	s.neighborIDs = neighbors
+	s.touchedIDs = touched
+	return touched
+}
+
+// computeRawScores materializes the immutable map needed by weighted sampling
+// and cache snapshots. Ranked uncached queries consume the same dense counts
+// directly instead of constructing a map only to read it back by ID.
+func (s *Structure[O, P]) computeRawScores(agentID int64) map[int64]float64 {
+	touched := s.countTwoHopPaths(agentID)
 	result := make(map[int64]float64, len(touched))
 	for _, id := range touched {
 		result[id] = s.rawCounts[id]
 		s.rawCounts[id] = 0
 	}
-	s.neighborIDs = neighbors
-	s.touchedIDs = touched
 	return result
 }
 
@@ -333,20 +342,38 @@ func (s *Structure[O, P]) recommend(
 		}
 	}
 
-	rawScores := s.computeRawScores(agent.ID)
-
-	// Persist raw scores so StructureRandom.Recommend can reuse them.
+	var rawScores map[int64]float64
+	var candidateCount int
 	if useCache {
+		// Persist immutable raw scores for cache snapshots.
+		rawScores = s.computeRawScores(agent.ID)
 		s.rawScoreCache[agent.ID] = rawScores
+		candidateCount = len(rawScores)
+	} else {
+		candidateCount = len(s.countTwoHopPaths(agent.ID))
 	}
 
 	// Sort candidates by descending score (optionally perturbed by noise).
-	candidates := make([]StructureCandidate, 0, len(rawScores))
+	candidates := s.rankedScratch[:0]
+	if useCache {
+		// Cached rows are immutable and may be shared by prepared branches.
+		candidates = make([]StructureCandidate, 0, candidateCount)
+	} else if cap(candidates) < candidateCount {
+		candidates = make([]StructureCandidate, 0, candidateCount)
+	}
 	for index := range s.NumNodes {
 		id := int64(index)
-		sc, ok := rawScores[id]
-		if !ok {
+		var sc float64
+		if useCache {
+			sc = rawScores[id]
+		} else {
+			sc = s.rawCounts[index]
+		}
+		if sc == 0 {
 			continue
+		}
+		if !useCache {
+			s.rawCounts[index] = 0
 		}
 		if s.noiseStd > 0 {
 			noise := rng.NormFloat64() * s.noiseStd
@@ -354,29 +381,40 @@ func (s *Structure[O, P]) recommend(
 		}
 		candidates = append(candidates, StructureCandidate{ID: id, Score: sc})
 	}
-	sort.Slice(candidates, func(a, b int) bool {
-		if candidates[a].Score != candidates[b].Score {
-			return candidates[a].Score > candidates[b].Score
+	slices.SortFunc(candidates, func(left, right StructureCandidate) int {
+		if left.Score != right.Score {
+			if left.Score > right.Score {
+				return -1
+			}
+			if right.Score > left.Score {
+				return 1
+			}
+			return 0
 		}
 		// Canonical enumeration makes RNG replay independent of map order.
 		// This key never determines which member of an exact tie is returned.
-		return candidates[a].ID < candidates[b].ID
+		if left.ID < right.ID {
+			return -1
+		}
+		if left.ID > right.ID {
+			return 1
+		}
+		return 0
 	})
-	for start := 0; start < len(candidates); {
-		end := start + 1
-		for end < len(candidates) && candidates[end].Score == candidates[start].Score {
-			end++
+	groupEnd := len(candidates)
+	for index := len(candidates) - 1; index >= 0; index-- {
+		if index == len(candidates)-1 || candidates[index].Score != candidates[index+1].Score {
+			groupEnd = index + 1
 		}
-		for index := start; index < end; index++ {
-			candidates[index].GroupEnd = end
-		}
-		start = end
+		candidates[index].GroupEnd = groupEnd
 	}
 
 	// Rows are immutable; per-query tie sampling only touches private scratch.
 	if useCache {
 		s.candidateCache[agent.ID] = candidates
 		s.cacheValid[agent.ID] = true
+	} else {
+		s.rankedScratch = candidates
 	}
 	return s.selectRankedPosts(candidates, neighborIDs, count, rng)
 }
