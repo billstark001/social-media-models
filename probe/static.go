@@ -58,7 +58,7 @@ func measureStatic(request *Request, selected map[string]bool, grid []float64, p
 			return err
 		}
 	}
-	return nil
+	return evaluator.finish(request)
 }
 
 type staticEvaluator struct {
@@ -69,17 +69,30 @@ type staticEvaluator struct {
 	anchors        []int64
 	grid           []float64
 	measurer       observables.StateMeasurer
+	analysis       *analysisEvaluator
+	analysisError  error
 }
 
 func newStaticEvaluator(request *Request, selected map[string]bool, grid []float64, params driftParams) staticEvaluator {
-	return staticEvaluator{
-		options: staticOptions(request, selected, grid, params), needGraph: requiresGraph(selected),
+	analysis, err := newAnalysisEvaluator(request, selected, params.tolerance)
+	value := staticEvaluator{
+		options: staticOptions(request, selected, grid, params), needGraph: requiresStaticGraph(selected),
 		counterfactual: selected["counterfactual_neighbor_energy"], energy: energyOptions(request, params.tolerance),
 		anchors: request.AnchorIDs, grid: grid,
+		analysis: analysis, analysisError: err,
 	}
+	return value
 }
 
 func (e *staticEvaluator) measure(state *FrozenState, result *StateResult) error {
+	if e.analysisError != nil {
+		return e.analysisError
+	}
+	if e.analysis != nil {
+		if err := e.analysis.measure(state, result); err != nil {
+			return err
+		}
+	}
 	if e.options.Energy == nil && e.options.Pathway == nil && e.options.Bins == nil && e.options.Landscape == nil && e.options.Terminal == nil && !e.counterfactual {
 		return nil
 	}
@@ -108,8 +121,31 @@ func (e *staticEvaluator) measure(state *FrozenState, result *StateResult) error
 	return nil
 }
 
+func (e *staticEvaluator) finish(request *Request) error {
+	if e.analysisError != nil {
+		return e.analysisError
+	}
+	return e.analysis.finish(request)
+}
+
 type staticRunReader interface {
 	ReadStates([]int, record.Requirements, func(record.State) error) error
+}
+
+type borrowedRunReader interface {
+	ReadStatesBorrowed([]int, record.Requirements, func(record.State) error) error
+}
+
+func snapshotCapacity(request *Request, count int) int {
+	if count == 0 || request.Scan == nil {
+		return count
+	}
+	stride := max(request.Scan.OutputStride, 1)
+	kept := 1 + (count-1)/stride
+	if (count-1)%stride != 0 {
+		kept++ // The final observation is retained even off the stride grid.
+	}
+	return kept
 }
 
 // measureStaticRun consumes each microscopic state inside the reader callback.
@@ -117,8 +153,13 @@ type staticRunReader interface {
 // empty and the canonical measurer reuses one stream's workspace.
 func measureStaticRun(request *Request, selected map[string]bool, grid []float64, params driftParams, run staticRunReader, steps []int) ([]StateResult, error) {
 	evaluator := newStaticEvaluator(request, selected, grid, params)
-	results := make([]StateResult, 0, len(steps))
-	err := run.ReadStates(steps, record.Requirements{Graph: requiresGraph(selected)}, func(state record.State) error {
+	results := make([]StateResult, 0, snapshotCapacity(request, len(steps)))
+	index := 0
+	read := run.ReadStates
+	if borrowed, ok := run.(borrowedRunReader); ok {
+		read = borrowed.ReadStatesBorrowed
+	}
+	err := read(steps, sourceRequirements(request, selected), func(state record.State) error {
 		frozen := frozenRunState(state)
 		validation := *request
 		validation.States = []FrozenState{frozen}
@@ -129,10 +170,16 @@ func measureStaticRun(request *Request, selected map[string]bool, grid []float64
 		if err := evaluator.measure(&frozen, &result); err != nil {
 			return err
 		}
-		results = append(results, result)
+		if keepSnapshot(request, index, len(steps)) {
+			results = append(results, result)
+		}
+		index++
 		return nil
 	})
 	if err != nil {
+		return nil, err
+	}
+	if err := evaluator.finish(request); err != nil {
 		return nil, err
 	}
 	return results, nil
@@ -155,5 +202,5 @@ func evaluateStaticRun(request *Request, selected map[string]bool, grid []float6
 	if err != nil {
 		return nil, err
 	}
-	return &Response{Version: ProtocolVersion, DynamicsType: request.DynamicsType, Results: results, SourceMaxStep: request.sourceMaxStep}, nil
+	return &Response{Version: ProtocolVersion, DynamicsType: request.DynamicsType, Results: results, SourceMaxStep: request.sourceMaxStep, Analysis: request.analysis, SourceCompatibility: request.SourceCompatibility}, nil
 }

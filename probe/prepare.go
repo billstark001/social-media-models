@@ -57,7 +57,15 @@ func gridValues(grid Grid) ([]float64, error) {
 }
 
 func requiresGraph(selected map[string]bool) bool {
-	return selected["force"] || selected["pathway"] || selected["energy"] || selected["landscape"] || selected["counterfactual_neighbor_energy"] || selected["bins"]
+	return selected["force"] || requiresStaticGraph(selected) || selected["bridges"]
+}
+
+func requiresStaticGraph(selected map[string]bool) bool {
+	return selected["pathway"] || selected["energy"] || selected["landscape"] || selected["counterfactual_neighbor_energy"] || selected["bins"]
+}
+
+func sourceRequirements(request *Request, selected map[string]bool) record.Requirements {
+	return record.Requirements{Graph: requiresGraph(selected), Posts: selected["force"] || selected["bridges"], PostsOptional: selected["bridges"] && !selected["force"], LegacyHeaderActor: request.SourceCompatibility == "legacy_header_actor"}
 }
 
 func validateRequest(request *Request, selected map[string]bool) error {
@@ -84,6 +92,11 @@ func validateRequest(request *Request, selected map[string]bool) error {
 		if needGraph {
 			if err := validateFrozenGraph(&state); err != nil {
 				return err
+			}
+		}
+		if selected["bridges"] && request.BridgeCores != nil {
+			if err := validateBridgeCores(request.BridgeCores, len(state.Opinions)); err != nil {
+				return fmt.Errorf("state %d: %w", state.Step, err)
 			}
 		}
 		if selected["force"] || selected["counterfactual_neighbor_energy"] {
@@ -208,6 +221,23 @@ func prepareMeasurements(request *Request) (map[string]bool, []float64, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	if selected["groups"] && request.Groups != nil {
+		if err := request.Groups.Validate(); err != nil {
+			return nil, nil, fmt.Errorf("groups: %w", err)
+		}
+	}
+	if selected["bridges"] {
+		if request.Bridges != nil {
+			if err := request.Bridges.Validate(); err != nil {
+				return nil, nil, err
+			}
+		}
+		if request.BridgeCores != nil {
+			if err := validateBridgeCores(request.BridgeCores, -1); err != nil {
+				return nil, nil, err
+			}
+		}
+	}
 	if selected["bins"] {
 		if err := observables.ValidateBinBoundaries(request.Bins); err != nil {
 			return nil, nil, err
@@ -263,8 +293,30 @@ func staticEpsilon(request *Request, selected map[string]bool) (float64, error) 
 
 func usesCommonEpsilon(request *Request, selected map[string]bool) bool {
 	needCommon := selected["pathway"] || (selected["terminal"] && request.Terminal == nil)
+	needCommon = needCommon || (selected["groups"] && request.Groups == nil && (!selected["bridges"] || request.Bridges == nil))
 	needEnergy := selected["energy"] || selected["landscape"] || selected["counterfactual_neighbor_energy"]
 	return needCommon || (needEnergy && request.EnergyEpsilon == nil)
+}
+
+// Fixed reference IDs are a separate namespace from dynamic group lineage IDs.
+// Explicit cohorts can be smaller than detector MinCore, but cannot overlap.
+func validateBridgeCores(cores [][]int, agents int) error {
+	if len(cores) < 2 {
+		return errors.New("bridge_cores requires at least two nonempty disjoint cohorts")
+	}
+	seen := make(map[int]bool)
+	for i, members := range cores {
+		if len(members) == 0 {
+			return fmt.Errorf("bridge_cores cohort %d is empty", i)
+		}
+		for _, id := range members {
+			if id < 0 || agents >= 0 && id >= agents || seen[id] {
+				return fmt.Errorf("bridge_cores requires distinct in-range agent IDs; got %d in cohort %d", id, i)
+			}
+			seen[id] = true
+		}
+	}
+	return nil
 }
 
 func validateRunDefaults(request *Request, selected map[string]bool, fields map[string]json.RawMessage) error {
@@ -295,6 +347,15 @@ func validateRunDefaults(request *Request, selected map[string]bool, fields map[
 }
 
 func validateSourceSelection(request *Request) error {
+	if request.SourceCompatibility != "" && request.SourceCompatibility != "legacy_header_actor" {
+		return errors.New("unknown source_compatibility; supported historical exception: legacy_header_actor")
+	}
+	if request.Scan != nil && (request.RunDirectory == "" || len(request.Steps) != 0) {
+		return errors.New("scan requires run_directory and cannot be combined with steps")
+	}
+	if request.SourceCompatibility != "" && request.RunDirectory == "" {
+		return errors.New("source_compatibility requires run_directory")
+	}
 	sources := 0
 	for _, present := range []bool{len(request.States) > 0, len(request.CheckpointPaths) > 0, request.RunDirectory != ""} {
 		if present {
@@ -327,7 +388,7 @@ func loadSources(request *Request, selected map[string]bool) error {
 		return err
 	}
 	defer run.Close()
-	return run.ReadStates(runSteps(request, run), record.Requirements{Graph: requiresGraph(selected), Posts: selected["force"]}, func(state record.State) error {
+	return run.ReadStates(runSteps(request, run), sourceRequirements(request, selected), func(state record.State) error {
 		request.States = append(request.States, frozenRunState(state))
 		return nil
 	})
@@ -356,11 +417,17 @@ func openRunSource(request *Request, selected map[string]bool) (*record.Reader, 
 	}
 	maxStep := run.MaxStep
 	request.sourceMaxStep = &maxStep
+	if err := validateScan(request.Scan, maxStep); err != nil {
+		return nil, err
+	}
 	ok = true
 	return run, nil
 }
 
 func runSteps(request *Request, run *record.Reader) []int {
+	if request.Scan != nil {
+		return scanSteps(request.Scan, run.MaxStep)
+	}
 	if len(request.Steps) == 0 {
 		return []int{run.MaxStep}
 	}
@@ -368,7 +435,7 @@ func runSteps(request *Request, run *record.Reader) []int {
 }
 
 func frozenRunState(state record.State) FrozenState {
-	return FrozenState{Step: state.Step, Graph: state.Graph, Opinions: state.Opinions, Posts: state.Posts, Precision: state.Precision}
+	return FrozenState{Step: state.Step, Graph: state.Graph, Opinions: state.Opinions, Posts: state.Posts, Precision: state.Precision, PostsUnavailableReason: state.PostsUnavailableReason}
 }
 
 func selectMeasurements(names []string) (map[string]bool, error) {
@@ -378,8 +445,11 @@ func selectMeasurements(names []string) (map[string]bool, error) {
 	}
 	for _, name := range names {
 		switch name {
-		case "force", "energy", "landscape", "counterfactual_neighbor_energy", "pathway", "bins", "terminal":
+		case "force", "energy", "landscape", "counterfactual_neighbor_energy", "pathway", "bins", "terminal", "groups", "bridges":
 			selected[name] = true
+			if name == "bridges" {
+				selected["groups"] = true
+			}
 		default:
 			return nil, fmt.Errorf("unknown measurement %q", name)
 		}

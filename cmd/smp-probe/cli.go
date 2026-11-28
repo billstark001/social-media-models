@@ -204,6 +204,11 @@ func runCLI(args []string, input io.Reader, output, diagnostic io.Writer) error 
 	bins := flags.String("bins", "", "Comma-separated bin edges")
 	gridStep := flags.Float64("grid-step", 0.02, "Opinion grid spacing for force/landscape")
 	replicates := flags.Int("replicates", 1, "Counterfactual recommendation replicates")
+	scan := flags.Bool("scan", false, "Observe every completed step in a saved run")
+	scanStart := flags.Int("scan-start", 0, "First completed step with --scan")
+	scanEnd := flags.String("scan-end", "", "Last completed step with --scan; default: source maximum")
+	outputStride := flags.Int("output-stride", 10, "Snapshot output stride with --scan; observation remains dense")
+	sourceCompatibility := flags.String("source-compatibility", "", "Explicit historical reader exception: legacy_header_actor")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -247,7 +252,20 @@ func runCLI(args []string, input io.Reader, output, diagnostic io.Writer) error 
 	request := probe.Request{
 		Version: probe.ProtocolVersion, RunDirectory: *runDirectory, CheckpointPaths: checkpoints,
 		Measurements: commaValues(*measurements), Replicates: *replicates,
-		Grid: probe.Grid{Min: -1, Max: 1, Step: *gridStep},
+		Grid:                probe.Grid{Min: -1, Max: 1, Step: *gridStep},
+		SourceCompatibility: *sourceCompatibility,
+	}
+	if *scan {
+		request.Scan = &probe.ScanOptions{Start: *scanStart, OutputStride: *outputStride}
+		if *scanEnd != "" {
+			value, err := strconv.Atoi(*scanEnd)
+			if err != nil {
+				return fmt.Errorf("invalid scan end: %w", err)
+			}
+			request.Scan.End = &value
+		}
+	} else if *scanStart != 0 || *scanEnd != "" || *outputStride != 10 {
+		return errors.New("scan-start, scan-end and output-stride require --scan")
 	}
 	var err error
 	if request.Steps, err = integerValues(*steps); err != nil {
