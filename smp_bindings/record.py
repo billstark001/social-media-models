@@ -258,7 +258,7 @@ class RawSimulationRecord:
 
   def evaluate_probe(
       self,
-      steps: Iterable[int],
+      steps: Iterable[int] | None = None,
       *,
       h: float = 0.02,
       minimum: float = -1.0,
@@ -274,11 +274,20 @@ class RawSimulationRecord:
       epsilon: float | None = None,
       bins: Sequence[float] | None = None,
       terminal: Mapping[str, Any] | None = None,
+      groups: Mapping[str, Any] | None = None,
+      bridges: Mapping[str, Any] | None = None,
+      bridge_cores: Sequence[Sequence[int]] | None = None,
+      scan: Mapping[str, Any] | None = None,
+      source_compatibility: str = "",
   ) -> ProbeResponse:
-    """Evaluate selected saved steps through the native Go run reader."""
+    """Evaluate saved states with typed native measurements.
+
+    Omitted steps select the last state; scan explicitly observes an interval.
+    The native reader owns validation of fixed cohorts and complete options.
+    """
     from smp_bindings.probe import run_probe_run
-    requested_steps = sorted({int(step) for step in steps})
-    if not requested_steps:
+    requested_steps = None if steps is None else sorted({int(step) for step in steps})
+    if steps is not None and not requested_steps:
       raise ValueError("at least one probe step is required")
     return parse_dataclass(ProbeResponse, run_probe_run(
         self.directory,
@@ -298,4 +307,9 @@ class RawSimulationRecord:
         epsilon=epsilon,
         bins=bins,
         terminal=terminal,
+        groups=groups,
+        bridges=bridges,
+        bridge_cores=bridge_cores,
+        scan=scan,
+        source_compatibility=source_compatibility,
     ))

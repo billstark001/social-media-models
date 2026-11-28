@@ -10,7 +10,7 @@ from smp_bindings.probe import run_probe_jobs
 def fake_worker(monkeypatch, response):
   worker = SimpleNamespace(
       stdin=io.StringIO(), stdout=io.StringIO(json.dumps(response) + "\n"),
-      poll=lambda: 0, wait=lambda: 0,
+      poll=lambda: 0, wait=lambda timeout=None: 0,
   )
   monkeypatch.setattr("smp_bindings.probe.subprocess.Popen", lambda *args, **kwargs: worker)
   return worker

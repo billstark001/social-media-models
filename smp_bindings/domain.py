@@ -404,6 +404,380 @@ class Landscape(WireRecord):
 
 
 @dataclass(kw_only=True, slots=True)
+class GroupOptions(WireRecord):
+    epsilon: float
+    bandwidth: float
+    grid_cells: int
+    min_core: int
+    valley: float
+    half: float
+    min_bandwidth_support: int
+    confirm: int
+    exit: int
+    jaccard_min: float
+    lineage_overlap: float
+
+
+@dataclass(kw_only=True, slots=True)
+class GroupCore(WireRecord):
+    id: int
+    members: tuple[int, ...] | None
+    peak: float
+    lower: float
+    upper: float
+    basin_lower: float
+    basin_upper: float
+    mass: int
+    support_width: float
+    peak_density: float
+    baseline_density: float
+    density_level: float
+    bandwidth_support: int
+    bandwidth_matches: tuple[bool, bool, bool]
+
+
+@dataclass(kw_only=True, slots=True)
+class GroupDetection(WireRecord):
+    cores: tuple[GroupCore, ...] | None
+    labels: tuple[int, ...] | None
+    residual: tuple[int, ...] | None
+    macro_k: int
+    density_state: str
+    bandwidths: tuple[float, float, float]
+    layer_macro_k: tuple[int, int, int]
+
+
+@dataclass(kw_only=True, slots=True)
+class Group(WireRecord):
+    id: int
+    core: GroupCore
+    first_observed_step: int
+    confirmed_step: int
+    last_observed_step: int
+    state: str
+    epoch: int
+
+
+@dataclass(kw_only=True, slots=True)
+class GroupEvent(WireRecord):
+    type: str
+    step: int
+    interval_start: int
+    interval_end: int
+    group_ids: tuple[int, ...] | None
+    parents: tuple[int, ...] | None
+    children: tuple[int, ...] | None
+    left_censored: bool
+    right_censored: bool
+    reason: str
+
+
+@dataclass(kw_only=True, slots=True)
+class GroupFrame(WireRecord):
+    step: int
+    detection: GroupDetection
+    groups: tuple[Group, ...] | None
+    events: tuple[GroupEvent, ...] | None
+    gap: bool
+    epoch: int
+    status: str
+
+
+@dataclass(kw_only=True, slots=True)
+class BridgeOptions(WireRecord):
+    epsilon: float
+    guard: float
+    middle_margin: float
+    detail_output: bool
+    stop_at_contact: bool
+    fixed_pairs: tuple[tuple[int, int], ...] | None = None
+    branch_sides: bool | None = None
+
+
+@dataclass(kw_only=True, slots=True)
+class BridgeStatus(WireRecord):
+    known: bool
+    active: bool
+    uncertain: bool
+
+
+@dataclass(kw_only=True, slots=True)
+class BridgeSignalState(WireRecord):
+    status: BridgeStatus
+    count: int
+    weight: float
+    count_known: bool
+    source_known: bool
+    cross_boundary: BridgeStatus
+
+
+@dataclass(kw_only=True, slots=True)
+class BridgeHolderState(WireRecord):
+    holder: int
+    s: tuple[BridgeSignalState, BridgeSignalState]
+    o: tuple[BridgeSignalState, BridgeSignalState]
+    p: tuple[BridgeSignalState, BridgeSignalState]
+    u: tuple[BridgeSignalState, BridgeSignalState]
+    active: BridgeStatus
+    signal_both: BridgeStatus
+    opinion_only: BridgeStatus
+    post_only: BridgeStatus
+    structural_only: BridgeStatus
+    bilateral: BridgeStatus
+    opinion_bilateral: BridgeStatus
+    post_bilateral: BridgeStatus
+    cross_op: BridgeStatus
+    cross_po: BridgeStatus
+    mixed_bilateral: BridgeStatus
+    middle_o: BridgeStatus
+    middle_p: BridgeStatus
+    middle_u: BridgeStatus
+    role_bits: int
+    known_bits: int
+    uncertain_bits: int
+
+
+@dataclass(kw_only=True, slots=True)
+class BridgeCounts(WireRecord):
+    signal_both: int
+    opinion_only: int
+    post_only: int
+    structural_only: int
+    holders: int
+    active: int
+    inactive: int
+    unknown: int
+    uncertain: int
+    support_any: int
+    support_both: int
+    bilateral: int
+    opinion_bilateral: int
+    post_bilateral: int
+    cross_op: int
+    cross_po: int
+    mixed_bilateral: int
+    middle_o: int
+    middle_p: int
+    middle_u: int
+    side_o: tuple[int, int]
+    side_p: tuple[int, int]
+    side_u: tuple[int, int]
+    side_unknown_o: tuple[int, int]
+    side_unknown_p: tuple[int, int]
+    side_unknown_u: tuple[int, int]
+    unknown_by_category: dict[str, int] | None = None
+
+
+@dataclass(kw_only=True, slots=True)
+class BridgePairFrame(WireRecord):
+    group_ids: tuple[int, int]
+    epoch: int
+    core_means: tuple[float, float]
+    core_lower: tuple[float, float]
+    core_upper: tuple[float, float]
+    contact: bool
+    counts: BridgeCounts
+    attention: BridgeAttention
+    holders: tuple[BridgeHolderState, ...] | None = None
+
+
+@dataclass(kw_only=True, slots=True)
+class BridgeAttention(WireRecord):
+    opinion_total: float
+    post_total: float
+    union_total: float
+    opinion_both: float
+    post_both: float
+    union_both: float
+    opinion_known: bool
+    post_known: bool
+    union_known: bool
+
+
+@dataclass(kw_only=True, slots=True)
+class BridgeEvent(WireRecord):
+    scope: str
+    step: int
+    interval_start: int
+    interval_end: int
+    group_ids: tuple[int, int]
+    epoch: int
+    holder: int
+    type: str
+    from_role: int
+    to_role: int
+    from_known_bits: int
+    to_known_bits: int
+    left_censored: bool
+    uncertain: bool
+    reason: str | None = None
+
+
+@dataclass(kw_only=True, slots=True)
+class BridgeEpisode(WireRecord):
+    scope: str
+    group_ids: tuple[int, int]
+    epoch: int
+    holder: int
+    start: int | None
+    observed_start: int
+    end: int | None
+    observation_end: int
+    left_censored: bool
+    right_censored: bool
+    uncertain: bool
+    reason: str | None = None
+
+
+@dataclass(kw_only=True, slots=True)
+class BridgeEpoch(WireRecord):
+    scope: str
+    group_ids: tuple[int, int]
+    number: int
+    state: str
+    start: int
+    end: int
+    closed_at: int
+    reason: str | None = None
+    core_members: tuple[tuple[int, ...] | None, tuple[int, ...] | None] | None = None
+    reference_pairs: tuple[tuple[int, int, int], ...] | None = None
+
+
+@dataclass(kw_only=True, slots=True)
+class BridgeSummary(WireRecord):
+    scope: str
+    group_ids: tuple[int, int]
+    epoch: int
+    start: int
+    end: int
+    initial_present: int
+    formations: int
+    losses: int
+    regenerations: int
+    conversions: int
+    censored_episodes: int
+    active_holder_rounds: int
+    known_holder_rounds: int
+    never_seen_holder_rounds: int
+    seen_inactive_holder_rounds: int
+    reason: str
+
+
+@dataclass(kw_only=True, slots=True)
+class BridgeBranchEvent(BridgeEvent):
+    channel: str
+    side: int | None = None
+
+
+@dataclass(kw_only=True, slots=True)
+class BridgeBranchEpisode(BridgeEpisode):
+    channel: str
+    side: int | None = None
+
+
+@dataclass(kw_only=True, slots=True)
+class BridgeBranchSummary(BridgeSummary):
+    channel: str
+    population: int
+    unknown_holder_rounds: int
+    side: int | None = None
+
+
+@dataclass(kw_only=True, slots=True)
+class BridgeFrame(WireRecord):
+    definition_version: int
+    step: int
+    pairs: tuple[BridgePairFrame, ...] | None
+    union: BridgeUnionFrame | None = None
+    events: tuple[BridgeEvent, ...] | None = None
+    episodes: tuple[BridgeEpisode, ...] | None = None
+    epochs: tuple[BridgeEpoch, ...] | None = None
+    summaries: tuple[BridgeSummary, ...] | None = None
+    branch_ledger_version: int | None = None
+    branch_events: tuple[BridgeBranchEvent, ...] | None = None
+    branch_episodes: tuple[BridgeBranchEpisode, ...] | None = None
+    branch_summaries: tuple[BridgeBranchSummary, ...] | None = None
+
+
+@dataclass(kw_only=True, slots=True)
+class BridgeUnionHolderState(WireRecord):
+    signal_both: BridgeStatus
+    opinion_only: BridgeStatus
+    post_only: BridgeStatus
+    structural_only: BridgeStatus
+    holder: int
+    structural: BridgeStatus
+    opinion: BridgeStatus
+    post: BridgeStatus
+    active: BridgeStatus
+    bilateral: BridgeStatus
+    opinion_bilateral: BridgeStatus
+    post_bilateral: BridgeStatus
+    mixed_bilateral: BridgeStatus
+    middle_opinion: BridgeStatus
+    middle_post: BridgeStatus
+    middle_active: BridgeStatus
+    role_bits: int
+    known_bits: int
+    uncertain_bits: int
+
+
+@dataclass(kw_only=True, slots=True)
+class BridgeUnionCounts(WireRecord):
+    signal_both: int
+    opinion_only: int
+    post_only: int
+    structural_only: int
+    holders: int
+    structural_any: int
+    opinion_any: int
+    post_any: int
+    active: int
+    inactive: int
+    unknown: int
+    uncertain: int
+    bilateral: int
+    opinion_bilateral: int
+    post_bilateral: int
+    mixed_bilateral: int
+    middle_opinion_any: int
+    middle_post_any: int
+    middle_active: int
+    unknown_by_category: dict[str, int] | None = None
+
+
+@dataclass(kw_only=True, slots=True)
+class BridgeUnionFrame(WireRecord):
+    epoch: int
+    counts: BridgeUnionCounts
+    holders: tuple[BridgeUnionHolderState, ...] | None = None
+
+
+@dataclass(kw_only=True, slots=True)
+class ProbeAnalysis(WireRecord):
+    definition_version: int
+    group_options: GroupOptions
+    bridge_options: BridgeOptions | None = None
+    observations: int
+    first_step: int
+    last_step: int
+    sampled: bool
+    posts_unavailable_reason: str | None = None
+    reference_mode: str
+    group_events: tuple[GroupEvent, ...] | None = None
+    bridge_events: tuple[BridgeEvent, ...] | None = None
+    bridge_episodes: tuple[BridgeEpisode, ...] | None = None
+    epochs: tuple[BridgeEpoch, ...] | None = None
+    summaries: tuple[BridgeSummary, ...] | None = None
+    branch_ledger_version: int | None = None
+    events_included: bool | None = None
+    episodes_included: bool | None = None
+    branch_events: tuple[BridgeBranchEvent, ...] | None = None
+    branch_episodes: tuple[BridgeBranchEpisode, ...] | None = None
+    branch_summaries: tuple[BridgeBranchSummary, ...] | None = None
+
+
+@dataclass(kw_only=True, slots=True)
 class ProbeState(WireRecord):
     step: int
     precision: str
@@ -416,6 +790,8 @@ class ProbeState(WireRecord):
     counterfactual_neighbor_energy: dict[int, tuple[float, ...]] | None = None
     counterfactual_neighbor_valid: dict[int, bool] | None = None
     anchor_points: dict[int, tuple[ProbePoint, ...]] | None = None
+    groups: GroupFrame | None = None
+    bridges: BridgeFrame | None = None
 
 
 @dataclass(kw_only=True, slots=True)
@@ -425,6 +801,8 @@ class ProbeResponse(WireRecord):
     dynamics_type: str
     results: tuple[ProbeState, ...]
     source_max_step: int | None = None
+    analysis: ProbeAnalysis | None = None
+    source_compatibility: str | None = None
 
 
 @dataclass(kw_only=True, slots=True)
