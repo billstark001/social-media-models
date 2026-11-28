@@ -1,5 +1,9 @@
 # Opinion groups: detection and observed lineage
 
+For product/channel/scope selection, dense aggregate series and SQLite output,
+see [selective collection](collection.md). That contract supersedes assumptions
+that every analysis response must contain every lifecycle record.
+
 `groups` owns an opinion-only detector and one-stream identity tracker. It does
 not read records, inspect a follow graph or posts, advance a simulator, consume
 RNG, or classify terminal outcomes. `probe` supplies the stream and selects

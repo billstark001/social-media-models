@@ -1,5 +1,9 @@
 # Canonical measurements and offline inputs
 
+Group/bridge product selection and SQLite persistence follow the
+[selective collection contract](collection.md). Batch plotting uses the `plot`
+profile; full entity records are optional products.
+
 `observables.StateMeasurer` selects and combines the existing Go energy, pathway, binning, landscape and empirical terminal kernels. Their numerical definitions are unchanged. Each selected measurement validates its own inputs; unselected measurements impose no requirements. Its zero value is ready to use.
 
 - `smp` records simulation state and optional actual feed events.

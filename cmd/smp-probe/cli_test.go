@@ -143,10 +143,54 @@ func TestCLIRejectsUnusedOrConflictingSources(t *testing.T) {
 		{"--checkpoint", "a", "--run-directory", "b"},
 		{"--checkpoint", "a", "--steps", "0"},
 		{"--run-directory", "a", "--format", "jsonl"},
+		{"--checkpoint", "a", "--archive-native"},
+		{"--collection-profile", "plot"},
+		{"--checkpoint", "a", "--channels="},
 	} {
 		if err := runCLI(args, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}); err == nil {
 			t.Fatalf("ambiguous or unused flags accepted: %v", args)
 		}
+	}
+}
+
+func TestDirectCollectionCLIWritesSmallReceiptAndOptionalArchive(t *testing.T) {
+	metadata := simulation.DefaultScenarioMetadata()
+	metadata.UniqueName = "cli-collection"
+	metadata.DynamicsType = simulation.DynamicsTypeHK
+	metadata.HKParams.Tolerance = .45
+	metadata.NodeCount, metadata.NodeFollowCount = 8, 2
+	metadata.RNG = smprng.FixedSpec(1, 2)
+	scenario := simulation.NewScenarioWithOptions("", metadata, simulation.ScenarioOptions{Quiet: true})
+	if err := scenario.InitError(); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := filepath.Join(t.TempDir(), "state.msgpack.lz4")
+	if err := scenario.SaveCheckpointTo(checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(t.TempDir(), "collected")
+	var output, diagnostic bytes.Buffer
+	args := []string{"--checkpoint", checkpoint, "--measurements", "groups,bridges", "--collection-profile", "plot", "--channels", "O,S", "--scopes", "union", "--products", "summaries,series", "--output-directory", directory, "--archive-native"}
+	if err := runCLI(args, strings.NewReader(""), &output, &diagnostic); err != nil {
+		t.Fatal(err)
+	}
+	var response probe.Response
+	if err := json.Unmarshal(output.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Output == nil || !response.Output.Completed || response.Output.ArchiveNative == "" || len(response.Results) != 0 || response.Analysis == nil || response.Analysis.Observations != 1 || response.Analysis.Population != 8 {
+		t.Fatalf("missing compact response: %+v", response)
+	}
+	if len(response.Analysis.Collection.Channels) != 2 || response.Analysis.Collection.Channels[0] != "O" || response.Output.Rows["snapshots"] != 0 || output.Len() > 32*1024 {
+		t.Fatal("CLI lost selectors or returned full products")
+	}
+	for _, name := range []string{"results.sqlite", "metadata.json", "native.msgpack.zst"} {
+		if _, err := os.Stat(filepath.Join(directory, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(directory, "native.json")); !os.IsNotExist(err) {
+		t.Fatal("native JSON was persisted")
 	}
 }
 

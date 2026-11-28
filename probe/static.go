@@ -53,9 +53,15 @@ func staticOptions(request *Request, selected map[string]bool, grid []float64, p
 
 func measureStatic(request *Request, selected map[string]bool, grid []float64, params driftParams, results []StateResult) error {
 	evaluator := newStaticEvaluator(request, selected, grid, params)
+	defer evaluator.analysis.abort()
 	for i := range request.States {
 		if err := evaluator.measure(&request.States[i], &results[i]); err != nil {
 			return err
+		}
+		if evaluator.analysis != nil && evaluator.analysis.sink != nil && keepSnapshot(request, i, len(results)) {
+			if err := evaluator.analysis.sink.Snapshot(results[i]); err != nil {
+				return err
+			}
 		}
 	}
 	return evaluator.finish(request)
@@ -137,6 +143,9 @@ type borrowedRunReader interface {
 }
 
 func snapshotCapacity(request *Request, count int) int {
+	if !keepSnapshot(request, 0, count) {
+		return 0
+	}
 	if count == 0 || request.Scan == nil {
 		return count
 	}
@@ -153,6 +162,7 @@ func snapshotCapacity(request *Request, count int) int {
 // empty and the canonical measurer reuses one stream's workspace.
 func measureStaticRun(request *Request, selected map[string]bool, grid []float64, params driftParams, run staticRunReader, steps []int) ([]StateResult, error) {
 	evaluator := newStaticEvaluator(request, selected, grid, params)
+	defer evaluator.analysis.abort()
 	results := make([]StateResult, 0, snapshotCapacity(request, len(steps)))
 	index := 0
 	read := run.ReadStates
@@ -171,7 +181,13 @@ func measureStaticRun(request *Request, selected map[string]bool, grid []float64
 			return err
 		}
 		if keepSnapshot(request, index, len(steps)) {
-			results = append(results, result)
+			if evaluator.analysis != nil && evaluator.analysis.sink != nil {
+				if err := evaluator.analysis.sink.Snapshot(result); err != nil {
+					return err
+				}
+			} else {
+				results = append(results, result)
+			}
 		}
 		index++
 		return nil
@@ -202,5 +218,5 @@ func evaluateStaticRun(request *Request, selected map[string]bool, grid []float6
 	if err != nil {
 		return nil, err
 	}
-	return &Response{Version: ProtocolVersion, DynamicsType: request.DynamicsType, Results: results, SourceMaxStep: request.sourceMaxStep, Analysis: request.analysis, SourceCompatibility: request.SourceCompatibility}, nil
+	return &Response{Version: ProtocolVersion, DynamicsType: request.DynamicsType, Results: results, SourceMaxStep: request.sourceMaxStep, Analysis: request.analysis, SourceCompatibility: request.SourceCompatibility, Output: request.outputReceipt}, nil
 }

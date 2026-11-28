@@ -66,9 +66,13 @@ type Request struct {
 	Bridges             *bridges.Options        `msgpack:"bridges,omitempty" json:"bridges,omitempty"`
 	BridgeCores         [][]int                 `msgpack:"bridge_cores,omitempty" json:"bridge_cores,omitempty"`
 	Scan                *ScanOptions            `msgpack:"scan,omitempty" json:"scan,omitempty"`
+	Collection          *bridges.Collection     `msgpack:"collection,omitempty" json:"collection,omitempty"`
+	Output              *OutputOptions          `msgpack:"output,omitempty" json:"output,omitempty"`
 	SourceCompatibility string                  `msgpack:"source_compatibility,omitempty" json:"source_compatibility,omitempty"`
 	sourceMaxStep       *int
 	analysis            *AnalysisResult
+	resolvedCollection  *bridges.Collection
+	outputReceipt       *OutputReceipt
 }
 
 // Summary reports the distribution across anchor-agent/replicate samples.
@@ -120,6 +124,7 @@ type Response struct {
 	SourceMaxStep       *int            `msgpack:"source_max_step,omitempty" json:"source_max_step,omitempty"`
 	Analysis            *AnalysisResult `msgpack:"analysis,omitempty" json:"analysis,omitempty"`
 	SourceCompatibility string          `msgpack:"source_compatibility,omitempty" json:"source_compatibility,omitempty"`
+	Output              *OutputReceipt  `msgpack:"output,omitempty" json:"output,omitempty"`
 }
 
 // Evaluate measures opinion drift and selected observables on frozen states.
@@ -137,6 +142,14 @@ func Evaluate(request *Request) (*Response, error) {
 	selected, grid, err := prepareMeasurements(&prepared)
 	if err != nil {
 		return nil, err
+	}
+	if prepared.Collection != nil {
+		if _, err := bridges.ResolveCollection(prepared.Collection); err != nil {
+			return nil, err
+		}
+	}
+	if (prepared.Collection != nil || prepared.Output != nil) && !selected["groups"] && !selected["bridges"] {
+		return nil, fmt.Errorf("collection/output require groups or bridges measurements")
 	}
 	// Static run measurements consume each reconstructed state before reading
 	// the next one. Force jobs retain their shared RNG and state lifecycle.
@@ -159,5 +172,8 @@ func Evaluate(request *Request) (*Response, error) {
 		results[i].Precision = prepared.States[i].Precision
 	}
 	results = thinResults(&prepared, results)
-	return &Response{Version: ProtocolVersion, RNG: resolved, DynamicsType: prepared.DynamicsType, Results: results, SourceMaxStep: prepared.sourceMaxStep, Analysis: prepared.analysis, SourceCompatibility: prepared.SourceCompatibility}, nil
+	if prepared.outputReceipt != nil {
+		results = nil
+	}
+	return &Response{Version: ProtocolVersion, RNG: resolved, DynamicsType: prepared.DynamicsType, Results: results, SourceMaxStep: prepared.sourceMaxStep, Analysis: prepared.analysis, SourceCompatibility: prepared.SourceCompatibility, Output: prepared.outputReceipt}, nil
 }

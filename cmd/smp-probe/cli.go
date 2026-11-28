@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"smp/bridges"
 	"smp/probe"
 
 	"github.com/vmihailenco/msgpack/v5"
@@ -208,6 +209,12 @@ func runCLI(args []string, input io.Reader, output, diagnostic io.Writer) error 
 	scanStart := flags.Int("scan-start", 0, "First completed step with --scan")
 	scanEnd := flags.String("scan-end", "", "Last completed step with --scan; default: source maximum")
 	outputStride := flags.Int("output-stride", 10, "Snapshot output stride with --scan; observation remains dense")
+	collectionProfile := flags.String("collection-profile", "", "Group/bridge collection profile: plot, lifecycle, or audit")
+	channels := flags.String("channels", "", "Comma-separated independent bridge ledgers: U,O,P,S")
+	scopes := flags.String("scopes", "", "Comma-separated bridge scopes: pair,union")
+	products := flags.String("products", "", "Comma-separated collection products; override profile defaults")
+	outputDirectory := flags.String("output-directory", "", "Write selected data to SQLite and return a small receipt")
+	archiveNative := flags.Bool("archive-native", false, "Additionally archive collected response as native.msgpack.zst")
 	sourceCompatibility := flags.String("source-compatibility", "", "Explicit historical reader exception: legacy_header_actor")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -254,6 +261,23 @@ func runCLI(args []string, input io.Reader, output, diagnostic io.Writer) error 
 		Measurements: commaValues(*measurements), Replicates: *replicates,
 		Grid:                probe.Grid{Min: -1, Max: 1, Step: *gridStep},
 		SourceCompatibility: *sourceCompatibility,
+	}
+	var explicitEmpty string
+	flags.Visit(func(f *flag.Flag) {
+		if (f.Name == "channels" || f.Name == "scopes" || f.Name == "products") && f.Value.String() == "" {
+			explicitEmpty = f.Name
+		}
+	})
+	if explicitEmpty != "" {
+		return fmt.Errorf("--%s cannot be empty", explicitEmpty)
+	}
+	if *collectionProfile != "" || *channels != "" || *scopes != "" || *products != "" {
+		request.Collection = &bridges.Collection{Profile: *collectionProfile, Channels: commaValues(*channels), Scopes: commaValues(*scopes), Products: commaValues(*products)}
+	}
+	if *outputDirectory != "" {
+		request.Output = &probe.OutputOptions{Directory: *outputDirectory, ArchiveNative: *archiveNative}
+	} else if *archiveNative {
+		return errors.New("--archive-native requires --output-directory")
 	}
 	if *scan {
 		request.Scan = &probe.ScanOptions{Start: *scanStart, OutputStride: *outputStride}

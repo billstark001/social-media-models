@@ -23,8 +23,9 @@ group confirmation. Empty `FixedPairs` means all eligible pairs.
 
 All returned frames, holder slices, opening reference lists and episode endpoint
 pointers are owned by the result. A later call cannot mutate them, and a caller
-may mutate a returned result without changing the observer. Compact mode omits
-holder detail but keeps counts and lifecycle events. A closed observer releases
+may mutate a returned result without changing the observer. The default omits
+holder detail. Product selection and aggregate series are specified in
+[selective collection](../docs/collection.md). A closed observer releases
 its graph, post, reference and holder workspaces. While open, small epoch-number
 counters remain for previously seen pair IDs so returning IDs cannot reuse an
 earlier epoch number; it does not retain completed episode histories internally.
