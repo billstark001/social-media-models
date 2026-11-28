@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"smp/model"
 	"smp/simulation"
@@ -26,16 +27,24 @@ import (
 type Requirements struct {
 	Graph bool
 	Posts bool
+	// PostsOptional permits an unavailable collection channel to remain nil.
+	// Invalid metadata or corrupt advertised/observed records still fail.
+	PostsOptional bool
+	// LegacyHeaderActor permits the documented historical migration defect in
+	// which a rewiring body has actor zero while its event header is correct.
+	// Other header/body disagreements remain errors. The default is strict.
+	LegacyHeaderActor bool
 }
 
 // State is a post-commit snapshot. Its slices and maps belong to the caller.
 // Precision describes opinions in the history, not full checkpoint arithmetic.
 type State struct {
-	Step      int
-	Graph     utils.NetworkXGraph
-	Opinions  []float64
-	Posts     map[int64][]model.PostRecord[float64]
-	Precision string
+	Step                   int
+	Graph                  utils.NetworkXGraph
+	Opinions               []float64
+	Posts                  map[int64][]model.PostRecord[float64]
+	Precision              string
+	PostsUnavailableReason string
 }
 
 // Reader keeps at most one decoded trajectory block. It is not safe for
@@ -56,6 +65,7 @@ type Reader struct {
 	block     [][]float64
 	blockAt   int
 	precision string
+	observing atomic.Bool
 }
 
 var graphName = regexp.MustCompile(`^graph-(\d+)\.msgpack(?:\.lz4)?$`)
@@ -224,34 +234,73 @@ func (r *Reader) behaviorRate(name string) (float64, bool, error) {
 // ReadStates observes increasing completed steps. It performs only the history
 // reconstruction required by requirements and yields independently owned states.
 func (r *Reader) ReadStates(steps []int, requirements Requirements, yield func(State) error) error {
+	return r.readStates(steps, requirements, yield, false)
+}
+
+// ReadStatesBorrowed yields callback-scoped views without copying the graph,
+// opinions or post history. Callbacks must not mutate or retain any input.
+// ReadStates remains the independently owned snapshot API.
+func (r *Reader) ReadStatesBorrowed(steps []int, requirements Requirements, yield func(State) error) error {
+	return r.readStates(steps, requirements, yield, true)
+}
+
+func (r *Reader) readStates(steps []int, requirements Requirements, yield func(State) error, borrowed bool) error {
+	if r == nil {
+		return errors.New("run reader is closed")
+	}
+	if !r.observing.CompareAndSwap(false, true) {
+		return errors.New("run reader already has an active observation; nested or concurrent reads are not supported")
+	}
+	defer r.observing.Store(false)
 	if err := r.checkSteps(steps); err != nil {
 		return err
 	}
 	if yield == nil {
 		return errors.New("state callback is nil")
 	}
-	graphs := graphReader{reader: r, current: -1, steps: steps}
+	graphs := graphReader{reader: r, current: -1, steps: steps, legacyHeaderActor: requirements.LegacyHeaderActor, borrowed: borrowed}
 	defer graphs.close()
 	first, last := steps[0], steps[len(steps)-1]
 	var posts map[int64][]model.PostRecord[float64]
 	var logged *postCursor
 	retain, start := 1, first
+	postsUnavailable := ""
 	if requirements.Posts {
 		requirements.Graph = true
 		if last > 0 {
 			var persistedRetain *int
-			if err := json.Unmarshal(r.MetadataFields["PostRetainCount"], &persistedRetain); err != nil || persistedRetain == nil || *persistedRetain < 0 {
-				return errors.New("cannot reconstruct posts: PostRetainCount is missing or invalid")
+			rawRetain, hasRetain := r.MetadataFields["PostRetainCount"]
+			if !hasRetain {
+				if !requirements.PostsOptional {
+					return errors.New("cannot reconstruct posts: PostRetainCount is missing or invalid")
+				}
+				postsUnavailable = "PostRetainCount was not recorded"
+			} else if err := json.Unmarshal(rawRetain, &persistedRetain); err != nil || persistedRetain == nil || *persistedRetain < 0 {
+				return errors.New("cannot reconstruct posts: PostRetainCount is invalid")
+			} else {
+				retain = max(*persistedRetain, 1)
 			}
-			retain = max(*persistedRetain, 1)
 			rate, known, err := r.behaviorRate("RepostRate")
 			if err != nil {
 				return err
 			}
+			if raw, present := r.MetadataFields["PostEvent"]; present {
+				var enabled *bool
+				if err := json.Unmarshal(raw, &enabled); err != nil || enabled == nil {
+					return errors.New("cannot reconstruct posts: PostEvent is invalid")
+				}
+			}
 			if !known || rate > 0 {
 				if !r.flag("PostEvent") {
-					return errors.New("cannot reconstruct posts: RepostRate is nonzero or unknown and PostEvent was not explicitly enabled")
+					if !requirements.PostsOptional {
+						return errors.New("cannot reconstruct posts: RepostRate is nonzero or unknown and PostEvent was not explicitly enabled")
+					}
+					postsUnavailable = "RepostRate is nonzero or unknown and PostEvent was not explicitly enabled"
 				}
+			}
+			if postsUnavailable != "" {
+				requirements.Posts = false
+			} else if !known || rate > 0 {
 				start = max(0, first-retain+1)
 				logged, err = r.openPosts(postWindows(steps, retain))
 				if err != nil {
@@ -262,7 +311,9 @@ func (r *Reader) ReadStates(steps []int, requirements Requirements, yield func(S
 				start = max(0, first-retain+1)
 			}
 		}
-		posts = make(map[int64][]model.PostRecord[float64], r.agents)
+		if requirements.Posts {
+			posts = make(map[int64][]model.PostRecord[float64], r.agents)
+		}
 	}
 	selected := 0
 	for step := start; step <= last; {
@@ -297,7 +348,10 @@ func (r *Reader) ReadStates(steps []int, requirements Requirements, yield func(S
 			}
 		}
 		if step == steps[selected] {
-			state := State{Step: step, Opinions: append([]float64(nil), opinions...), Precision: precision}
+			state := State{Step: step, Opinions: opinions, Precision: precision, PostsUnavailableReason: postsUnavailable}
+			if !borrowed {
+				state.Opinions = append([]float64(nil), opinions...)
+			}
 			if requirements.Graph {
 				state.Graph, err = graphs.at(step)
 				if err != nil {
@@ -305,9 +359,12 @@ func (r *Reader) ReadStates(steps []int, requirements Requirements, yield func(S
 				}
 			}
 			if requirements.Posts {
-				state.Posts = make(map[int64][]model.PostRecord[float64], len(posts))
-				for id, history := range posts {
-					state.Posts[id] = append([]model.PostRecord[float64](nil), history...)
+				state.Posts = posts
+				if !borrowed {
+					state.Posts = make(map[int64][]model.PostRecord[float64], len(posts))
+					for id, history := range posts {
+						state.Posts[id] = append([]model.PostRecord[float64](nil), history...)
+					}
 				}
 			}
 			if err := yield(state); err != nil {

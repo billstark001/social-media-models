@@ -14,11 +14,13 @@ import (
 )
 
 type graphReader struct {
-	reader  *Reader
-	graph   *utils.NetworkXGraph
-	current int
-	steps   []int
-	events  *rewiringCursor
+	reader            *Reader
+	graph             *utils.NetworkXGraph
+	current           int
+	steps             []int
+	events            *rewiringCursor
+	legacyHeaderActor bool
+	borrowed          bool
 }
 
 func (g *graphReader) close() {
@@ -52,7 +54,7 @@ func (g *graphReader) at(step int) (utils.NetworkXGraph, error) {
 			if g.events == nil {
 				// One filtered query spans every needed anchor interval. Reopening
 				// a query at each dump would repeatedly scan old unindexed tables.
-				g.events, err = r.openRewiring(g.replayWindows())
+				g.events, err = r.openRewiring(g.replayWindows(), g.legacyHeaderActor)
 				if err != nil {
 					return utils.NetworkXGraph{}, err
 				}
@@ -62,6 +64,9 @@ func (g *graphReader) at(step int) (utils.NetworkXGraph, error) {
 			}
 		}
 		g.current = step
+	}
+	if g.borrowed {
+		return *g.graph, nil
 	}
 	return cloneGraph(g.graph), nil
 }

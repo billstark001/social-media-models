@@ -54,9 +54,12 @@ type rewiringCursor struct {
 	id, actor, bodyActor, unfollow, follow int64
 	step                                   int
 	ready                                  bool
+	legacyHeaderActor                      bool
+	seenStep                               int
+	seenActors                             map[int64]struct{}
 }
 
-func (r *Reader) openRewiring(windows [][2]int) (*rewiringCursor, error) {
+func (r *Reader) openRewiring(windows [][2]int, legacyHeaderActor bool) (*rewiringCursor, error) {
 	db, err := r.eventDB()
 	if err != nil {
 		return nil, err
@@ -67,7 +70,7 @@ func (r *Reader) openRewiring(windows [][2]int) (*rewiringCursor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read canonical rewiring events (migrate legacy schemas with smp-migrate): %w", err)
 	}
-	cursor := &rewiringCursor{rows: rows}
+	cursor := &rewiringCursor{rows: rows, legacyHeaderActor: legacyHeaderActor}
 	if err := cursor.next(); err != nil {
 		cursor.close()
 		return nil, err
@@ -97,12 +100,23 @@ func (c *rewiringCursor) apply(graph *utils.NetworkXGraph, start, end, agents in
 	valid := func(id int64) bool { return id >= 0 && id < int64(agents) }
 	for c.ready && c.step <= end {
 		if c.step > start {
-			if c.actor != c.bodyActor {
+			if c.actor != c.bodyActor && !(c.legacyHeaderActor && c.bodyActor == 0) {
 				return fmt.Errorf("rewiring event %d actor differs from its header; run smp-migrate events", c.id)
 			}
 			if !valid(c.actor) || !valid(c.unfollow) || !valid(c.follow) || c.actor == c.follow || c.actor == c.unfollow {
 				return fmt.Errorf("invalid agents in rewiring event %d", c.id)
 			}
+			if c.seenActors == nil {
+				c.seenActors = make(map[int64]struct{})
+			}
+			if c.seenStep != c.step {
+				clear(c.seenActors)
+				c.seenStep = c.step
+			}
+			if _, seen := c.seenActors[c.actor]; seen {
+				return fmt.Errorf("duplicate Rewiring proposal for agent %d at step %d", c.actor, c.step)
+			}
+			c.seenActors[c.actor] = struct{}{}
 			targets := graph.Adjacency[c.actor]
 			if _, exists := targets[c.unfollow]; !exists {
 				return fmt.Errorf("rewiring event %d removes missing edge %d to %d", c.id, c.actor, c.unfollow)
