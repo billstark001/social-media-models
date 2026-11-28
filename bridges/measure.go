@@ -28,6 +28,7 @@ type postValue struct {
 // Per-edge work uses membership indexes, not graph conversion or edge sorting.
 type Observer struct {
 	options         Options
+	collection      *collectionPlan
 	pairs           map[[2]int64]*pairTrack
 	next            map[[2]int64]int
 	stopped         map[[2]int64][2]int
@@ -51,11 +52,30 @@ type Observer struct {
 }
 
 func NewObserver(options Options) (*Observer, error) {
+	return NewObserverWithCollection(options, nil)
+}
+
+// NewObserverWithCollection resolves output selection before allocating ledger
+// histories. Pair signal/reference work remains necessary for union deduplication.
+func NewObserverWithCollection(options Options, collection *Collection) (*Observer, error) {
 	if err := options.Validate(); err != nil {
 		return nil, err
 	}
+	if collection == nil && options.DetailOutput {
+		resolved, err := ResolveCollection(nil)
+		if err != nil {
+			return nil, err
+		}
+		resolved.Products = append(resolved.Products, "details")
+		collection = &resolved
+	}
+	plan, err := compileCollection(collection)
+	if err != nil {
+		return nil, err
+	}
+	options.DetailOutput = plan.products["details"]
 	options.FixedPairs = append([][2]int64(nil), options.FixedPairs...)
-	return &Observer{options: options, pairs: make(map[[2]int64]*pairTrack), next: make(map[[2]int64]int), stopped: make(map[[2]int64][2]int), referencesDirty: true}, nil
+	return &Observer{options: options, collection: plan, pairs: make(map[[2]int64]*pairTrack), next: make(map[[2]int64]int), stopped: make(map[[2]int64][2]int), referencesDirty: true}, nil
 }
 
 // Measure is an independent one-frame measurement using current core members;
@@ -239,6 +259,7 @@ func (o *Observer) Measure(step int, x []float64, graph utils.NetworkXGraph, pos
 		}
 		o.next[pair]++
 		track := newPairTrack(pair, o.next[pair], step, len(x), observed)
+		track.configureCollection(o.collection)
 		track.initBranches(len(x), o.options.BranchSides)
 		o.pairs[pair] = track
 		o.referencesDirty = true
@@ -247,9 +268,11 @@ func (o *Observer) Measure(step int, x []float64, graph utils.NetworkXGraph, pos
 	if len(o.pairs) == 0 {
 		// Input remains fully validated, but no reference domain needs an edge
 		// compatibility pass, holder states, or a fresh membership layout.
-		o.measureUnion(step, gap, &result)
+		if o.collection.scopes["union"] {
+			o.measureUnion(step, gap, &result)
+		}
 		o.started, o.lastStep, o.n = true, step, len(x)
-		return result, nil
+		return o.collectedFrame(result), nil
 	}
 	if o.referencesDirty {
 		o.rebuildReferences(len(x))
@@ -264,7 +287,9 @@ func (o *Observer) Measure(step int, x []float64, graph utils.NetworkXGraph, pos
 			ref.upper = math.Max(ref.upper, x[i])
 		}
 	}
-	o.prepareUnion(len(x))
+	if o.collection.scopes["union"] {
+		o.prepareUnion(len(x))
+	}
 	needed := len(refs) * len(x)
 	if cap(o.agg) < needed {
 		o.agg = make([]support, needed)
@@ -332,30 +357,46 @@ func (o *Observer) Measure(step int, x []float64, graph utils.NetworkXGraph, pos
 			o.referencesDirty = true
 			continue
 		}
-		if o.options.DetailOutput {
+		if o.options.DetailOutput && o.collection.scopes["pair"] {
 			pf.Holders = make([]HolderState, 0, len(x))
 		}
 		pf.Attention = Attention{OpinionKnown: true, PostKnown: true, UnionKnown: true}
 		track.integrate(step)
 		for holder := range x {
 			state := o.holder(holder, x[holder], z[holder], track, refs)
-			o.unionStates[holder].add(state)
-			pf.Counts.add(state)
-			pf.Attention.add(state, len(x))
+			if o.collection.scopes["union"] {
+				o.unionStates[holder].add(state)
+			}
+			if o.collection.products["snapshots"] && o.collection.scopes["pair"] {
+				pf.Counts.add(state)
+				pf.Attention.add(state, len(x))
+			}
 			track.update(step, state, &result)
 			track.updatePairBranches(step, &state, &result)
-			if o.options.DetailOutput {
+			if o.options.DetailOutput && o.collection.scopes["pair"] {
 				pf.Holders = append(pf.Holders, state)
 			}
 		}
-		track.commitStep(step)
+		track.commitStep(step, &result)
 		result.Pairs = append(result.Pairs, pf)
 	}
-	o.measureUnion(step, gap, &result)
+	if o.collection.scopes["union"] {
+		o.measureUnion(step, gap, &result)
+	}
 	o.started = true
 	o.lastStep = step
 	o.n = len(x)
-	return result, nil
+	return o.collectedFrame(result), nil
+}
+
+func (o *Observer) collectedFrame(result Frame) Frame {
+	if !o.collection.products["snapshots"] || !o.collection.scopes["pair"] {
+		result.Pairs = nil
+	}
+	if !o.collection.products["snapshots"] || !o.collection.scopes["union"] {
+		result.Union = nil
+	}
+	return result
 }
 
 // Frozen member incidence is rebuilt only when pair epochs change. Geometry

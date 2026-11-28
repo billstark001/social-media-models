@@ -13,11 +13,14 @@ type branchIdentity struct {
 
 func (t *pairTrack) initBranches(n int, sides bool) {
 	for _, channel := range []string{ChannelOpinion, ChannelPost, ChannelStructural} {
+		if t.collection != nil && (!t.collection.histories() || !t.collection.scopes[t.scope] || !t.collection.channels[channelCode(channel)]) {
+			continue
+		}
 		add := func(side int) {
 			t.branches = append(t.branches, &pairTrack{scope: t.scope, ids: t.ids, epoch: t.epoch,
 				start: t.start, lastStep: t.lastStep, holders: make([]holderMemory, n),
 				summary: Summary{Scope: t.scope, GroupIDs: t.ids, Epoch: t.epoch, Start: t.start, End: t.start},
-				branch:  &branchIdentity{channel: channel, side: side}})
+				branch:  &branchIdentity{channel: channel, side: side}, collection: t.collection})
 		}
 		add(-1)
 		if sides && t.scope == "pair" {
@@ -27,9 +30,11 @@ func (t *pairTrack) initBranches(n int, sides bool) {
 	}
 }
 
-func (t *pairTrack) commitStep(step int) {
+func (t *pairTrack) commitStep(step int, result *Frame) {
+	t.flushSeries(result, false)
 	t.lastStep = step
 	for _, branch := range t.branches {
+		branch.flushSeries(result, false)
 		branch.lastStep = step
 	}
 }
@@ -43,6 +48,9 @@ func (b *branchIdentity) sidePointer() *int {
 }
 
 func (t *pairTrack) emitEvent(event Event, result *Frame) {
+	if !t.wantsEvent(event.Type) {
+		return
+	}
 	if t.branch == nil {
 		result.Events = append(result.Events, event)
 		return
@@ -51,6 +59,9 @@ func (t *pairTrack) emitEvent(event Event, result *Frame) {
 }
 
 func (t *pairTrack) emitEpisode(episode Episode, result *Frame) {
+	if !t.wants("episodes") {
+		return
+	}
 	if t.branch == nil {
 		result.Episodes = append(result.Episodes, episode)
 		return
@@ -59,6 +70,9 @@ func (t *pairTrack) emitEpisode(episode Episode, result *Frame) {
 }
 
 func (t *pairTrack) emitSummary(result *Frame) {
+	if t.disabled || !t.wants("summaries") {
+		return
+	}
 	if t.branch == nil {
 		result.Summaries = append(result.Summaries, t.summary)
 		return

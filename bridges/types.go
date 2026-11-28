@@ -249,6 +249,7 @@ type Frame struct {
 	BranchEvents        []BranchEvent   `json:"branch_events,omitempty" msgpack:"branch_events,omitempty"`
 	BranchEpisodes      []BranchEpisode `json:"branch_episodes,omitempty" msgpack:"branch_episodes,omitempty"`
 	BranchSummaries     []BranchSummary `json:"branch_summaries,omitempty" msgpack:"branch_summaries,omitempty"`
+	Series              []StepStats     `json:"series,omitempty" msgpack:"series,omitempty"`
 }
 
 func ordered(p [2]int64) [2]int64 {

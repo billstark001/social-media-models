@@ -154,6 +154,7 @@ func (o *Observer) measureUnion(step int, gap bool, result *Frame) {
 	if o.union == nil {
 		o.unionNext++
 		o.union = &pairTrack{scope: "union", epoch: o.unionNext, start: step, lastStep: step, holders: make([]holderMemory, len(o.unionStates)), summary: Summary{Scope: "union", Epoch: o.unionNext, Start: step, End: step}}
+		o.union.configureCollection(o.collection)
 		o.union.initBranches(len(o.unionStates), false)
 		refs := make([][3]int64, len(result.Pairs))
 		for i, p := range result.Pairs {
@@ -167,11 +168,13 @@ func (o *Observer) measureUnion(step int, gap bool, result *Frame) {
 	for j := range o.unionStates {
 		h := &o.unionStates[j]
 		h.roles()
-		uf.Counts.add(*h)
+		if o.collection.products["snapshots"] {
+			uf.Counts.add(*h)
+		}
 		o.union.update(step, HolderState{Holder: j, Active: h.Active, RoleBits: h.RoleBits, KnownBits: h.KnownBits, UncertainBits: h.UncertainBits}, result)
 		o.union.updateUnionBranches(step, h, result)
 	}
-	o.union.commitStep(step)
+	o.union.commitStep(step, result)
 	if o.options.DetailOutput {
 		uf.Holders = append([]UnionHolderState(nil), o.unionStates...)
 	}

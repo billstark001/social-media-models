@@ -10,6 +10,7 @@ type holderMemory struct {
 	role, knownBits                uint16
 	uncertainBits                  uint16
 	open                           *Episode
+	episodeOpen, initialized       bool
 }
 type pairTrack struct {
 	scope                  string
@@ -23,6 +24,67 @@ type pairTrack struct {
 	summary                Summary
 	branch                 *branchIdentity
 	branches               []*pairTrack
+	collection             *collectionPlan
+	disabled               bool
+	series                 StepStats
+	seriesPending          bool
+}
+
+func (t *pairTrack) configureCollection(plan *collectionPlan) {
+	t.collection = plan
+	t.disabled = plan != nil && (!plan.histories() || !plan.scopes[t.scope] || !plan.channels["U"])
+	if t.disabled {
+		t.holders = nil
+	}
+}
+func (t *pairTrack) wants(product string) bool {
+	return t.collection == nil || t.collection.products[product]
+}
+func (t *pairTrack) wantsEvent(kind string) bool {
+	if t.disabled {
+		return false
+	}
+	if kind == "conversion" {
+		return t.wants("conversions")
+	}
+	return t.wants("events")
+}
+func (t *pairTrack) beginSeries(step int) {
+	if t.disabled || !t.wants("series") || t.seriesPending {
+		return
+	}
+	t.series = StepStats{Scope: t.scope, GroupIDs: t.ids, Epoch: t.epoch, Channel: "U", Step: step, IntervalStart: t.lastStep, IntervalEnd: step, Population: len(t.holders)}
+	if t.branch != nil {
+		t.series.Channel = channelCode(t.branch.channel)
+		t.series.Side = t.branch.sidePointer()
+	}
+	t.seriesPending = true
+}
+func (t *pairTrack) stock(h *holderMemory) {
+	if !t.seriesPending {
+		return
+	}
+	s := &t.series
+	if !h.known {
+		s.Unknown++
+	} else {
+		s.Known++
+		if h.active {
+			s.Active++
+		} else if h.seen {
+			s.SeenInactive++
+		} else {
+			s.NeverSeen++
+		}
+	}
+}
+func (t *pairTrack) flushSeries(result *Frame, closing bool) {
+	if !t.seriesPending {
+		return
+	}
+	t.series.Closing = closing
+	result.Series = append(result.Series, t.series)
+	t.seriesPending = false
 }
 
 func newPairTrack(ids [2]int64, epoch, step, n int, observed map[int64]groups.Group) *pairTrack {
@@ -42,19 +104,33 @@ func newPairTrack(ids [2]int64, epoch, step, n int, observed map[int64]groups.Gr
 }
 
 func (t *pairTrack) integrate(step int) {
+	t.beginSeries(step)
 	dt := step - t.lastStep
-	if dt <= 0 {
-		return
-	}
-	for _, h := range t.holders {
-		if h.known {
-			t.summary.KnownHolderRounds += int64(dt)
-			if h.active {
-				t.summary.ActiveHolderRounds += int64(dt)
-			} else if h.seen {
-				t.summary.SeenInactiveHolderRounds += int64(dt)
-			} else {
-				t.summary.NeverSeenHolderRounds += int64(dt)
+	if dt > 0 {
+		for _, h := range t.holders {
+			if h.known {
+				t.summary.KnownHolderRounds += int64(dt)
+				if t.seriesPending {
+					t.series.KnownHolderRounds += int64(dt)
+				}
+				if h.active {
+					t.summary.ActiveHolderRounds += int64(dt)
+					if t.seriesPending {
+						t.series.ActiveHolderRounds += int64(dt)
+					}
+				} else if h.seen {
+					t.summary.SeenInactiveHolderRounds += int64(dt)
+					if t.seriesPending {
+						t.series.SeenInactiveHolderRounds += int64(dt)
+					}
+				} else {
+					t.summary.NeverSeenHolderRounds += int64(dt)
+					if t.seriesPending {
+						t.series.NeverSeenHolderRounds += int64(dt)
+					}
+				}
+			} else if t.seriesPending {
+				t.series.UnknownHolderRounds += int64(dt)
 			}
 		}
 	}
@@ -78,22 +154,28 @@ func copyEpisode(e Episode) Episode {
 }
 func (t *pairTrack) closeHolder(holder, end int, censored bool, reason string, result *Frame) {
 	h := &t.holders[holder]
-	if h.open == nil {
+	if !h.episodeOpen {
 		return
 	}
-	episode := copyEpisode(*h.open)
-	episode.ObservationEnd = end
-	episode.RightCensored = censored
-	episode.Reason = reason
 	if censored {
 		t.summary.CensoredEpisodes++
+		if t.seriesPending {
+			t.series.CensoredEpisodes++
+		}
 	}
-	if !censored {
-		v := end
-		episode.End = &v
+	if h.open != nil {
+		episode := copyEpisode(*h.open)
+		episode.ObservationEnd = end
+		episode.RightCensored = censored
+		episode.Reason = reason
+		if !censored {
+			v := end
+			episode.End = &v
+		}
+		t.emitEpisode(episode, result)
 	}
-	t.emitEpisode(episode, result)
 	h.open = nil
+	h.episodeOpen = false
 }
 
 func (t *pairTrack) update(step int, state HolderState, result *Frame) {
@@ -109,9 +191,16 @@ type ledgerState struct {
 }
 
 func (t *pairTrack) updateState(step int, state ledgerState, result *Frame) {
+	if t.disabled {
+		return
+	}
+	t.beginSeries(step)
 	h := &t.holders[state.Holder]
 	if !state.Active.Known {
-		if h.open != nil {
+		if t.seriesPending && h.known {
+			t.series.UnknownEntries++
+		}
+		if h.episodeOpen {
 			t.closeHolder(state.Holder, step, true, "signal_unknown", result)
 		}
 		h.known = false
@@ -120,7 +209,12 @@ func (t *pairTrack) updateState(step int, state ledgerState, result *Frame) {
 		h.role = state.RoleBits
 		h.knownBits = state.KnownBits
 		h.uncertainBits = state.UncertainBits
+		h.initialized = true
+		t.stock(h)
 		return
+	}
+	if t.seriesPending && h.initialized && !h.known {
+		t.series.UnknownExits++
 	}
 	previousKnown, previousActive := h.known, h.active
 	event := ""
@@ -135,12 +229,15 @@ func (t *pairTrack) updateState(step int, state ledgerState, result *Frame) {
 			event = "formation"
 			t.summary.Formations++
 		}
-		episode := Episode{Scope: t.scope, GroupIDs: t.ids, Epoch: t.epoch, Holder: state.Holder, ObservedStart: step, ObservationEnd: step, LeftCensored: !previousKnown, Uncertain: state.Active.Uncertain || previousKnown && h.uncertain}
-		if previousKnown {
-			v := step
-			episode.Start = &v
+		if t.wants("episodes") {
+			episode := Episode{Scope: t.scope, GroupIDs: t.ids, Epoch: t.epoch, Holder: state.Holder, ObservedStart: step, ObservationEnd: step, LeftCensored: !previousKnown, Uncertain: state.Active.Uncertain || previousKnown && h.uncertain}
+			if previousKnown {
+				v := step
+				episode.Start = &v
+			}
+			h.open = &episode
 		}
-		h.open = &episode
+		h.episodeOpen = true
 		h.seen = true
 	} else if previousKnown && previousActive && !state.Active.Active {
 		event = "loss"
@@ -153,7 +250,31 @@ func (t *pairTrack) updateState(step int, state ledgerState, result *Frame) {
 		event = "conversion"
 		t.summary.Conversions++
 	}
-	if event != "" {
+	uncertain := h.uncertain || state.Active.Uncertain || h.uncertainBits != 0 || state.UncertainBits != 0
+	if t.seriesPending {
+		switch event {
+		case "initial_present":
+			t.series.InitialPresent++
+		case "formation":
+			t.series.Formations++
+			if uncertain {
+				t.series.UncertainFormations++
+			}
+		case "loss":
+			t.series.Losses++
+			if uncertain {
+				t.series.UncertainLosses++
+			}
+		case "regeneration":
+			t.series.Regenerations++
+			if uncertain {
+				t.series.UncertainRegenerations++
+			}
+		case "conversion":
+			t.series.Conversions++
+		}
+	}
+	if event != "" && t.wantsEvent(event) {
 		reason := ""
 		if event == "initial_present" {
 			reason = "epoch_start_or_after_unknown"
@@ -165,7 +286,7 @@ func (t *pairTrack) updateState(step int, state ledgerState, result *Frame) {
 			}
 		}
 		t.emitEvent(Event{Scope: t.scope, Step: step, IntervalStart: t.lastStep, IntervalEnd: step, GroupIDs: t.ids, Epoch: t.epoch, Holder: state.Holder, Type: event,
-			FromRole: h.role, ToRole: state.RoleBits, FromKnownBits: h.knownBits, ToKnownBits: state.KnownBits, LeftCensored: !previousKnown, Uncertain: h.uncertain || state.Active.Uncertain || h.uncertainBits != 0 || state.UncertainBits != 0, Reason: reason}, result)
+			FromRole: h.role, ToRole: state.RoleBits, FromKnownBits: h.knownBits, ToKnownBits: state.KnownBits, LeftCensored: !previousKnown, Uncertain: uncertain, Reason: reason}, result)
 	}
 	if h.open != nil && state.Active.Uncertain {
 		h.open.Uncertain = true
@@ -176,12 +297,17 @@ func (t *pairTrack) updateState(step int, state ledgerState, result *Frame) {
 	h.role = state.RoleBits
 	h.knownBits = state.KnownBits
 	h.uncertainBits = state.UncertainBits
+	h.initialized = true
+	t.stock(h)
 }
 
 func (t *pairTrack) close(end, observedAt int, reason string, result *Frame) {
+	t.beginSeries(end)
 	for i := range t.holders {
+		t.stock(&t.holders[i])
 		t.closeHolder(i, end, true, reason, result)
 	}
+	t.flushSeries(result, true)
 	t.summary.End = end
 	t.summary.Reason = reason
 	t.emitSummary(result)
@@ -204,7 +330,7 @@ func (o *Observer) FinalClose(step int, reasons ...string) (Frame, error) {
 	}
 	result := Frame{DefinitionVersion: DefinitionVersion, BranchLedgerVersion: BranchLedgerVersion, Step: step, Pairs: []PairFrame{}}
 	if o.closed {
-		return result, nil
+		return o.collectedFrame(result), nil
 	}
 	reason := "observation_end"
 	if len(reasons) > 0 && reasons[0] != "" {
@@ -226,5 +352,5 @@ func (o *Observer) FinalClose(step int, reasons ...string) (Frame, error) {
 	o.nativeGraph.Adjacency, o.nativeGraph.Nodes, o.nativeGraph.Graph = nil, nil, nil
 	o.next, o.stopped, o.unionSignature = nil, nil, ""
 	o.closed = true
-	return result, nil
+	return o.collectedFrame(result), nil
 }
