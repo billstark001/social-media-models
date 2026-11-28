@@ -7,6 +7,11 @@
 - `smp-probe` evaluates saved or synthetic states without advancing a simulator. Counterfactual force additionally uses posts, a recommender and a probe RNG.
 - `record.Reader` reads persistent runs without creating tables, truncating histories or changing snapshots.
 
+Group and bridge analysis uses the native `groups` and `bridges` packages.
+[Groups, bridge integration and lifecycle options](groups.md) describes their
+versioned API, input coverage and output contracts. The package boundaries are
+listed in [architecture](architecture.md#offline-measurement-pipeline).
+
 Event connections use SQLite read-only mode. SQLite may maintain its transient WAL shared-memory/locking sidecars; recorded database contents and simulation histories are unchanged. The reader does not copy entire databases to observe them.
 
 The simulator opens event databases in WAL mode with full commit synchronization and foreign keys enabled on every connection. This also avoids false `SQLITE_READONLY_DBMOVED` errors from rollback-journal file-identity checks on ExFAT/FSKit volumes. Keep the database together with any `-wal` and `-shm` sidecars while it is open; close the simulator before archiving its output.
@@ -23,7 +28,23 @@ result, err := measure.Measure(opinions, graph, observables.StateOptions{
 })
 ```
 
-The evaluator supplies no hidden scale or threshold defaults. Each group can use its own epsilon. Empirical terminal classification uses its existing `0.5/N` occupied-mass cutoff; `Terminal.OccupiedMass` must be zero.
+The evaluator supplies no hidden scale or threshold defaults. Each measurement family can use its own epsilon. Empirical terminal classification uses its existing `0.5/N` occupied-mass cutoff; `Terminal.OccupiedMass` must be zero.
+
+| Entry point | Purpose |
+|---|---|
+| `observables.StateMeasurer.Measure` | Selected static energy, pathway, bins, landscape and terminal kernels |
+| `groups.Detector.Detect` | Opinion-only core detection with reusable workspace |
+| `groups.NewTracker`, `Tracker.Observe/FinalClose` | One stream's confirmed group identities and lineage records |
+| `bridges.Measure` | Independent single-frame measurement on supplied group references |
+| `bridges.NewObserver`, `Observer.Measure/FinalClose` | Frozen pair references, holder/union states and lifecycle summaries |
+| `bridges.NativeMeasure`, `FixedGroupsFrame` | Observe an existing live model or explicitly supplied reference cohorts |
+| `probe.Evaluate` | Shared saved-run, checkpoint and inline request evaluator |
+| `record.OpenRun`, `Reader.ReadStates/ReadStatesBorrowed` | Read selected completed states with owned or callback-scoped storage |
+
+Use `groups.DefaultOptions(epsilon)` and `bridges.DefaultOptions(epsilon)`
+explicitly in Go. Supplied options are complete objects; zero group options
+are invalid. See [group/bridge API details](groups.md#probe-and-python-integration)
+and the [role-bit wire layout](groups.md#bridge-role-bit-layout).
 
 ## Native CLI
 
@@ -36,6 +57,9 @@ Build once with `go build -o smp-probe ./cmd/smp-probe`. These commands require 
 ./smp-probe --checkpoint ./state.msgpack.lz4 \
   --measurements force,energy,pathway --grid-step 0.1
 
+./smp-probe --run-directory ./run/example --measurements groups,bridges \
+  --scan --output-stride 50
+
 ./smp-probe --format json < request.json > result.json
 ./smp-probe --format jsonl < jobs.jsonl > results.jsonl
 ```
@@ -43,6 +67,15 @@ Build once with `go build -o smp-probe ./cmd/smp-probe`. These commands require 
 Direct source flags produce JSON. A run's omitted `--steps` selects its last recorded state. Explicit steps must increase without duplicates. Repeat `--checkpoint` for checkpoints with matching physical metadata; use independent JSONL jobs for different runs or configurations. The no-argument MsgPack mode uses the same request and evaluation API as JSON.
 
 Saved-run responses include `source_max_step`, the actual last recorded state. For an archived run without `metadata.json`, an explicit `run_metadata` object can provide its known configuration. Supplying it when a metadata file exists is rejected; observation never writes or replaces metadata.
+
+`--scan` observes every native state in the requested interval; `--scan-start`
+and `--scan-end` bound it. `--output-stride` reduces returned snapshots while
+`analysis` retains the selected lifecycle records and summaries from all
+observations. A protocol `scan.stride` above one instead creates sampling gaps.
+`groups` needs opinions; `bridges` also enables group tracking and uses topology
+and available latest displayed posts. These selections do not construct a
+recommender or consume a probe RNG. Fixed `bridge_cores` are an explicit,
+separate reference namespace described in [the integration contract](groups.md#probe-and-python-integration).
 
 A JSONL input contains one request per line. For example:
 
@@ -66,9 +99,31 @@ Graph reconstruction uses exact graph dumps and ordered rewiring events. When re
 
 Force reconstruction uses opinion rows for original posts and logged reposts for their original author, opinion and publication step. A nonzero or unknown repost rate requires explicit `PostEvent=true`. Missing histories produce errors. No synthetic posts are substituted for unavailable force inputs.
 
+Bridge-only reads can preserve an unavailable post collection channel as
+unknown, with `analysis.posts_unavailable_reason`; corrupt recorded inputs
+remain errors. Inline post records require explicit non-null author, origin
+step and value. See [input availability and wire requirements](groups.md#probe-and-python-integration).
+
 The reader decodes one trajectory block at a time. Saved-run static requests measure each reconstructed state inside the read callback, reuse the canonical measurement workspace, and retain only measurement results; selected graphs and opinion states are not accumulated in the request. Legacy accumulated files still retain their opinion rows and skip unused count/sum channels while validating the full compressed payload. Requests including force retain the selected frozen states and their results. States within a force job share one probe RNG lifecycle; splitting that job into separate jobs changes the sampling lifecycle.
 
 For modern blocks, unused counts and opinion sums are skipped entirely while the block checksum and framing remain verified. Post and rewiring histories use one filtered ordered query each, including when selected steps cross many graph anchors. Old channel-major files still retain `8*N*T` bytes of decoded opinions.
+
+`ReadStates` yields independently owned opinion slices, post histories and
+graph maps that callers may retain. `ReadStatesBorrowed` avoids those copies:
+every yielded input is read-only and valid only inside its callback. Retaining
+the `State` value or shallow-copying its maps/slices does not extend that
+lifetime. Use the owned method when snapshots must outlive a callback. A reader
+rejects concurrent observations and callback reentry before touching its caches
+or opening additional SQL streams. Completed and failed observations release
+that guard, so later independent reads remain supported. Probe's static
+pipeline consumes borrowed inputs immediately and retains owned measurement
+results; force reconstruction keeps owned frozen states.
+
+The default rewiring reader validates header/body actor agreement. Explicit
+`source_compatibility="legacy_header_actor"` (CLI
+`--source-compatibility legacy_header_actor`) permits only the documented
+historical body-actor-zero migration defect. It uses the event header actor,
+keeps all other replay checks, and does not migrate or rewrite the archive.
 
 Historical metadata lacking `DynamicsType` is interpreted as HK only when it contains an explicit `HKParams` object. Explicit dynamics values are preserved; the inferred interpretation is not written to disk. Thus an explicit historical zero rewiring rate can avoid unused event replay without inventing collection flags.
 
@@ -92,6 +147,13 @@ for result in run_probe_jobs([
 ```
 
 The bindings send source paths and options to Go. `run_probe` also accepts explicit `FrozenSimulationState` inputs for synthetic analyses; static requests can omit dynamics metadata and provide their measurement parameters directly. Pass `metadata=...` to `run_probe_run` only for archived directories lacking `metadata.json`. Historical post reconstruction belongs to the Go reader; the Python `freeze_record` and `RawSimulationRecord.freeze` APIs have been removed. Offline pathway callers use `run_probe_run`, `run_probe_checkpoints`, or `run_probe_jobs`; batch accepts simulation requests only.
+
+For dense group/bridge histories, use `analyze_run(directory, ...)`; for repeated
+independent runs, pass a context-managed `ProbeClient` to reuse one JSONL worker.
+`RawSimulationRecord.evaluate_probe` exposes the same selections as typed
+`ProbeResponse`, `ProbeAnalysis`, group and bridge records. The bindings forward
+inputs and options; the native packages perform the measurements. See the
+[reusable-worker example](groups.md#probe-and-python-integration).
 
 ## Persistent online studies without Python
 

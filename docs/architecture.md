@@ -12,8 +12,44 @@ smp/
 ├── dynamics/       Opinion dynamics implementations (HK, Deffuant, Galam, Voter)
 ├── recsys/         Recommendation system implementations
 ├── simulation/     Scenario execution, serialization, event logging
+├── trajectory/     Persisted opinion/count/sum channel blocks
+├── record/         Read-only saved-run reconstruction
+├── observables/    Static energy, pathway, bins and landscape kernels
+├── terminal/       Empirical terminal classification
+├── groups/         Opinion density cores and observed group lineage
+├── bridges/        Cross-core support and holder/union lifecycle observation
+├── probe/          Shared offline request and stream evaluation
+├── smp_bindings/   Python transport, typed records and orchestration
 └── utils/          Graph utilities (ER, small-world, serialize)
 ```
+
+---
+
+## Offline measurement pipeline
+
+`record.Reader` reconstructs the completed state requested by `probe` without
+resuming a simulation. `observables.StateMeasurer` evaluates selected static
+kernels. `groups.Detector` uses opinions alone; `groups.Tracker` associates
+confirmed cores through one ordered stream. `bridges.Observer` consumes those
+group frames, the directed follow graph and available latest displayed posts,
+then owns its frozen-reference epochs and holder/union ledgers. It never
+substitutes a dynamic detector's current members for an open frozen cohort.
+`bridges.NativeMeasure` adapts an already existing model without advancing it.
+
+`probe.Evaluate` is the shared JSON/MsgPack/JSONL and Go entry point. Each request
+owns fresh observers; output thinning occurs after observation. Python's
+`analyze_run`, `ProbeClient` and typed record wrapper call this API rather than
+implementing measurement arithmetic. Counterfactual force retains its separate
+recommender/RNG lifecycle.
+
+The reader's `ReadStates` API yields owned snapshots. The static pipeline uses
+`ReadStatesBorrowed` for callback-only, read-only views and retains only owned
+measurement results. One reader/workspace belongs to one ordered stream;
+independent streams can use independent instances. The owned reader API remains
+available for force inputs and callers that retain microscopic snapshots.
+
+See [the API catalog and input ownership](measurements.md),
+[group/bridge contracts](groups.md), and [trajectory storage](trajectory.md).
 
 ---
 
