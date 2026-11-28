@@ -22,6 +22,15 @@ type Opinion[O any, P any] struct {
 	PostIndices  []*PostIndex
 	AgentMap     map[int64]*model.SMPAgent[O, P]
 	AgentIndices map[int64]int
+	groupStarts  []int
+	groupEnds    []int
+	ties         tieSampler
+}
+
+type opinionPlacement[O any] struct {
+	post   *model.PostRecord[O]
+	holder int64
+	round  int
 }
 
 // NewOpinion creates a new opinion-based recommendation system.
@@ -60,6 +69,8 @@ func (o *Opinion[O, P]) PostInit(dumpData []byte) {
 			o.PostIndices = append(o.PostIndices, tIdx)
 		}
 	}
+	o.groupStarts = make([]int, len(o.PostIndices))
+	o.groupEnds = make([]int, len(o.PostIndices))
 }
 
 // PreStep implements model.SMPModelRecommendationSystem
@@ -103,6 +114,8 @@ func (o *Opinion[O, P]) prepareIndex() {
 		if left.TempOpinion != right.TempOpinion {
 			return left.TempOpinion < right.TempOpinion
 		}
+		// Stable enumeration for RNG replay only. recommendAround samples the
+		// complete equal-distance frontier, independently of this ID order.
 		if left.AgentID != right.AgentID {
 			return left.AgentID < right.AgentID
 		}
@@ -113,6 +126,16 @@ func (o *Opinion[O, P]) prepareIndex() {
 			o.AgentIndices[a.AgentID] = i
 		}
 	}
+	for start := 0; start < len(o.PostIndices); {
+		end := start + 1
+		for end < len(o.PostIndices) && o.PostIndices[end].TempOpinion == o.PostIndices[start].TempOpinion {
+			end++
+		}
+		for index := start; index < end; index++ {
+			o.groupStarts[index], o.groupEnds[index] = start, end
+		}
+		start = end
+	}
 }
 
 // Recommend implements model.SMPModelRecommendationSystem
@@ -121,7 +144,8 @@ func (o *Opinion[O, P]) Recommend(agent *model.SMPAgent[O, P], neighborIDs map[i
 
 	iPre := o.AgentIndices[agent.ID] - 1
 	iPost := o.AgentIndices[agent.ID] + 1
-	return o.recommendAround(agent.ID, opinionWithNoise, iPre, iPost, neighborIDs, count)
+	return o.recommendAround(agent.ID, opinionWithNoise, iPre, iPost, neighborIDs, count,
+		o.Model.RNG.Stream(smprng.StreamRecommendation))
 }
 
 // RecommendAt evaluates opinion-nearest recommendation around a hypothetical
@@ -140,7 +164,7 @@ func (o *Opinion[O, P]) RecommendAt(
 	cursor := sort.Search(len(o.PostIndices), func(i int) bool {
 		return o.PostIndices[i].TempOpinion >= opinionWithNoise
 	})
-	return o.recommendAround(agent.ID, opinionWithNoise, cursor-1, cursor, neighborIDs, count)
+	return o.recommendAround(agent.ID, opinionWithNoise, cursor-1, cursor, neighborIDs, count, rng)
 }
 
 func (o *Opinion[O, P]) recommendAround(
@@ -150,10 +174,10 @@ func (o *Opinion[O, P]) recommendAround(
 	iPost int,
 	neighborIDs map[int64]bool,
 	count int,
+	rng *rand.Rand,
 ) []*model.PostRecord[O] {
 	ret := make([]*model.PostRecord[O], 0, count)
 
-	visiblePosts := o.Model.Grid.PostMap
 	for len(ret) < count {
 		noPre := iPre < 0 || o.PostIndices[iPre].TempOpinion == -2
 		noPost := iPost >= len(o.PostIndices) || o.PostIndices[iPost].TempOpinion == -2
@@ -161,44 +185,81 @@ func (o *Opinion[O, P]) recommendAround(
 			break
 		}
 
-		usePre := noPost || (!noPre &&
-			math.Abs(opinionWithNoise-o.PostIndices[iPre].TempOpinion) <
-				math.Abs(o.PostIndices[iPost].TempOpinion-opinionWithNoise))
-
-		var a *PostIndex
-		if usePre {
-			a = o.PostIndices[iPre]
-			iPre--
-		} else {
-			a = o.PostIndices[iPost]
-			iPost++
+		// Keep the original marker-based traversal. Only the complete equal-
+		// distance frontier is unordered, including ties across both sides.
+		distance := math.Inf(1)
+		if !noPre {
+			distance = math.Abs(opinionWithNoise - o.PostIndices[iPre].TempOpinion)
 		}
-
-		if o.HistoricalPostCount < 1 {
-			postToRecommend := o.AgentMap[a.AgentID].CurPost
-			cond := postToRecommend != nil &&
-				postToRecommend.AgentID != agentID &&
-				!neighborIDs[postToRecommend.AgentID] &&
-				(!o.hideReposts || postToRecommend.IsOriginalPlacement(a.AgentID, o.Model.CurStep-1))
-			if cond {
-				o.Model.RecordRecommendationPlacement(a.AgentID, o.Model.CurStep-1)
-				ret = append(ret, postToRecommend)
+		if !noPost {
+			distance = min(distance, math.Abs(o.PostIndices[iPost].TempOpinion-opinionWithNoise))
+		}
+		preEnd, postStart := iPre+1, iPost
+		for iPre >= 0 && o.PostIndices[iPre].TempOpinion != -2 && math.Abs(opinionWithNoise-o.PostIndices[iPre].TempOpinion) == distance {
+			iPre = o.groupStarts[iPre] - 1
+		}
+		for iPost < len(o.PostIndices) && o.PostIndices[iPost].TempOpinion != -2 && math.Abs(o.PostIndices[iPost].TempOpinion-opinionWithNoise) == distance {
+			iPost = o.groupEnds[iPost]
+		}
+		preStart, preCount := iPre+1, preEnd-(iPre+1)
+		size := preCount + iPost - postStart
+		indexAt := func(offset int) *PostIndex {
+			if offset < preCount {
+				return o.PostIndices[preStart+offset]
+			}
+			return o.PostIndices[postStart+offset-preCount]
+		}
+		// Detect a unique valid slot before using RNG. Usually only two slots
+		// need checking; large equal-opinion groups are never copied or shuffled.
+		valid := 0
+		var only opinionPlacement[O]
+		for offset := 0; offset < size && valid < 2; offset++ {
+			if placement, ok := o.placement(indexAt(offset), agentID, neighborIDs); ok {
+				only = placement
+				valid++
+			}
+		}
+		if valid == 1 {
+			o.Model.RecordRecommendationPlacement(only.holder, only.round)
+			ret = append(ret, only.post)
+			continue
+		}
+		if valid == 0 {
+			continue
+		}
+		o.ties.reset(size)
+		for o.ties.remaining > 0 && len(ret) < count {
+			placement, ok := o.placement(indexAt(o.ties.draw(rng)), agentID, neighborIDs)
+			if !ok {
 				continue
 			}
-		}
-		cond := a.AgentID != agentID &&
-			a.HistoryID != -1 &&
-			!neighborIDs[a.AgentID]
-		if cond {
-			history := visiblePosts[a.AgentID]
-			postToRecommend := history[a.HistoryID]
-			placementRound := o.Model.CurStep - (len(history) - a.HistoryID)
-			if postToRecommend != nil && (!o.hideReposts || postToRecommend.IsOriginalPlacement(a.AgentID, placementRound)) {
-				o.Model.RecordRecommendationPlacement(a.AgentID, placementRound)
-				ret = append(ret, postToRecommend)
-			}
+			o.Model.RecordRecommendationPlacement(placement.holder, placement.round)
+			ret = append(ret, placement.post)
 		}
 	}
 
 	return ret
+}
+
+// placement checks the existing visibility/history rules without logging an
+// exposure. Only selected placements are recorded by recommendAround.
+func (o *Opinion[O, P]) placement(a *PostIndex, agentID int64, neighborIDs map[int64]bool) (opinionPlacement[O], bool) {
+	if o.HistoricalPostCount < 1 {
+		post := o.AgentMap[a.AgentID].CurPost
+		if post != nil && post.AgentID != agentID && !neighborIDs[post.AgentID] &&
+			(!o.hideReposts || post.IsOriginalPlacement(a.AgentID, o.Model.CurStep-1)) {
+			return opinionPlacement[O]{post, a.AgentID, o.Model.CurStep - 1}, true
+		}
+		return opinionPlacement[O]{}, false
+	}
+	if a.AgentID == agentID || a.HistoryID == -1 || neighborIDs[a.AgentID] {
+		return opinionPlacement[O]{}, false
+	}
+	history := o.Model.Grid.PostMap[a.AgentID]
+	post := history[a.HistoryID]
+	round := o.Model.CurStep - (len(history) - a.HistoryID)
+	if post != nil && (!o.hideReposts || post.IsOriginalPlacement(a.AgentID, round)) {
+		return opinionPlacement[O]{post, a.AgentID, round}, true
+	}
+	return opinionPlacement[O]{}, false
 }

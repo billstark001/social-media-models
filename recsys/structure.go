@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"math"
 	"math/rand/v2"
 	"sort"
 
@@ -13,11 +14,60 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 )
 
+const structureDumpVersion = 2
+
+// StructureCandidate retains the perturbed score, so a cached ranking can draw
+// a fresh order for exact ties on every query without redrawing its noise.
+type StructureCandidate struct {
+	ID       int64
+	Score    float64
+	GroupEnd int // exclusive end of this exact-score group in the immutable row
+}
+
 // StructureDump is the serialisable snapshot of Structure's cache state.
 type StructureDump struct {
-	CandidateCache map[int64][]int64           // sorted candidate IDs (for Structure.Recommend)
-	RawScoreCache  map[int64]map[int64]float64 // raw 2-hop counts (for StructureRandom.Recommend)
+	Version        int
+	CandidateCache map[int64][]StructureCandidate // immutable score-ranked rows
+	RawScoreCache  map[int64]map[int64]float64    // raw 2-hop counts (for StructureRandom.Recommend)
 	CacheValid     map[int64]bool
+}
+
+func (d StructureDump) validate() error {
+	if d.Version != structureDumpVersion {
+		return fmt.Errorf("unsupported Structure cache version %d: require %d; start a new run with the current tie rule", d.Version, structureDumpVersion)
+	}
+	if d.CandidateCache == nil || d.RawScoreCache == nil || d.CacheValid == nil {
+		return fmt.Errorf("Structure cache is missing a required index")
+	}
+	for _, row := range d.CandidateCache {
+		for index, candidate := range row {
+			if candidate.ID < 0 || candidate.Score < 0 || math.IsNaN(candidate.Score) || math.IsInf(candidate.Score, 0) {
+				return fmt.Errorf("Structure cache contains an invalid scored candidate")
+			}
+			if index > 0 && (row[index-1].Score < candidate.Score ||
+				(row[index-1].Score == candidate.Score && row[index-1].ID >= candidate.ID)) {
+				return fmt.Errorf("Structure cache candidates are not in canonical score order")
+			}
+			if candidate.GroupEnd <= index || candidate.GroupEnd > len(row) ||
+				row[candidate.GroupEnd-1].Score != candidate.Score ||
+				(candidate.GroupEnd < len(row) && row[candidate.GroupEnd].Score == candidate.Score) ||
+				(index > 0 && row[index-1].Score == candidate.Score && row[index-1].GroupEnd != candidate.GroupEnd) {
+				return fmt.Errorf("Structure cache contains an invalid exact-score group boundary")
+			}
+		}
+	}
+	return nil
+}
+
+func decodeStructureDump(data []byte) (StructureDump, error) {
+	var dump StructureDump
+	if err := msgpack.Unmarshal(data, &dump); err != nil {
+		return StructureDump{}, fmt.Errorf("decode Structure cache: %w", err)
+	}
+	if err := dump.validate(); err != nil {
+		return StructureDump{}, err
+	}
+	return dump, nil
 }
 
 // Structure implements a recommendation system based on network structure.
@@ -42,8 +92,8 @@ type Structure[O any, P any] struct {
 	noiseStd float64
 
 	useCache       bool
-	candidateCache map[int64][]int64           // sorted candidate IDs per agent (Structure.Recommend)
-	rawScoreCache  map[int64]map[int64]float64 // raw 2-hop counts per agent (shared with StructureRandom)
+	candidateCache map[int64][]StructureCandidate // immutable score-ranked rows
+	rawScoreCache  map[int64]map[int64]float64    // raw 2-hop counts per agent (shared with StructureRandom)
 	cacheValid     map[int64]bool
 
 	neighborSeen   []uint32
@@ -53,6 +103,7 @@ type Structure[O any, P any] struct {
 	touchedIDs     []int64
 	neighborEpoch  uint32
 	candidateEpoch uint32
+	ties           tieSampler
 }
 
 // NewStructure creates a structure-based recommendation system.
@@ -86,15 +137,16 @@ func (s *Structure[O, P]) PostInit(dumpData []byte) {
 	s.initWorkspace()
 	if s.useCache {
 		if dumpData != nil {
-			var dump StructureDump
-			if err := msgpack.Unmarshal(dumpData, &dump); err == nil {
-				s.candidateCache = dump.CandidateCache
-				s.rawScoreCache = dump.RawScoreCache
-				s.cacheValid = dump.CacheValid
-				return
+			dump, err := decodeStructureDump(dumpData)
+			if err != nil {
+				panic(err)
 			}
+			s.candidateCache = dump.CandidateCache
+			s.rawScoreCache = dump.RawScoreCache
+			s.cacheValid = dump.CacheValid
+			return
 		}
-		s.candidateCache = make(map[int64][]int64, s.NumNodes)
+		s.candidateCache = make(map[int64][]StructureCandidate, s.NumNodes)
 		s.rawScoreCache = make(map[int64]map[int64]float64, s.NumNodes)
 		s.cacheValid = make(map[int64]bool, s.NumNodes)
 	}
@@ -120,8 +172,8 @@ type preparedStructureState struct{ dump StructureDump }
 // PrepareState decodes once. Cached rows are immutable: recommendation only
 // reads them, and a cache miss replaces a whole row rather than changing it.
 func (s *Structure[O, P]) PrepareState(data []byte) (model.PreparedRecommendationState, error) {
-	var dump StructureDump
-	if err := msgpack.Unmarshal(data, &dump); err != nil {
+	dump, err := decodeStructureDump(data)
+	if err != nil {
 		return nil, err
 	}
 	return &preparedStructureState{dump: dump}, nil
@@ -247,7 +299,8 @@ func (s *Structure[O, P]) computeRawScores(agentID int64) map[int64]float64 {
 }
 
 // Recommend selects posts from candidates ranked by common-neighbor score.
-// With caching enabled, sorted candidate IDs are reused until invalidated.
+// With caching enabled, noisy scores are reused until invalidated; exact ties
+// are sampled afresh from the supplied RNG for every query.
 func (s *Structure[O, P]) Recommend(agent *model.SMPAgent[O, P], neighborIDs map[int64]bool, count int) []*model.PostRecord[O] {
 	rng := s.Model.RNG.Stream(smprng.StreamRecommendation)
 	return s.recommend(agent, neighborIDs, count, rng, s.useCache)
@@ -273,29 +326,10 @@ func (s *Structure[O, P]) recommend(
 	useCache bool,
 ) []*model.PostRecord[O] {
 
-	// Cache hit path.
+	// Cache rows retain noisy scores, not one arbitrary order for their ties.
 	if useCache && s.cacheValid[agent.ID] {
 		if candidates, ok := s.candidateCache[agent.ID]; ok {
-			result := make([]*model.PostRecord[O], 0, count)
-			for _, cid := range candidates {
-				if len(result) >= count {
-					break
-				}
-				if agentPicked, ok2 := s.AgentMap[cid]; ok2 {
-					post := selectPost(
-						s.HistoricalPostCount,
-						neighborIDs,
-						agentPicked.ID,
-						s.Model,
-						s.hideReposts,
-						rng,
-					)
-					if post != nil {
-						result = append(result, post)
-					}
-				}
-			}
-			return result
+			return s.selectRankedPosts(candidates, neighborIDs, count, rng)
 		}
 	}
 
@@ -307,11 +341,7 @@ func (s *Structure[O, P]) recommend(
 	}
 
 	// Sort candidates by descending score (optionally perturbed by noise).
-	type scored struct {
-		id    int64
-		score float64
-	}
-	candidates := make([]scored, 0, len(rawScores))
+	candidates := make([]StructureCandidate, 0, len(rawScores))
 	for index := range s.NumNodes {
 		id := int64(index)
 		sc, ok := rawScores[id]
@@ -322,43 +352,61 @@ func (s *Structure[O, P]) recommend(
 			noise := rng.NormFloat64() * s.noiseStd
 			sc = max(sc*(1-2*noise)+noise, 0)
 		}
-		candidates = append(candidates, scored{id, sc})
+		candidates = append(candidates, StructureCandidate{ID: id, Score: sc})
 	}
 	sort.Slice(candidates, func(a, b int) bool {
-		if candidates[a].score != candidates[b].score {
-			return candidates[a].score > candidates[b].score
+		if candidates[a].Score != candidates[b].Score {
+			return candidates[a].Score > candidates[b].Score
 		}
-		return candidates[a].id < candidates[b].id
+		// Canonical enumeration makes RNG replay independent of map order.
+		// This key never determines which member of an exact tie is returned.
+		return candidates[a].ID < candidates[b].ID
 	})
-
-	// Cache the sorted candidate ID list.
-	if useCache {
-		ids := make([]int64, len(candidates))
-		for i, c := range candidates {
-			ids[i] = c.id
+	for start := 0; start < len(candidates); {
+		end := start + 1
+		for end < len(candidates) && candidates[end].Score == candidates[start].Score {
+			end++
 		}
-		s.candidateCache[agent.ID] = ids
-		s.cacheValid[agent.ID] = true
+		for index := start; index < end; index++ {
+			candidates[index].GroupEnd = end
+		}
+		start = end
 	}
 
+	// Rows are immutable; per-query tie sampling only touches private scratch.
+	if useCache {
+		s.candidateCache[agent.ID] = candidates
+		s.cacheValid[agent.ID] = true
+	}
+	return s.selectRankedPosts(candidates, neighborIDs, count, rng)
+}
+
+func (s *Structure[O, P]) selectRankedPosts(
+	candidates []StructureCandidate,
+	neighborIDs map[int64]bool,
+	count int,
+	rng *rand.Rand,
+) []*model.PostRecord[O] {
 	result := make([]*model.PostRecord[O], 0, count)
-	for _, c := range candidates {
-		if len(result) >= count {
-			break
-		}
-		if agentPicked, ok := s.AgentMap[c.id]; ok {
-			post := selectPost(
-				s.HistoricalPostCount,
-				neighborIDs,
-				agentPicked.ID,
-				s.Model,
-				s.hideReposts,
-				rng,
-			)
-			if post != nil {
+	appendPost := func(candidate StructureCandidate) {
+		if picked, ok := s.AgentMap[candidate.ID]; ok {
+			if post := selectPost(s.HistoricalPostCount, neighborIDs, picked.ID, s.Model, s.hideReposts, rng); post != nil {
 				result = append(result, post)
 			}
 		}
+	}
+	for start := 0; start < len(candidates) && len(result) < count; {
+		end := candidates[start].GroupEnd
+		if end == start+1 {
+			// Preserve both candidate order and RNG consumption outside ties.
+			appendPost(candidates[start])
+		} else {
+			s.ties.reset(end - start)
+			for s.ties.remaining > 0 && len(result) < count {
+				appendPost(candidates[start+s.ties.draw(rng)])
+			}
+		}
+		start = end
 	}
 	return result
 }
@@ -371,6 +419,7 @@ func (s *Structure[O, P]) Dump() []byte {
 		return nil
 	}
 	dump := StructureDump{
+		Version:        structureDumpVersion,
 		CandidateCache: s.candidateCache,
 		RawScoreCache:  s.rawScoreCache,
 		CacheValid:     s.cacheValid,

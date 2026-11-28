@@ -89,6 +89,21 @@ Each agent per step:
 | `StructureRandom` | Structure-similarity weighted random |
 | `Mix`             | Blend of two systems                 |
 
+`Opinion` and `Structure` resolve exact primary-score ties by uniform sampling
+without replacement on each query, using the existing recommendation RNG stream.
+IDs only establish reproducible enumeration; they never decide a tie. Opinion
+retains its marker-based real-query traversal and history-slot multiplicities.
+Structure retains its cached noisy scores until topology invalidation, but draws
+a fresh order within each equal-score group. Counterfactual queries use only the
+caller-owned probe RNG. There is no switch back to ID-based tie selection.
+
+Structure cache snapshots use schema version 2, which retains noisy scores and
+their tie groups. Older cache snapshots cannot resume under this rule: their
+scores were not saved, and recomputing them would redraw noise. They are rejected
+explicitly rather than silently converted. Historical raw trajectories remain
+readable for offline measurement. Keep old producer binaries and frozen datasets
+for historical reproduction; start corrected experiments in new datasets.
+
 ### Key Parameters
 
 | Parameter         | Description                           | Default |

@@ -1,6 +1,7 @@
 package model_test
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 
 	"smp/dynamics"
 	"smp/model"
+	"smp/recsys"
 	smprng "smp/rng"
 	"smp/simulation"
 	"smp/utils"
@@ -18,6 +20,9 @@ import (
 // These hashes were captured from 902fada before optimizing the step path.
 // Every completed step includes opinions, graph, posts, collected statistics,
 // RNG states, convergence outputs and (when enabled) ordered feed/events.
+// Cases with effective Opinion ties now have a deliberately different sampling
+// law: those are checked by tie-RNG evidence and repeated full trajectories,
+// rather than replacing their old ID-dependent hashes with new golden values.
 func TestStepMatchesPreOptimizationTrajectories(t *testing.T) {
 	want := map[string]string{
 		"HK/Random":                "eedb84002d8b5559a72a5ce64faf936619f357a39338d36a665f0e578b1c4bf8",
@@ -25,9 +30,6 @@ func TestStepMatchesPreOptimizationTrajectories(t *testing.T) {
 		"Galam/Random":             "538bb930796c31bf6d1f61cde8e0050e943552c612c56c8341c0e322487699d3",
 		"Voter/Random":             "fb15ba7933a15712b342ba9343ebf0a8f5fd5fbba4c83fbc54ecd79eabec2c1e",
 		"HK/Opinion":               "ca9fb2f480b3d30c9eea29271ae6656da9e4dab53e60ca72ef48fcdc94652b46",
-		"Deffuant/Opinion":         "d9e753bd965be3c0877c3948931283e7ae2a3abc8d1840df3b8a438804f24468",
-		"Galam/Opinion":            "c5e7ca0e3ede6c33dbdf9eee44388deddbe16c2887879f48f7c85f7c53605419",
-		"Voter/Opinion":            "4801eaa0f6d2904b4f941125342e7a34ee3576b1792124afa28a5cfce4c1ffb6",
 		"HK/Structure":             "486211f0611817b4ae9249c8ec4554466548d3ec2b9f841b41079a3b27858aa3",
 		"Deffuant/Structure":       "8043fe881c775037b0c3b322215ef77a8967eee4b60bafe8832ba5505f86a875",
 		"Galam/Structure":          "5c0849996bc7d3d576808d710d612a8da6912b3dee2a3b3ae566a527aac868cb",
@@ -40,10 +42,6 @@ func TestStepMatchesPreOptimizationTrajectories(t *testing.T) {
 		"Deffuant/StructureRandom": "f174bdcff79a440ab6138a113f429edc44511eb48e95a3a4256cc1bc171a1932",
 		"Galam/StructureRandom":    "9559f9f311e32b0af0f3c6048cf775f92cb9f746f99feefbcca4003b68071c08",
 		"Voter/StructureRandom":    "938d11ed9e3bf2c5e4074c6cac51c460f93cfabc9317a855aac8c3311cc406ff",
-		"HK/OpinionM9":             "a02f4a2e8cb5a7c8af0e60a6fab7bf4de0c24f25c895456eb7022b80c320c5a4",
-		"Deffuant/OpinionM9":       "b8f6b9a06e112f30830cc2dfa3465628648f183184e02bd3c211998fc70f810a",
-		"Galam/OpinionM9":          "e7caa3d155c59bd75c57b8763404be7eb4d3dd7dbd10dd27f4082f74609926c4",
-		"Voter/OpinionM9":          "a9833e47f43c6798905937098d5ded86fd2c1d09f084a363b2b67defb017008f",
 		"HK/StructureM9":           "51df7b4f78cfac32c5e1a2eaf8218de5b9c8145b9041a75be7dae49e6defc4a6",
 		"Deffuant/StructureM9":     "1b1c4a6168633b3ec04a57e6986c9ffc406d22fd804e6f6671b7434a107d8ff2",
 		"Galam/StructureM9":        "27030bc04b682954f141e23dc05e8281ef5c9be21a8cab73d0e2c07efb9f57c9",
@@ -92,6 +90,83 @@ func checkStepDigest[O, P any](t *testing.T, want map[string]string, key, recsys
 		checkStepObservationModes(t, recsys, newDynamics, params, factories, opinion)
 		return
 	}
+	got, tieQueries := stepTrajectoryDigest(t, recsys, newDynamics, params, factories, opinion)
+	if stepHasRevisedOpinionTies(key) {
+		if tieQueries == 0 {
+			t.Fatal("revised-law trajectory did not exercise Opinion tie sampling")
+		}
+		repeated, repeatedTieQueries := stepTrajectoryDigest(t, recsys, newDynamics, params, factories, opinion)
+		if got != repeated || tieQueries != repeatedTieQueries {
+			t.Fatal("same-seed revised tie trajectories or tie RNG consumption differ")
+		}
+		t.Logf("%s: %d recommendation queries drew tie randomness; complete trajectories reproduce", key, tieQueries)
+	} else {
+		expected, ok := want[key]
+		if !ok {
+			t.Fatalf("missing pre-optimization reference for %s", key)
+		}
+		if tieQueries != 0 {
+			t.Fatalf("protected pre-optimization case %s unexpectedly exercised %d revised tie queries", key, tieQueries)
+		}
+		if got != expected {
+			t.Fatalf("%q: %q,", key, got)
+		}
+	}
+	checkStepObservationModes(t, recsys, newDynamics, params, factories, opinion)
+}
+
+func stepHasRevisedOpinionTies(key string) bool {
+	switch key {
+	case "Deffuant/Opinion", "Galam/Opinion", "Voter/Opinion",
+		"HK/OpinionM9", "Deffuant/OpinionM9", "Galam/OpinionM9", "Voter/OpinionM9":
+		return true
+	default:
+		return false
+	}
+}
+
+type opinionTieConsumption[O, P any] struct {
+	model.SMPModelRecommendationSystem[O, P]
+	pool    *smprng.Pool
+	queries *int
+}
+
+func (r *opinionTieConsumption[O, P]) Recommend(a *model.SMPAgent[O, P], excluded map[int64]bool, count int) []*model.PostRecord[O] {
+	before, err := r.pool.Snapshot()
+	if err != nil {
+		panic(err)
+	}
+	posts := r.SMPModelRecommendationSystem.Recommend(a, excluded, count)
+	after, err := r.pool.Snapshot()
+	if err != nil {
+		panic(err)
+	}
+	// Opinion generates query noise in PreStep; Recommend itself only draws
+	// randomness for an effective tie. In M9 wrap only this component, so its
+	// uniform exploration slot cannot be mistaken for evidence of a tie.
+	if !bytes.Equal(before[smprng.StreamRecommendation], after[smprng.StreamRecommendation]) {
+		(*r.queries)++
+	}
+	return posts
+}
+
+func traceOpinionTieConsumption[O, P any](m *model.SMPModel[O, P], queries *int) {
+	switch recommender := m.Recsys.(type) {
+	case *recsys.Opinion[O, P]:
+		m.Recsys = &opinionTieConsumption[O, P]{recommender, m.RNG, queries}
+	case *recsys.Mix[O, P]:
+		if opinion, ok := recommender.RecSys2.(*recsys.Opinion[O, P]); ok {
+			recommender.RecSys2 = &opinionTieConsumption[O, P]{opinion, m.RNG, queries}
+		}
+	}
+}
+
+func stepTrajectoryDigest[O, P any](t *testing.T, recsys string,
+	newDynamics func() model.Dynamics[O, P], params P, factories map[string]model.RecsysFactory[O, P],
+	opinion func(*rand.Rand) O,
+) (string, int) {
+	t.Helper()
+	tieQueries := 0
 	hash := sha256.New()
 	encoder := json.NewEncoder(hash)
 	encode := func(value any) {
@@ -122,6 +197,7 @@ func checkStepDigest[O, P any](t *testing.T, want map[string]string, key, recsys
 				}, logger, pool)
 				m.SetAgentCurPosts()
 				m.Recsys.PostInit(nil)
+				traceOpinionTieConsumption(m, &tieQueries)
 				if observe {
 					m.ObserveFeed = func(a *model.SMPAgent[O, P], feed model.FeedObservation[O]) {
 						encode(a.ID)
@@ -141,9 +217,5 @@ func checkStepDigest[O, P any](t *testing.T, want map[string]string, key, recsys
 			}
 		}
 	}
-	got := hex.EncodeToString(hash.Sum(nil))
-	if got != want[key] {
-		t.Fatalf("%q: %q,", key, got)
-	}
-	checkStepObservationModes(t, recsys, newDynamics, params, factories, opinion)
+	return hex.EncodeToString(hash.Sum(nil)), tieQueries
 }
